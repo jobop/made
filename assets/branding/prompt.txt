@@ -1,0 +1,10 @@
+码豆应用图标 / Vibe Bean
+生成方式：内置 imagegen 工具（非 CLI）
+
+原始素材：bean-source.png
+网页与112px预览：../../public/bean-icon.png
+固件资源：../../firmware-brookesia/components/brookesia_app_vibe/assets/img_app_vibe.c
+通过 tools/build-app-icon.py 缩放与编码；保留透明 alpha。
+
+生成提示词（完整原文）：
+Create one finished mobile/embedded app icon for a warm AI coding companion named 码豆 (Vibe Bean). Asset: a single square icon, no text. A friendly plump asymmetrical bean mascot in warm pistachio / lime green, a clearly bean-shaped body with a gentle inward notch, two large dark forest-green eyes and a tiny cheerful smile, subtle cream highlight and very small peach cheeks. Add one tiny soft sprout at the top if it remains simple. Put the mascot on a dark deep-teal rounded-square tile with broad corner radii, thin understated lighter rim. Rich, clean flat illustrated style with very restrained soft shading, bold smooth shapes, playful but polished, not a robot. High contrast and legible when reduced to 48px on a small device. Mascot occupies about 75% of tile. Tile occupies 94% of canvas, centered, transparent space only outside tile. No letters, no code glyphs, no device frame, no caption, no mockup, no multiple alternatives, no detached shadows outside tile. Output one square PNG with genuine transparent alpha outside the tile.

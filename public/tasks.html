@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#0b1518">
+  <title data-i18n="static.109">任务 · 码得</title>
+  <link rel="icon" type="image/png" sizes="112x112" href="/made-icon.png">
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body data-page="tasks">
+  <div class="page-glow" aria-hidden="true"></div>
+  <div class="app">
+    <header class="topbar">
+      <a class="brand" href="/" aria-label="码得大盘" data-i18n-aria-label="static.002">
+        <span class="brand-mark" aria-hidden="true"><img src="/made-icon.png" alt="" width="112" height="112"></span>
+        <span><span class="brand-name"><span data-i18n="static.003">码得</span></span><span class="brand-sub"><span data-i18n="static.004">made · CODING COMPANION</span></span></span>
+      </a>
+      <nav class="topnav" aria-label="页面导航" data-i18n-aria-label="static.005"><a href="/"><span data-i18n="static.006">大盘</span></a><a href="/assistants.html"><span data-i18n="static.007">助手</span></a><a class="active" aria-current="page" href="/tasks.html"><span data-i18n="static.008">任务</span></a></nav>
+      <div class="language-picker"><label for="languageSelect" data-i18n="language.label">语言</label><select id="languageSelect" aria-label="界面语言" data-i18n-aria-label="language.label"><option value="zh-CN">简体中文</option><option value="en">English</option></select></div>
+      <div class="top-actions">
+        <span id="headerConnection" class="connection-pill"><span class="dot"></span><span><span data-i18n="static.009">正在连接</span></span></span>
+        <button id="refreshButton" class="icon-button" type="button" title="刷新状态" aria-label="刷新状态" data-i18n-title="static.010" data-i18n-aria-label="static.010"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M20 11a8 8 0 1 0-2.3 6.1"/><path d="M20 5v6h-6"/></svg></button>
+      </div>
+    </header>
+
+    <main id="top">
+      <section class="hero task-hero" aria-labelledby="hero-title">
+        <div><span class="eyebrow"><span data-i18n="static.110">TASKS · CODING AGENT</span></span><h1 id="hero-title"><span data-i18n="static.111">说出任务，</span><em><span data-i18n="static.112">看见进度</span></em></h1><p class="hero-desc"><span data-i18n="static.113">点“新建任务”选择助手和代码文件夹。第一句语音或文字会成为任务标题，后续指令都在这个任务里继续；每次执行前仍需确认。</span></p></div>
+      </section>
+      <div class="tasks-workspace">
+        <section class="panel sessions-panel" aria-labelledby="sessions-title">
+          <div class="panel-head"><div><h2 id="sessions-title"><span data-i18n="static.008">任务</span></h2><p class="panel-intro"><span data-i18n="static.114">选择一个任务，查看最新进展并继续对话。</span></p></div><button id="newSessionButton" class="small-button confirm" type="button" aria-expanded="false" aria-controls="sessionForm"><span data-i18n="static.115">＋ 新建任务</span></button></div>
+          <form id="sessionForm" class="session-create-form" hidden autocomplete="off">
+            <label class="compose-field" for="provider"><span class="field-label"><span data-i18n="static.097">编程助手</span></span><select id="provider" name="provider" required><option value="" data-i18n="static.116">正在加载…</option></select></label>
+            <label class="compose-field" for="project"><span class="field-label"><span data-i18n="static.117">代码文件夹</span></span><select id="project" name="projectId" required><option value="" data-i18n="static.116">正在加载…</option></select></label>
+            <p class="panel-intro"><span data-i18n="static.118">第一句指令会自动成为任务标题，之后可以改标题。</span></p>
+            <p id="sessionContextNotice" class="panel-intro"><span data-i18n="static.119">Codex、Cursor、Qoder 将尽可能沿用各自 CLI 的任务上下文。</span></p>
+            <button id="createSessionButton" class="primary-button" type="submit" disabled><span data-i18n="static.120">创建任务</span></button>
+            <p id="sessionFormMessage" class="form-message" role="status" aria-live="polite"></p>
+          </form>
+          <div id="sessionList" class="session-list" aria-label="任务列表" data-i18n-aria-label="static.121"><div class="empty"><strong><span data-i18n="static.122">正在读取任务</span></strong></div></div>
+          <section id="legacySessions" class="legacy-sessions" aria-label="历史记录" hidden data-i18n-aria-label="static.123">
+            <button id="legacySessionToggle" class="legacy-session-toggle" type="button" aria-expanded="false" aria-controls="legacySessionList"><span data-i18n="static.123">历史记录</span></button>
+            <div id="legacySessionList" class="session-list legacy-session-list" aria-label="历史任务列表" hidden data-i18n-aria-label="static.124"></div>
+          </section>
+        </section>
+        <div class="conversation-column">
+          <section class="panel conversation-head" aria-labelledby="currentSessionTitle">
+            <div class="conversation-heading"><div><span class="section-kicker"><span data-i18n="static.125">当前任务</span></span><h2 id="currentSessionTitle"><span data-i18n="static.126">请选择任务</span></h2><p id="currentSessionMeta" class="panel-intro"><span data-i18n="static.127">选择左侧任务，或新建一个任务。</span></p></div><button id="renameSessionButton" class="small-button" type="button" hidden><span data-i18n="static.128">改标题</span></button></div>
+            <p id="currentSessionWarning" class="session-context-warning" hidden></p>
+            <form id="renameSessionForm" class="rename-session-form" hidden autocomplete="off"><label class="field-label" for="renameSessionTitle"><span data-i18n="static.129">新标题</span></label><div class="rename-session-row"><input id="renameSessionTitle" class="secret-input" type="text" maxlength="80" required><button id="renameSessionSubmit" class="primary-button" type="submit"><span data-i18n="static.130">保存</span></button><button id="renameSessionCancel" class="small-button" type="button"><span data-i18n="static.131">取消</span></button></div><p id="renameSessionMessage" class="form-message" role="status" aria-live="polite"></p></form>
+          </section>
+
+          <section class="panel queue" aria-labelledby="queue-title">
+            <div class="panel-head"><div><h2 id="queue-title"><span data-i18n="static.132">最新进展</span></h2><p class="panel-intro"><span data-i18n="static.133">显示这个任务最新一次指令、执行状态和助手回复。</span></p></div></div>
+            <div id="jobList" class="job-list" aria-live="polite"><div class="empty"><div class="empty-icon" aria-hidden="true">⌁</div><strong><span data-i18n="static.122">正在读取任务</span></strong><span><span data-i18n="static.134">正在连接本机桥接服务…</span></span></div></div>
+          </section>
+
+          <section class="panel composer" aria-labelledby="compose-title">
+            <div class="composer-top"><div><h2 id="compose-title"><span data-i18n="static.135">继续这个任务</span></h2><p class="panel-intro"><span data-i18n="static.136">下一句会接着当前任务的上下文继续。</span></p></div></div>
+            <form id="jobForm">
+              <label class="compose-field" for="instruction"><span class="field-label"><span data-i18n="static.137">下一条指令</span></span><textarea id="instruction" name="instruction" maxlength="2000" placeholder="例如：接着修复刚才发现的第一个问题。" required data-i18n-placeholder="static.138"></textarea></label>
+              <div class="compose-actions"><button id="createButton" class="primary-button" type="submit" disabled><span><span data-i18n="static.139">发送并回显</span></span><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="m4 10 11-6-3 12-2.4-4.2L4 10Z"/><path d="m9.6 11.8 5.4-7.8"/></svg></button></div>
+              <p id="formMessage" class="form-message" role="status" aria-live="polite"></p>
+            </form>
+          </section>
+        </div>
+      </div>
+    </main>
+    <footer class="footer"><span><span data-i18n="static.082">码得 · 多助手桥接</span></span><span id="lastUpdated"><span data-i18n="static.083">等待首次同步</span></span></footer>
+  </div>
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+  <div id="pairingOverlay" class="pairing-overlay" hidden>
+    <section class="pairing-dialog" role="dialog" aria-modal="true" aria-labelledby="pairingDialogTitle" aria-describedby="pairingDialogDescription">
+      <div class="pairing-dialog-top"><div><span class="section-kicker"><span data-i18n="static.084">设备请求连接</span></span><h2 id="pairingDialogTitle"><span data-i18n="static.085">确认码得配对</span></h2></div><button id="pairingDismissButton" class="icon-button" type="button" title="稍后处理" aria-label="稍后处理" data-i18n-title="static.086" data-i18n-aria-label="static.086">×</button></div>
+      <p id="pairingDialogDescription"><span data-i18n="static.087">请核对下方数字是否与码得显示的一致。只有你确认后，这台设备才能控制电脑上的编程助手。</span></p>
+      <strong id="pairingCode" class="pairing-code" aria-label="配对验证码" data-i18n-aria-label="static.088"><span data-i18n="static.089">000000</span></strong>
+      <span id="pairingRemaining" class="pairing-remaining"></span>
+      <div class="pairing-dialog-actions"><button id="pairingRejectButton" class="small-button" type="button"><span data-i18n="static.090">拒绝连接</span></button><button id="pairingConfirmButton" class="primary-button" type="button"><span data-i18n="static.091">数字一致，确认连接</span></button></div>
+    </section>
+  </div>
+  <script type="module" src="/app.js"></script>
+</body>
+</html>

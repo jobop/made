@@ -1,0 +1,149 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#0b1518">
+  <title data-i18n="static.001">大盘 · 码得</title>
+  <link rel="icon" type="image/png" sizes="112x112" href="/made-icon.png">
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <div class="page-glow" aria-hidden="true"></div>
+  <div class="app">
+    <header class="topbar">
+      <a class="brand" href="/" aria-label="码得大盘" data-i18n-aria-label="static.002">
+        <span class="brand-mark" aria-hidden="true"><img src="/made-icon.png" alt="" width="112" height="112"></span>
+        <span><span class="brand-name"><span data-i18n="static.003">码得</span></span><span class="brand-sub"><span data-i18n="static.004">made · CODING COMPANION</span></span></span>
+      </a>
+      <nav class="topnav" aria-label="页面导航" data-i18n-aria-label="static.005"><a class="active" aria-current="page" href="/"><span data-i18n="static.006">大盘</span></a><a href="/assistants.html"><span data-i18n="static.007">助手</span></a><a href="/tasks.html"><span data-i18n="static.008">任务</span></a></nav>
+      <div class="language-picker"><label for="languageSelect" data-i18n="language.label">语言</label><select id="languageSelect" aria-label="界面语言" data-i18n-aria-label="language.label"><option value="zh-CN">简体中文</option><option value="en">English</option></select></div>
+      <div class="top-actions">
+        <span id="headerConnection" class="connection-pill"><span class="dot"></span><span><span data-i18n="static.009">正在连接</span></span></span>
+        <button id="refreshButton" class="icon-button" type="button" title="刷新状态" aria-label="刷新状态" data-i18n-title="static.010" data-i18n-aria-label="static.010"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M20 11a8 8 0 1 0-2.3 6.1"/><path d="M20 5v6h-6"/></svg></button>
+      </div>
+    </header>
+
+    <main id="top">
+      <section class="hero" aria-labelledby="hero-title">
+        <div><span class="eyebrow"><span data-i18n="static.011">ESP32-S3 · made</span></span><h1 id="hero-title"><span data-i18n="static.012">码得，</span><em><span data-i18n="static.013">代码触手可得</span></em></h1><p class="hero-desc"><span data-i18n="static.014">在这里查看码得交互、配对设备并配置语音输入。编程模型在“助手”设置，任务创建和管理在“任务”；小智继续作为独立应用运行。</span></p></div>
+      </section>
+
+      <div id="workspace" class="dashboard-layout">
+        <div class="stack">
+          <section id="preview" class="panel preview" aria-labelledby="preview-title">
+            <div class="panel-head"><div><h2 id="preview-title"><span data-i18n="static.015">码得交互预览</span></h2><p class="panel-intro"><span data-i18n="static.016">任务在设备上的显示和操作方式。</span></p></div><span class="preview-label"><span data-i18n="static.017">360 × 360 · 网页模拟</span></span></div>
+            <div class="board-stage">
+              <div class="board-shell">
+                <div id="boardScreen" class="board-screen" role="group" tabindex="0" aria-label="码得交互预览：左右滑动换助手，顶部上下滑动换任务" data-i18n-aria-label="static.018">
+                  <div id="boardAnimal" class="board-animal" aria-hidden="true" hidden></div>
+                  <button id="boardNewSession" class="board-new-session" type="button" hidden disabled title="新建任务" aria-label="新建任务" data-i18n-title="static.019" data-i18n-aria-label="static.019">＋</button>
+                  <div id="boardProviderName" class="board-provider-name"><span data-i18n="static.020">等待连接</span></div>
+                  <span id="boardPage" class="board-page">—</span>
+                  <div id="boardStatus" class="board-status"><span data-i18n="static.021">连接后显示助手</span></div>
+                  <div id="boardTitle" class="board-title"></div>
+                  <div id="boardResult" class="board-result" role="region" tabindex="0" aria-label="任务答复，可上下滚动" data-i18n-aria-label="static.022"></div>
+                </div>
+              </div>
+            </div>
+            <p class="board-footnote"><span data-i18n="static.023">左右滑动换助手，顶部上下滑动换任务；答复区上下滑动阅读。单击 BOOT 录音，静音后自动上传；双击确认，三击取消，长按返回桌面。</span></p>
+          </section>
+          <section id="pairing" class="panel info-panel" aria-labelledby="pairing-title">
+            <div class="panel-head pairing-head">
+              <div><h2 id="pairing-title"><span data-i18n="static.024">码得配对</span></h2><p class="panel-intro"><span data-i18n="static.025">USB 直连只需一条数据线；也支持同 Wi-Fi、独立接收端热点和公网地址。两端核对六位码后确认。</span></p></div>
+              <div class="pairing-actions"><button id="pairingShowButton" class="small-button confirm" type="button" hidden><span data-i18n="static.026">查看请求</span></button><button id="pairingOpenButton" class="small-button confirm" type="button"><span data-i18n="static.027">添加码得</span></button><button id="pairingCloseButton" class="small-button" type="button" hidden><span data-i18n="static.028">结束添加</span></button></div>
+            </div>
+            <div id="pairingState" class="pairing-state" role="status" aria-live="polite"><span data-i18n="static.029">正在读取配对状态…</span></div>
+            <div id="pairedDevices" class="pairing-list" aria-label="已配对设备" data-i18n-aria-label="static.030"></div>
+          </section>
+
+          <section id="receiver" class="panel info-panel" aria-labelledby="receiver-title">
+            <div class="panel-head"><div><h2 id="receiver-title"><span data-i18n="static.031">USB 连接</span></h2><p class="panel-intro"><span data-i18n="static.032">码得可通过 USB 数据线直接连接这台电脑，不用 Wi-Fi。也支持独立 ESP32-S3 / C3 接收端提供专用热点。</span></p></div></div>
+            <p id="receiverStatus" class="pairing-state" role="status" aria-live="polite"><span data-i18n="static.033">正在检测 USB 连接…</span></p>
+            <div id="receiverDirectDetails" class="receiver-details" hidden>
+              <div class="receiver-detail"><span><span data-i18n="static.034">直连码得</span></span><code id="receiverDeviceName"></code></div>
+              <div class="receiver-detail"><span><span data-i18n="static.035">设备编号</span></span><code id="receiverDeviceId"></code></div>
+            </div>
+            <div id="receiverDetails" class="receiver-details" hidden>
+              <div class="receiver-detail"><span><span data-i18n="static.036">热点名称</span></span><code id="receiverSsid"></code><button id="receiverCopySsid" class="small-button" type="button"><span data-i18n="static.037">复制</span></button></div>
+              <div class="receiver-detail"><span><span data-i18n="static.038">热点密码</span></span><code id="receiverPassword"></code><button id="receiverRevealPassword" class="small-button" type="button" aria-pressed="false"><span data-i18n="static.039">显示</span></button><button id="receiverCopyPassword" class="small-button" type="button"><span data-i18n="static.037">复制</span></button></div>
+              <div class="receiver-detail"><span><span data-i18n="static.040">桥接地址</span></span><code id="receiverAddress">http://192.168.4.1:8788</code><button id="receiverCopyAddress" class="small-button" type="button"><span data-i18n="static.037">复制</span></button></div>
+            </div>
+            <p id="receiverHelp" class="panel-intro receiver-help"><span data-i18n="static.041">独立接收端无需屏幕：通过 USB 插入电脑后，这里自动显示热点名称和密码。在码得内打开“齿轮 → 连接 → 接收端”，扫描并点选热点，再输入这里显示的密码并保存；无需退出到桌面设置。新固件的热点密码为 8 位数字，六位配对码随后单独核对。码得直接用 USB 插电脑时，无需填写热点信息。</span></p>
+          </section>
+
+        </div>
+        <div class="stack">
+          <section id="voiceSettings" class="panel info-panel" aria-labelledby="voice-settings-title">
+            <h2 id="voice-settings-title"><span data-i18n="static.042">语音输入设置</span></h2>
+            <p class="panel-intro"><span data-i18n="static.043">填写转写接口 URL、API Key 和模型名，即可使用兼容 OpenAI 音频转写接口的服务。密钥只保存在这台电脑，不写入码得。</span></p>
+            <p id="voiceKeyStatus" class="voice-settings-status" role="status"><span data-i18n="static.044">正在读取语音设置…</span></p>
+            <form id="voiceSettingsForm" class="voice-settings-form" autocomplete="off">
+              <div id="voicePresets" class="voice-presets"><span><span data-i18n="static.045">快速填写：</span></span><button class="small-button" type="button" data-voice-preset="openai"><span data-i18n="static.046">OpenAI</span></button><button class="small-button" type="button" data-voice-preset="siliconflow"><span data-i18n="static.047">硅基流动</span></button></div>
+              <div id="speechFields" class="voice-settings-form">
+              <div><label class="field-label" for="voiceEndpoint"><span data-i18n="static.048">转写接口 URL</span></label><input id="voiceEndpoint" class="secret-input" type="url" inputmode="url" spellcheck="false" placeholder="https://api.openai.com/v1/audio/transcriptions" required></div>
+              <div><label class="field-label" for="openaiKey"><span data-i18n="static.049">API Key</span></label><input id="openaiKey" class="secret-input" type="password" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="首次填写；留空表示保持已保存的密钥" data-i18n-placeholder="static.050"></div>
+              <div><label class="field-label" for="voiceModel"><span data-i18n="static.051">模型名</span></label><input id="voiceModel" class="secret-input" type="text" spellcheck="false" placeholder="gpt-transcribe" required></div>
+              </div>
+              <div class="voice-settings-actions"><button id="saveOpenaiKey" class="primary-button" type="submit"><span data-i18n="static.052">保存语音设置</span></button><button id="clearOpenaiKey" class="small-button" type="button"><span data-i18n="static.053">清除 API Key</span></button></div>
+              <p id="voiceSettingsMessage" class="voice-settings-message" role="status" aria-live="polite"></p>
+
+            </form>
+            <p id="voiceProtocolHelp" class="panel-intro"><span data-i18n="static.054">URL 请填写完整的音频转写地址，通常以 /v1/audio/transcriptions 结尾。仅兼容聊天接口的服务不一定支持语音转写。</span></p>
+          </section>
+
+          <section id="tunnel" class="panel info-panel" aria-labelledby="tunnel-title">
+            <div class="panel-head pairing-head">
+              <div><h2 id="tunnel-title"><span data-i18n="static.055">公网接入</span></h2><p class="panel-intro"><span data-i18n="static.056">码得可通过公网 HTTPS 地址连接桥接器。只有码得通信接口会通过该地址开放；电脑管理页仍只能在本机打开。</span></p></div>
+              <div class="pairing-actions"><button id="tunnelStartButton" class="small-button confirm" type="button"><span data-i18n="static.057">开启穿透</span></button><button id="tunnelStopButton" class="small-button" type="button" hidden><span data-i18n="static.058">关闭穿透</span></button></div>
+            </div>
+            <form id="tunnelSettingsForm" class="tunnel-settings-form" autocomplete="off">
+              <div><label class="field-label" for="tunnelMode"><span data-i18n="static.059">接入方式</span></label><select id="tunnelMode" class="secret-input"><option value="quick" data-i18n="static.060">Cloudflare 临时地址</option><option value="named" data-i18n="static.061">Cloudflare 固定域名</option><option value="tailscale" data-i18n="static.062">Tailscale Funnel 固定地址</option><option value="ngrok" data-i18n="static.063">ngrok</option><option value="oray" data-i18n="static.064">花生壳 HTTPS 映射</option></select></div>
+              <div class="tunnel-service-guide" aria-labelledby="tunnelOfficialTitle">
+                <div class="tunnel-service-guide-head"><strong id="tunnelOfficialTitle" data-i18n="tunnel.official.title">官方入口</strong><span id="tunnelServiceName"></span></div>
+                <div id="tunnelOfficialLinks" class="tunnel-official-links" role="group" aria-label="官方入口" data-i18n-aria-label="tunnel.official.title"></div>
+                <p id="tunnelModeHelp" class="panel-intro"></p>
+              </div>
+              <div id="tunnelNamedFields" class="tunnel-named-fields" hidden>
+                <div><label class="field-label" for="tunnelHostname"><span data-i18n="static.065">公网 HTTPS 地址</span></label><input id="tunnelHostname" class="secret-input" type="url" inputmode="url" spellcheck="false" placeholder="https://vibe.example.com"></div>
+                <div><label class="field-label" for="tunnelToken"><span data-i18n="static.066">Cloudflare Tunnel 令牌</span></label><input id="tunnelToken" class="secret-input" type="password" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="首次填写；留空表示保持已保存的令牌" data-i18n-placeholder="static.067"></div>
+                <p id="tunnelTokenStatus" class="panel-intro"></p>
+              </div>
+              <div id="tunnelNgrokFields" class="tunnel-named-fields" hidden>
+                <div><label class="field-label" for="tunnelNgrokHostname"><span data-i18n="static.068">ngrok HTTPS 地址（可选）</span></label><input id="tunnelNgrokHostname" class="secret-input" type="url" inputmode="url" spellcheck="false" placeholder="留空由 ngrok 分配；或填写已预留域名" data-i18n-placeholder="static.069"></div>
+                <div><label class="field-label" for="tunnelNgrokToken"><span data-i18n="static.070">ngrok Authtoken</span></label><input id="tunnelNgrokToken" class="secret-input" type="password" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="首次填写；留空保持已保存的令牌" data-i18n-placeholder="static.071"></div>
+                <p id="tunnelNgrokTokenStatus" class="panel-intro"></p>
+              </div>
+              <div id="tunnelOrayFields" class="tunnel-named-fields" hidden>
+                <div><label class="field-label" for="tunnelOrayHostname"><span data-i18n="static.072">花生壳 HTTPS 地址</span></label><input id="tunnelOrayHostname" class="secret-input" type="url" inputmode="url" spellcheck="false" placeholder="https://your-domain.vicp.fun"></div>
+                <div><label class="field-label" for="tunnelOrayKey"><span data-i18n="static.073">花生壳 API Key</span></label><input id="tunnelOrayKey" class="secret-input" type="password" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="首次填写；留空保持已保存的密钥" data-i18n-placeholder="static.074"></div>
+                <p id="tunnelOrayKeyStatus" class="panel-intro"></p>
+              </div>
+              <button id="tunnelSaveButton" class="small-button" type="submit"><span data-i18n="static.075">保存接入设置</span></button>
+            </form>
+            <p id="tunnelStatus" class="pairing-state" role="status" aria-live="polite"><span data-i18n="static.076">正在读取公网接入状态…</span></p>
+            <div id="tunnelAddressRow" class="tunnel-address-row" hidden><code id="tunnelAddress"></code><button id="tunnelCopyButton" class="small-button" type="button"><span data-i18n="static.077">复制地址</span></button></div>
+            <p class="panel-intro"><span data-i18n="static.078">公网方式均只转发码得通信接口</span> <code>http://127.0.0.1:8788</code><span data-i18n="static.079">。配对时仍须在电脑和码得核对接入地址与六位码。</span></p>
+          </section>
+
+          <section id="connections" class="panel info-panel" aria-labelledby="connections-title"><h2 id="connections-title"><span data-i18n="static.080">连接状态</span></h2><p class="panel-intro"><span data-i18n="static.081">电脑桥接、码得控制与独立语音能力。</span></p><div id="connectionRows" class="info-rows"></div></section>
+
+        </div>
+      </div>
+    </main>
+    <footer class="footer"><span><span data-i18n="static.082">码得 · 多助手桥接</span></span><span id="lastUpdated"><span data-i18n="static.083">等待首次同步</span></span></footer>
+  </div>
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+  <div id="pairingOverlay" class="pairing-overlay" hidden>
+    <section class="pairing-dialog" role="dialog" aria-modal="true" aria-labelledby="pairingDialogTitle" aria-describedby="pairingDialogDescription">
+      <div class="pairing-dialog-top"><div><span class="section-kicker"><span data-i18n="static.084">设备请求连接</span></span><h2 id="pairingDialogTitle"><span data-i18n="static.085">确认码得配对</span></h2></div><button id="pairingDismissButton" class="icon-button" type="button" title="稍后处理" aria-label="稍后处理" data-i18n-title="static.086" data-i18n-aria-label="static.086">×</button></div>
+      <p id="pairingDialogDescription"><span data-i18n="static.087">请核对下方数字是否与码得显示的一致。只有你确认后，这台设备才能控制电脑上的编程助手。</span></p>
+      <p id="pairingEndpoint" class="pairing-endpoint"></p>
+      <strong id="pairingCode" class="pairing-code" aria-label="配对验证码" data-i18n-aria-label="static.088"><span data-i18n="static.089">000000</span></strong>
+      <span id="pairingRemaining" class="pairing-remaining"></span>
+      <div class="pairing-dialog-actions"><button id="pairingRejectButton" class="small-button" type="button"><span data-i18n="static.090">拒绝连接</span></button><button id="pairingConfirmButton" class="primary-button" type="button"><span data-i18n="static.091">数字一致，确认连接</span></button></div>
+    </section>
+  </div>
+  <script type="module" src="/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,4 @@
+# Keep all application logs off the CDC port used by the relay protocol.
+CONFIG_ESP_CONSOLE_UART_DEFAULT=y
+CONFIG_ESP_CONSOLE_SECONDARY_NONE=y
+CONFIG_ESP_CONSOLE_UART_BAUDRATE=115200

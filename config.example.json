@@ -1,0 +1,20 @@
+{
+  "port": 8787,
+  "devicePort": 8788,
+  "defaultProject": "demo",
+  "defaultProvider": "codex",
+  "codexModel": "gpt-6-astra",
+  "projects": [
+    {
+      "id": "demo",
+      "label": "演示项目",
+      "path": "./demo-project"
+    }
+  ],
+  "workbuddy": {
+    "allowUnscopedDispatch": false
+  },
+  "plugins": [],
+  "disabledPlugins": [],
+  "pluginSettings": {}
+}

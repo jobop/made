@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#0b1518">
+  <title data-i18n="static.092">助手 · 码得</title>
+  <link rel="icon" type="image/png" sizes="112x112" href="/made-icon.png">
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body data-page="assistants">
+  <div class="page-glow" aria-hidden="true"></div>
+  <div class="app">
+    <header class="topbar">
+      <a class="brand" href="/" aria-label="码得大盘" data-i18n-aria-label="static.002">
+        <span class="brand-mark" aria-hidden="true"><img src="/made-icon.png" alt="" width="112" height="112"></span>
+        <span><span class="brand-name"><span data-i18n="static.003">码得</span></span><span class="brand-sub"><span data-i18n="static.004">made · CODING COMPANION</span></span></span>
+      </a>
+      <nav class="topnav" aria-label="页面导航" data-i18n-aria-label="static.005"><a href="/"><span data-i18n="static.006">大盘</span></a><a class="active" aria-current="page" href="/assistants.html"><span data-i18n="static.007">助手</span></a><a href="/tasks.html"><span data-i18n="static.008">任务</span></a></nav>
+      <div class="language-picker"><label for="languageSelect" data-i18n="language.label">语言</label><select id="languageSelect" aria-label="界面语言" data-i18n-aria-label="language.label"><option value="zh-CN">简体中文</option><option value="en">English</option></select></div>
+      <div class="top-actions">
+        <span id="headerConnection" class="connection-pill"><span class="dot"></span><span><span data-i18n="static.009">正在连接</span></span></span>
+        <button id="refreshButton" class="icon-button" type="button" title="刷新状态" aria-label="刷新状态" data-i18n-title="static.010" data-i18n-aria-label="static.010"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M20 11a8 8 0 1 0-2.3 6.1"/><path d="M20 5v6h-6"/></svg></button>
+      </div>
+    </header>
+
+    <main id="top">
+      <section class="hero" aria-labelledby="hero-title">
+        <div><span class="eyebrow"><span data-i18n="static.093">DESKTOP AGENTS · MODEL SETTINGS</span></span><h1 id="hero-title"><span data-i18n="static.094">你的助手，</span><em><span data-i18n="static.095">各司其职。</span></em></h1><p class="hero-desc"><span data-i18n="static.096">查看已安装的编程助手，并为支持模型配置的助手分别选择模型。安装插件并重启桥接器后，它会自动出现在这里。</span></p></div>
+      </section>
+      <div class="dashboard-layout assistants-layout">
+        <div class="stack">
+          <section class="panel info-panel providers-panel" aria-labelledby="providers-title"><h2 id="providers-title"><span data-i18n="static.097">编程助手</span></h2><p class="panel-intro"><span data-i18n="static.098">当前电脑上可用的执行入口。</span></p><div id="providerGrid" class="provider-grid"></div></section>
+        </div>
+        <div class="stack">
+          <section id="modelSettings" class="panel info-panel" aria-labelledby="model-settings-title">
+            <h2 id="model-settings-title"><span data-i18n="static.099">编程助手模型</span></h2>
+            <p class="panel-intro"><span data-i18n="static.100">为支持此功能的助手分别选择模型；保存后从下一条指令开始生效。语音识别模型在“大盘”中设置。</span></p>
+            <form id="modelSettingsForm" class="voice-settings-form" autocomplete="off">
+              <div id="modelPluginFields" class="voice-settings-form">
+              <div><label class="field-label" for="codexModel"><span data-i18n="static.101">Codex</span></label><input id="codexModel" class="secret-input" type="text" spellcheck="false" autocapitalize="off" placeholder="gpt-6-astra" required><p class="panel-intro"><span data-i18n="static.102">当前电脑账号已验证 gpt-6-astra 可用。</span></p></div>
+              <div><label class="field-label" for="cursorModel"><span data-i18n="static.103">Cursor</span></label><input id="cursorModel" class="secret-input" type="text" spellcheck="false" autocapitalize="off" placeholder="留空则使用 Cursor 当前默认模型" data-i18n-placeholder="static.104"></div>
+              <div><label class="field-label" for="qoderModel"><span data-i18n="static.105">Qoder</span></label><input id="qoderModel" class="secret-input" type="text" spellcheck="false" autocapitalize="off" placeholder="留空则使用 Qoder 当前默认模型" data-i18n-placeholder="static.106"></div>
+              </div>
+              <div class="voice-settings-actions"><button id="saveModels" class="primary-button" type="submit"><span data-i18n="static.107">保存模型选择</span></button></div>
+              <p id="modelSettingsMessage" class="voice-settings-message" role="status" aria-live="polite"></p>
+            </form>
+            <p id="modelPluginHelp" class="panel-intro"><span data-i18n="static.108">模型名称需由对应助手账号支持。</span></p>
+          </section>
+        </div>
+      </div>
+    </main>
+    <footer class="footer"><span><span data-i18n="static.082">码得 · 多助手桥接</span></span><span id="lastUpdated"><span data-i18n="static.083">等待首次同步</span></span></footer>
+  </div>
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+  <div id="pairingOverlay" class="pairing-overlay" hidden>
+    <section class="pairing-dialog" role="dialog" aria-modal="true" aria-labelledby="pairingDialogTitle" aria-describedby="pairingDialogDescription">
+      <div class="pairing-dialog-top"><div><span class="section-kicker"><span data-i18n="static.084">设备请求连接</span></span><h2 id="pairingDialogTitle"><span data-i18n="static.085">确认码得配对</span></h2></div><button id="pairingDismissButton" class="icon-button" type="button" title="稍后处理" aria-label="稍后处理" data-i18n-title="static.086" data-i18n-aria-label="static.086">×</button></div>
+      <p id="pairingDialogDescription"><span data-i18n="static.087">请核对下方数字是否与码得显示的一致。只有你确认后，这台设备才能控制电脑上的编程助手。</span></p>
+      <strong id="pairingCode" class="pairing-code" aria-label="配对验证码" data-i18n-aria-label="static.088"><span data-i18n="static.089">000000</span></strong>
+      <span id="pairingRemaining" class="pairing-remaining"></span>
+      <div class="pairing-dialog-actions"><button id="pairingRejectButton" class="small-button" type="button"><span data-i18n="static.090">拒绝连接</span></button><button id="pairingConfirmButton" class="primary-button" type="button"><span data-i18n="static.091">数字一致，确认连接</span></button></div>
+    </section>
+  </div>
+  <script type="module" src="/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,18 @@
+menu "Vibe Wi-Fi fallback"
+
+    config VIBE_WIFI_SSID
+        string "Fallback Wi-Fi SSID (leave empty to use saved credentials)"
+        default ""
+        help
+            Used only when no credentials have been saved through vibe_wifi
+            and no ESP-IDF STA configuration already exists in Wi-Fi NVS.
+
+    config VIBE_WIFI_PASSWORD
+        string "Fallback Wi-Fi password"
+        default ""
+        help
+            Leave empty for an open network. For WPA2/WPA3, use 8 to 63
+            characters. This value is stored in local sdkconfig, so keep a
+            configured sdkconfig with credentials out of shared repositories.
+
+endmenu

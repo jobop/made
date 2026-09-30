@@ -1,0 +1,19 @@
+# 本机配置（可能含令牌，不入库；模板见 config.example.json）
+config.local.json
+
+# 运行时状态：任务记录、会话、语音设置等
+state/
+
+# 动态工作目录：每个任务会话的代码工作区
+workspaces/
+
+# 演示项目（本地生成，非源码）
+demo-project/
+
+# 依赖与系统文件
+node_modules/
+.DS_Store
+*.log
+
+# WorkBuddy 工作区数据（会话记忆等）
+.workbuddy/

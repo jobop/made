@@ -1,0 +1,49 @@
+
+#include "mock.hpp"
+#include "../../vibe_pairing.cpp"
+int main() {
+ using namespace vibe_pairing;
+ const std::string A(64,'a'),B(64,'b'),C(64,'c'),D(64,'d');
+ nvs={{"mode","3"},{"token",A},{"bridge","pc_a"},{"url","http://192.168.1.20:8788"},{"rx_token",B},{"rx_bridge","pc_b"}};
+ initialize(); assert(snapshot().access_mode==AccessMode::UsbDirect); assert(snapshot().token.empty());
+ begin_foreground_connection(); assert(!authorized_for_foreground()); tick();
+ assert(authorized_for_foreground()); assert(vibe_usb::gate==vibe_usb::epoch); assert(vibe_usb::gate_bearer=="Bearer "+B);
+ assert(vibe_usb::verify_calls==2); assert(snapshot().token==B); assert(nvs["usb_token"]==B);
+ assert(nvs["token"]==A && nvs["url"]=="http://192.168.1.20:8788");
+ assert(network_http_calls==0 && vibe_wifi::reads==0);
+ std::cout<<"PASS: empty USB slot checks both candidates by HMAC, never routes to network\n";
+ begin_foreground_connection(); assert(!authorized_for_foreground()); assert(vibe_usb::gate==UINT32_MAX); tick(); assert(authorized_for_foreground());
+ vibe_usb::computer_bridge="pc_c"; vibe_usb::computer_token=C; ++vibe_usb::epoch;
+ assert(!authorized_for_foreground()); tick();
+ assert(snapshot().phase==Phase::WaitingApproval); assert(!authorized_for_foreground()); assert(nvs["usb_token"]==B);
+ assert(vibe_usb::last_code.size()==6); for(char ch:vibe_usb::last_code) assert(ch>='0'&&ch<='9');
+ vibe_usb::approve=true; tick(); assert(authorized_for_foreground()); assert(nvs["usb_token"]==C); assert(vibe_usb::gate_bearer=="Bearer "+C);
+ assert(nvs["rx_token"]==B&&nvs["token"]==A&&nvs["url"]=="http://192.168.1.20:8788");
+ std::cout<<"PASS: hotplug revokes authorization and a new PC needs six-digit approval\n";
+ nvs["rx_bridge"]="pc_c"; nvs["rx_token"]=C; assert(save(kUsbUrl,D,"pc_c"));
+ assert(nvs["usb_token"]==D&&nvs["rx_token"]==D&&nvs["token"]==A);
+ forget(); assert(!nvs.count("usb_token")&&!nvs.count("rx_token")&&nvs["token"]==A&&nvs.count("url"));
+ std::cout<<"PASS: refresh/revocation sync only slots belonging to the same PC\n";
+ nvs["usb_token"]=C; nvs["usb_bridge"]="pc_c"; begin_foreground_connection();
+ vibe_usb::during_request=[] { suspend_foreground(); }; tick(); assert(!authorized_for_foreground()); assert(vibe_usb::gate==UINT32_MAX);
+ tick(); assert(!authorized_for_foreground());
+ std::cout<<"PASS: background transition during verification cannot authorize\n";
+ begin_foreground_connection(); tick(); assert(authorized_for_foreground());
+ begin_foreground_connection(); vibe_usb::during_request=[] { assert(use_automatic_discovery()); }; tick();
+ assert(!authorized_for_foreground()); assert(vibe_usb::gate==UINT32_MAX); apply_pending_access();
+ assert(snapshot().access_mode==AccessMode::Automatic&&snapshot().token.empty());
+ assert(use_receiver()); assert(use_usb_direct()); apply_pending_access();
+ assert(snapshot().access_mode==AccessMode::UsbDirect&&nvs["mode"]=="3");
+ std::cout<<"PASS: pending mode switches apply offline and cannot revive old authorization\n";
+ begin_foreground_connection(); vibe_usb::computer_bridge="pc_d"; vibe_usb::computer_token=D; ++vibe_usb::epoch; tick();
+ assert(snapshot().phase==Phase::WaitingApproval);
+ vibe_usb::during_request=[] { ++vibe_usb::epoch; }; tick();
+ assert(!authorized_for_foreground()); assert(nvs["usb_token"]==C);
+ tick(); assert(snapshot().phase==Phase::WaitingApproval); assert(!authorized_for_foreground());
+ std::cout<<"PASS: connection change during approval rejects stale pairing response\n";
+ vibe_usb::computer_bridge="pc_c"; vibe_usb::computer_token=D; ++vibe_usb::epoch; tick();
+ assert(snapshot().phase==Phase::WaitingApproval&&!authorized_for_foreground()); assert(nvs["usb_token"]==C);
+ std::cout<<"PASS: matching bridge ID with invalid HMAC cannot restore authorization\n";
+ assert(network_http_calls==0&&vibe_wifi::reads==0);
+ std::cout<<"7 security scenarios passed\n";
+}

@@ -1,0 +1,10 @@
+menu "Made receiver"
+config VIBE_RECEIVER_UART_TRANSPORT
+    bool "Use UART0 through a USB-to-serial adapter"
+    depends on IDF_TARGET_ESP32C3
+    default n
+    help
+        For ESP32-C3 development boards whose USB connector uses a WCH
+        USB-to-UART adapter. Protocol uses UART0 at 921600 baud, TX GPIO21,
+        RX GPIO20. Select console NONE so logs do not share this transport.
+endmenu
