@@ -1615,16 +1615,23 @@ void VibeCoding::themeSyncCallback(lv_event_t *event)
     if (!self) return;
     const auto pairing = vibe_pairing::snapshot();
     std::string base = !pairing.url.empty() ? pairing.url : pairing.manual_url;
-    if (base.empty()) {
+    const bool usb_mode = pairing.access_mode == vibe_pairing::AccessMode::UsbDirect;
+    if (!usb_mode && base.empty()) {
         if (self->theme_status_label_) lv_label_set_text(self->theme_status_label_, T("尚未连接电脑，无法同步"));
         return;
     }
+    // USB 直连走串口帧转发（无需局域网）；Wi-Fi/接收器模式走 HTTP。
+    struct SyncArgs {
+        bool via_usb;
+        std::string base;
+    };
     if (xTaskCreate([](void *arg) {
-            auto *url = static_cast<std::string *>(arg);
-            (void)vibe_theme::syncFromBridge(*url);
-            delete url;
+            auto *args = static_cast<SyncArgs *>(arg);
+            if (args->via_usb) (void)vibe_theme::syncOverUsb();
+            else (void)vibe_theme::syncFromBridge(args->base);
+            delete args;
             vTaskDelete(nullptr);
-        }, "vibe_theme_sync", 12288, new std::string(base), 3, nullptr) != pdPASS) {
+        }, "vibe_theme_sync", 12288, new SyncArgs{usb_mode, base}, 3, nullptr) != pdPASS) {
         if (self->theme_status_label_) lv_label_set_text(self->theme_status_label_, T("同步任务启动失败"));
     }
 }

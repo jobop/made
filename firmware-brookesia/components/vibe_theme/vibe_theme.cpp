@@ -3,6 +3,7 @@
 #include <dirent.h>
 #include <sys/stat.h>
 #include <cstdlib>
+#include <functional>
 #include <unistd.h>
 #include <atomic>
 #include <mutex>
@@ -15,6 +16,9 @@
 #include "esp_log.h"
 #include "nvs.h"
 
+#include "vibe_pairing.hpp"
+#include "vibe_usb.hpp"
+
 namespace vibe_theme {
 namespace {
 
@@ -22,6 +26,7 @@ constexpr const char *kTag = "vibe_theme";
 constexpr const char *kRoot = "/spiffs/themes";
 constexpr const char *kNvsNamespace = "vibe_theme";
 constexpr const char *kNvsKey = "active";
+constexpr size_t kUsbResponseLimit = 256 * 1024;  // 与 vibe_usb kMaxResponse 对齐（锁屏背景最大 ~150KB）
 
 Palette defaults() {
     return Palette{
@@ -273,50 +278,15 @@ SyncStatus syncStatus() {
     return g_sync;
 }
 
-esp_err_t syncFromBridge(const std::string &base_url) {
-    {
-        std::lock_guard<std::mutex> lock(g_sync_mutex);
-        if (g_sync.state == SyncState::Running) return ESP_ERR_INVALID_STATE;
-        g_sync = {SyncState::Running, "连接电脑…"};
-    }
-    auto finish = [&](SyncState state, const std::string &message) {
-        std::lock_guard<std::mutex> lock(g_sync_mutex);
-        g_sync = {state, message};
-    };
-    std::string base = base_url;
-    while (!base.empty() && base.back() == '/') base.pop_back();
+// 传输抽象：GET 一个路径，返回响应体。HTTP（Wi-Fi/接收器）与 USB 串口帧两种实现。
+using Fetcher = std::function<bool(const std::string &path, std::string &out)>;
 
-    // 1) 列出电脑上的主题。
-    std::string list_url = base + "/api/themes";
-    esp_http_client_config_t config = {};
-    config.url = list_url.c_str();
-    config.timeout_ms = 8000;
-    esp_http_client_handle_t client = esp_http_client_init(&config);
-    if (client == nullptr) {
-        finish(SyncState::Failed, "无法连接电脑");
-        return ESP_FAIL;
-    }
+// 共享安装流程：列表 -> 清单 -> 逐文件落盘。
+int installThemes(const Fetcher &fetch) {
     std::string body;
-    if (esp_http_client_open(client, 0) != ESP_OK) {
-        esp_http_client_cleanup(client);
-        finish(SyncState::Failed, "无法连接电脑");
-        return ESP_FAIL;
-    }
-    esp_http_client_fetch_headers(client);
-    char buffer[1024];
-    int read = 0;
-    while ((read = esp_http_client_read(client, buffer, sizeof(buffer))) > 0) body.append(buffer, read);
-    esp_http_client_close(client);
-    esp_http_client_cleanup(client);
-    if (body.empty()) {
-        finish(SyncState::Failed, "电脑返回为空");
-        return ESP_FAIL;
-    }
+    if (!fetch("/api/themes", body) || body.empty()) return -1;
     cJSON *list = cJSON_Parse(body.c_str());
-    if (list == nullptr) {
-        finish(SyncState::Failed, "电脑返回格式错误");
-        return ESP_FAIL;
-    }
+    if (list == nullptr) return -1;
     const int count = cJSON_GetArraySize(list);
     int installed = 0;
     for (int i = 0; i < count; ++i) {
@@ -328,21 +298,8 @@ esp_err_t syncFromBridge(const std::string &base_url) {
             std::lock_guard<std::mutex> lock(g_sync_mutex);
             g_sync.message = "下载 " + name + "…";
         }
-        // 2) 拉取清单。
-        esp_http_client_config_t manifest_cfg = {};
-        manifest_cfg.url = (base + "/api/themes/" + name).c_str();
-        manifest_cfg.timeout_ms = 8000;
-        esp_http_client_handle_t manifest_client = esp_http_client_init(&manifest_cfg);
         std::string manifest;
-        if (manifest_client != nullptr &&
-            esp_http_client_open(manifest_client, 0) == ESP_OK) {
-            esp_http_client_fetch_headers(manifest_client);
-            int got = 0;
-            while ((got = esp_http_client_read(manifest_client, buffer, sizeof(buffer))) > 0)
-                manifest.append(buffer, got);
-            esp_http_client_close(manifest_client);
-        }
-        if (manifest_client != nullptr) esp_http_client_cleanup(manifest_client);
+        if (!fetch("/api/themes/" + name, manifest)) continue;
         cJSON *manifest_json = cJSON_Parse(manifest.c_str());
         const cJSON *files = manifest_json == nullptr ? nullptr
                                                       : cJSON_GetObjectItemCaseSensitive(manifest_json, "files");
@@ -350,41 +307,94 @@ esp_err_t syncFromBridge(const std::string &base_url) {
             if (manifest_json != nullptr) cJSON_Delete(manifest_json);
             continue;
         }
-        // 3) 逐文件下载。
         bool ok = true;
         const int file_count = cJSON_GetArraySize(files);
         for (int f = 0; f < file_count && ok; ++f) {
             const cJSON *file_item = cJSON_GetArrayItem(files, f);
             if (!cJSON_IsString(file_item) || file_item->valuestring == nullptr) continue;
             const std::string filename = file_item->valuestring;
-            const std::string url = base + "/api/themes/" + name + "/files/" + filename;
-            esp_http_client_config_t file_cfg = {};
-            file_cfg.url = url.c_str();
-            file_cfg.timeout_ms = 15000;
-            esp_http_client_handle_t file_client = esp_http_client_init(&file_cfg);
-            if (file_client == nullptr || esp_http_client_open(file_client, 0) != ESP_OK) {
-                if (file_client != nullptr) esp_http_client_cleanup(file_client);
+            std::string content;
+            if (!fetch("/api/themes/" + name + "/files/" + filename, content) ||
+                content.empty() ||
+                saveFile(name, filename,
+                         reinterpret_cast<const uint8_t *>(content.data()), content.size()) != ESP_OK) {
                 ok = false;
-                break;
             }
-            esp_http_client_fetch_headers(file_client);
-            std::vector<uint8_t> content;
-            int got = 0;
-            while ((got = esp_http_client_read(file_client, buffer, sizeof(buffer))) > 0)
-                content.insert(content.end(), buffer, buffer + got);
-            esp_http_client_close(file_client);
-            esp_http_client_cleanup(file_client);
-            if (saveFile(name, filename, content.data(), content.size()) != ESP_OK) ok = false;
         }
         if (manifest_json != nullptr) cJSON_Delete(manifest_json);
         if (ok) ++installed;
     }
     cJSON_Delete(list);
+    return installed;
+}
+
+bool httpFetch(const std::string &base, const std::string &path, std::string &out) {
+    esp_http_client_config_t config = {};
+    config.url = (base + path).c_str();
+    config.timeout_ms = 15000;
+    esp_http_client_handle_t client = esp_http_client_init(&config);
+    if (client == nullptr) return false;
+    bool ok = false;
+    if (esp_http_client_open(client, 0) == ESP_OK) {
+        esp_http_client_fetch_headers(client);
+        char buffer[1024];
+        int read = 0;
+        while ((read = esp_http_client_read(client, buffer, sizeof(buffer))) > 0)
+            out.append(buffer, read);
+        esp_http_client_close(client);
+        ok = true;
+    }
+    esp_http_client_cleanup(client);
+    return ok;
+}
+
+bool usbFetch(const std::string &path, std::string &out) {
+    const auto pairing = vibe_pairing::snapshot();
+    if (pairing.token.empty()) return false;
+    const std::string authorization = "Bearer " + pairing.token;
+    int status = 0;
+    return vibe_usb::request(path, false, authorization, "", nullptr, 0,
+                             out, status, kUsbResponseLimit, 30000) == ESP_OK &&
+           status >= 200 && status < 300;
+}
+
+esp_err_t syncFromBridge(const std::string &base_url) {
+    {
+        std::lock_guard<std::mutex> lock(g_sync_mutex);
+        if (g_sync.state == SyncState::Running) return ESP_ERR_INVALID_STATE;
+        g_sync = {SyncState::Running, "连接电脑…"};
+    }
+    std::string base = base_url;
+    while (!base.empty() && base.back() == '/') base.pop_back();
+    const int installed = installThemes([&base](const std::string &path, std::string &out) {
+        return httpFetch(base, path, out);
+    });
     if (installed > 0) {
-        finish(SyncState::Done, "已安装 " + std::to_string(installed) + " 个主题");
+        std::lock_guard<std::mutex> lock(g_sync_mutex);
+        g_sync = {SyncState::Done, "已安装 " + std::to_string(installed) + " 个主题"};
         return ESP_OK;
     }
-    finish(SyncState::Failed, "电脑上没有新主题");
+    std::lock_guard<std::mutex> lock(g_sync_mutex);
+    g_sync = {SyncState::Failed, "无法连接电脑或没有新主题"};
+    return ESP_FAIL;
+}
+
+esp_err_t syncOverUsb() {
+    {
+        std::lock_guard<std::mutex> lock(g_sync_mutex);
+        if (g_sync.state == SyncState::Running) return ESP_ERR_INVALID_STATE;
+        g_sync = {SyncState::Running, "通过 USB 同步…"};
+    }
+    const int installed = installThemes([](const std::string &path, std::string &out) {
+        return usbFetch(path, out);
+    });
+    if (installed > 0) {
+        std::lock_guard<std::mutex> lock(g_sync_mutex);
+        g_sync = {SyncState::Done, "已安装 " + std::to_string(installed) + " 个主题"};
+        return ESP_OK;
+    }
+    std::lock_guard<std::mutex> lock(g_sync_mutex);
+    g_sync = {SyncState::Failed, "USB 同步失败：未配对或电脑上没有新主题"};
     return ESP_FAIL;
 }
 

@@ -59,6 +59,9 @@ esp_err_t remove(const std::string &name);
 // GET <base>/api/themes；GET <base>/api/themes/<name>；GET .../files/<file>
 esp_err_t syncFromBridge(const std::string &base_url);
 
+// USB 直连模式的同步：请求走 vibe_usb 串口帧（GET /api/themes…），其余同上。
+esp_err_t syncOverUsb();
+
 enum class SyncState { Idle, Running, Done, Failed };
 struct SyncStatus {
     SyncState state = SyncState::Idle;
