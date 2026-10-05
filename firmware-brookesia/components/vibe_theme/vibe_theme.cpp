@@ -17,9 +17,11 @@
 #include "esp_heap_caps.h"
 #include "esp_http_client.h"
 #include "esp_log.h"
+#include "esp_timer.h"
 #include "nvs.h"
 
 #include "vibe_pairing.hpp"
+#include "vibe_wifi.hpp"
 #include "vibe_usb.hpp"
 
 namespace vibe_theme {
@@ -208,19 +210,42 @@ bool fetchPathRetry(const std::string &base_url, const std::string &path, std::s
             out = std::move(result);
             return true;
         }
+        ESP_LOGW(kTag, "[retry] path=%s 第 %d 次尝试失败", path.c_str(), attempt + 1);
     }
+    ESP_LOGE(kTag, "[retry] path=%s 三次尝试均失败", path.c_str());
     return false;
+}
+
+// 网络模式（非 USB）先等 WiFi 就绪：开机到连上接收器/路由器需要 15~20s，
+// 过早发起请求必然失败（实测 TCP 直接被拒）。
+void waitForNetwork(const std::string &base_url) {
+    if (base_url.empty()) return;  // USB 模式无网络等待
+    for (int waited = 0; waited < 20000 && !vibe_wifi::station_connected(); waited += 400) {
+        {
+            std::lock_guard<std::mutex> lock(g_sync_mutex);
+            g_sync = {SyncState::Running, "等待网络连接…"};
+        }
+        vTaskDelay(pdMS_TO_TICKS(400));
+    }
 }
 
 bool fetchPath(const std::string &base_url, const std::string &path, std::string &out,
                const char *progress_label) {
+    const int64_t started = esp_timer_get_time();
     if (base_url.empty()) {
         const auto pairing = vibe_pairing::snapshot();
-        if (pairing.token.empty()) return false;
+        if (pairing.token.empty()) {
+            ESP_LOGW(kTag, "[fetch] USB 无配对令牌 path=%s", path.c_str());
+            return false;
+        }
         int status = 0;
-        return vibe_usb::request(path, false, "Bearer " + pairing.token, "", nullptr, 0,
-                                 out, status, kUsbResponseLimit, 30000) == ESP_OK &&
-               status >= 200 && status < 300;
+        const esp_err_t result = vibe_usb::request(path, false, "Bearer " + pairing.token, "",
+                                                   nullptr, 0, out, status, kUsbResponseLimit,
+                                                   30000);
+        ESP_LOGI(kTag, "[fetch] USB path=%s result=%s status=%d bytes=%zu %.1fs",
+                 path.c_str(), esp_err_to_name(result), status, out.size(),
+                 (esp_timer_get_time() - started) / 1000000.0);
+        return result == ESP_OK && status >= 200 && status < 300;
     }
     std::string base = base_url;
     while (!base.empty() && base.back() == '/') base.pop_back();
@@ -231,9 +256,13 @@ bool fetchPath(const std::string &base_url, const std::string &path, std::string
     config.timeout_ms = 35000;
     if (url.rfind("https://", 0) == 0) config.crt_bundle_attach = esp_crt_bundle_attach;
     esp_http_client_handle_t client = esp_http_client_init(&config);
-    if (client == nullptr) return false;
+    if (client == nullptr) {
+        ESP_LOGE(kTag, "[fetch] HTTP 客户端初始化失败 url=%s", url.c_str());
+        return false;
+    }
     esp_http_client_set_header(client, "Connection", "close");
     bool ok = false;
+    int http_status = -1;
     if (esp_http_client_open(client, 0) == ESP_OK) {
         const int64_t total = esp_http_client_fetch_headers(client) > 0
                                   ? esp_http_client_get_content_length(client)
@@ -255,10 +284,16 @@ bool fetchPath(const std::string &base_url, const std::string &path, std::string
                 }
             }
         }
+        http_status = esp_http_client_get_status_code(client);
         esp_http_client_close(client);
         ok = true;
+    } else {
+        ESP_LOGE(kTag, "[fetch] HTTP open 失败 url=%s", url.c_str());
     }
     esp_http_client_cleanup(client);
+    ESP_LOGI(kTag, "[fetch] HTTP path=%s ok=%d status=%d bytes=%zu %.1fs",
+             path.c_str(), ok, http_status, out.size(),
+             (esp_timer_get_time() - started) / 1000000.0);
     return ok;
 }
 
@@ -278,6 +313,7 @@ std::string soundPath() { return soundEnabledNvs() ? std::string(kSoundPath) : s
 std::string activeName() { return g_active; }
 
 esp_err_t fetchThemeList(const std::string &base_url, std::vector<ThemeInfo> &out) {
+    waitForNetwork(base_url);
     {
         std::lock_guard<std::mutex> lock(g_sync_mutex);
         g_sync = {SyncState::Running, base_url.empty() ? "经 USB 获取列表…" : "经网络获取列表…"};
@@ -310,6 +346,7 @@ esp_err_t fetchThemeList(const std::string &base_url, std::vector<ThemeInfo> &ou
         out.push_back(std::move(info));
     }
     cJSON_Delete(list);
+    ESP_LOGI(kTag, "[list] 桥接器返回 %zu 个主题", out.size());
     if (out.empty()) {
         std::lock_guard<std::mutex> lock(g_sync_mutex);
         g_sync = {SyncState::Failed, "电脑上还没有主题包"};
@@ -332,6 +369,7 @@ esp_err_t applyFromBridge(const std::string &name, const std::string &base_url) 
         std::lock_guard<std::mutex> lock(g_sync_mutex);
         g_sync = {state, message};
     };
+    waitForNetwork(base_url);
 
     if (name.empty()) {
         g_palette = defaults();

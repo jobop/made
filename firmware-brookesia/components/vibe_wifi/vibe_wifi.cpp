@@ -329,6 +329,8 @@ esp_err_t restoreSetupAccessPoint(std::unique_lock<std::mutex>& station_lock) {
 }
 } // namespace
 
+bool station_connected() { return connected.load(); }
+
 esp_err_t start() {
     if (started.load()) return ESP_OK;
     esp_err_t error = ensureStack();

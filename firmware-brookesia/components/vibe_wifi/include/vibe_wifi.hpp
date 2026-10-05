@@ -10,6 +10,9 @@ namespace vibe_wifi {
 
 // Call once after nvs_flash_init(). It starts a STA without waiting for a
 // connection and reuses any ESP-IDF Wi-Fi configuration already in NVS.
+// STA 当前是否已连接（含拿到 IP）。用于功能在发请求前等网络就绪。
+bool station_connected();
+
 esp_err_t start();
 
 // Optional entry point for a future Brookesia Settings screen. Credentials
