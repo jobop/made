@@ -381,7 +381,8 @@ static esp_err_t relay_request(httpd_req_t *req)
                          req->method == HTTP_POST ? "POST" : NULL;
     if (method == NULL ||
         (strncmp(req->uri, "/pair/", 6) != 0 &&
-         strncmp(req->uri, "/device/", 8) != 0)) {
+         strncmp(req->uri, "/device/", 8) != 0 &&
+         strncmp(req->uri, "/api/", 5) != 0)) {
         return send_error(req, 404, "接收端未提供此接口");
     }
     const size_t path_length = strnlen(req->uri, sizeof(req->uri));

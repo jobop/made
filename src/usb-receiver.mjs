@@ -252,7 +252,7 @@ export class UsbReceiverProtocol {
       }
       if (!['GET', 'POST'].includes(frame.method) ||
           typeof frame.path !== 'string' || frame.path.length > 512 ||
-          !/^\/(?:device|pair)\//.test(frame.path) ||
+          !/^\/(?:device|pair|api)\//.test(frame.path) ||
           /[\r\n\x00-\x1f\x7f#]/.test(frame.path) ||
           !limitedText(frame.authorization || '', 128) ||
           !limitedText(frame.contentType || '', 128) ||
