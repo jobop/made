@@ -364,6 +364,14 @@ static esp_err_t relay_response(httpd_req_t *req, uint32_t id, int64_t deadline)
             decoded_length > expected - received) return ESP_FAIL;
         if (httpd_resp_send_chunk(req, (const char *)decoded, decoded_length) != ESP_OK) return ESP_FAIL;
         received += decoded_length;
+        // 逐块 ACK 流控：电脑端收到 ack 才发下一块，防止 UART RX 环形缓冲溢出。
+        cJSON *ack = cJSON_CreateObject();
+        if (ack == NULL) return ESP_FAIL;
+        cJSON_AddStringToObject(ack, "type", "ack");
+        cJSON_AddNumberToObject(ack, "id", (double)id);
+        const bool ack_sent = serial_write_json(ack, deadline);
+        cJSON_Delete(ack);
+        if (!ack_sent) return ESP_FAIL;
     }
 }
 

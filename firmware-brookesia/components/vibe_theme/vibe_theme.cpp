@@ -286,7 +286,14 @@ bool fetchPath(const std::string &base_url, const std::string &path, std::string
         }
         http_status = esp_http_client_get_status_code(client);
         esp_http_client_close(client);
-        ok = true;
+        // 截断检测：中继链断流时连接提前关闭，收不满 Content-Length。
+        if (total > 0 && received != static_cast<size_t>(total)) {
+            ESP_LOGW(kTag, "[fetch] HTTP truncated path=%s got=%zu want=%lld",
+                     path.c_str(), received, (long long)total);
+            ok = false;
+        } else {
+            ok = true;
+        }
     } else {
         ESP_LOGE(kTag, "[fetch] HTTP open 失败 url=%s", url.c_str());
     }

@@ -1649,13 +1649,15 @@ void VibeCoding::themeSyncCallback(lv_event_t *event)
             const bool ok = (args->usb_mode
                                  ? vibe_theme::fetchThemeList("", list)
                                  : vibe_theme::fetchThemeList(args->base, list)) == ESP_OK;
+            ESP_LOGI("vibe_ui", "[task] list fetched ok=%d", ok);
+            args->self->theme_list_loading_.store(false);  // 先清标志：后续任何卡顿都不拖累 UI 状态
             {
                 std::lock_guard<std::mutex> lock(args->self->model_mutex_);
                 args->self->theme_live_list_ =
                     ok ? std::move(list) : std::vector<vibe_theme::ThemeInfo>{};
             }
+            ESP_LOGI("vibe_ui", "[task] list published");
             delete args;
-            args->self->theme_list_loading_.store(false);
             vTaskDelete(nullptr);
         }, "vibe_theme_list", 12288, new ListArgs{self, base, usb_mode}, 3, nullptr) != pdPASS) {
         self->theme_list_loading_.store(false);
@@ -1701,13 +1703,15 @@ void VibeCoding::showTheme(bool visible)
                         const bool ok = (args->usb_mode
                                              ? vibe_theme::fetchThemeList("", list)
                                              : vibe_theme::fetchThemeList(args->base, list)) == ESP_OK;
+                        ESP_LOGI("vibe_ui", "[task] list fetched ok=%d", ok);
+                        args->self->theme_list_loading_.store(false);  // 先清标志：后续任何卡顿都不拖累 UI 状态
                         {
                             std::lock_guard<std::mutex> lock(args->self->model_mutex_);
                             args->self->theme_live_list_ =
                                 ok ? std::move(list) : std::vector<vibe_theme::ThemeInfo>{};
                         }
+                        ESP_LOGI("vibe_ui", "[task] list published");
                         delete args;
-                        args->self->theme_list_loading_.store(false);
                         vTaskDelete(nullptr);
                     }, "vibe_theme_list", 12288, new ListArgs{this, base, usb_mode}, 3, nullptr) != pdPASS) {
                     theme_list_loading_.store(false);
@@ -1730,6 +1734,7 @@ void VibeCoding::renderThemes()
     if (loading) {
         if (theme_loading_since_ms_ == 0) theme_loading_since_ms_ = static_cast<int32_t>(lv_tick_get());
         else if (lv_tick_get() - theme_loading_since_ms_ > 45000) {
+            ESP_LOGW("vibe_ui", "[render] loading watchdog fired");
             theme_list_loading_.store(false);
             loading = false;
             theme_loading_since_ms_ = 0;
@@ -1739,20 +1744,27 @@ void VibeCoding::renderThemes()
     } else {
         theme_loading_since_ms_ = 0;
     }
+    std::vector<vibe_theme::ThemeInfo> themes;
+    {
+        std::lock_guard<std::mutex> lock(model_mutex_);
+        themes = theme_live_list_;
+    }
+    static bool logged_loading = false;
+    if (loading != logged_loading) {
+        logged_loading = loading;
+        ESP_LOGI("vibe_ui", "[render] loading=%d msg='%s' list=%zu", loading,
+                 sync.message.c_str(), themes.size());
+    }
     if (theme_status_label_) {
         std::string status = sync.message;
-        if (loading && status.empty()) status = T("正在获取主题列表…");
+        if (loading && status.empty())
+            status = T(themes.empty() ? "正在获取主题列表…" : "正在刷新列表…");
         lv_label_set_text(theme_status_label_, status.c_str());
     }
     // 应用成功后安排重启（LVGL 任务内创建一次性定时器）。
     if (theme_reboot_pending_.load() && !theme_reboot_started_.exchange(true)) {
         lv_timer_t *timer = lv_timer_create(themeRebootCallback, 1200, nullptr);
         lv_timer_set_repeat_count(timer, 1);
-    }
-    std::vector<vibe_theme::ThemeInfo> themes;
-    {
-        std::lock_guard<std::mutex> lock(model_mutex_);
-        themes = theme_live_list_;
     }
     std::string signature = vibe_theme::activeName() + "|" + std::to_string(themes.size()) +
                             "|" + std::to_string(loading ? 1 : 0) + "|" + sync.message;

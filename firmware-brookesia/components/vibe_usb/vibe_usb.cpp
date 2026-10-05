@@ -335,6 +335,12 @@ esp_err_t receive_response(uint32_t id, uint32_t request_epoch, std::string& res
         cJSON_Delete(frame);
         if (!good_chunk) return ESP_ERR_INVALID_RESPONSE;
         response.append(reinterpret_cast<const char*>(decoded), decoded_length);
+        // 逐块 ACK 流控：电脑端收到 ack 才发下一块，防止 UART RX 环形缓冲溢出。
+        char ack[48];
+        const int ack_length = std::snprintf(ack, sizeof(ack),
+            "{\"type\":\"ack\",\"id\":%" PRIu32 "}", id);
+        const esp_err_t ack_result = write_line(ack, static_cast<size_t>(ack_length), operation);
+        if (ack_result != ESP_OK) return ack_result;
     }
 }
 

@@ -174,6 +174,8 @@ export class UsbReceiverProtocol {
     this.responding = false;
     this.closed = false;
     this.pendingWork = Promise.resolve();
+    // 响应分块的逐块 ACK：接收端消化一块才发下一块，防止 UART 环形缓冲溢出。
+    this.ackWaiters = new Map();
   }
 
   feed(chunk) {
@@ -237,6 +239,14 @@ export class UsbReceiverProtocol {
       return;
     }
     if (!this.helloReceived) return;
+    if (frame.type === 'ack' && validId(frame.id)) {
+      const waiter = this.ackWaiters.get(frame.id);
+      if (waiter) {
+        this.ackWaiters.delete(frame.id);
+        waiter();
+      }
+      return;
+    }
     if (frame.type === 'bye' && this.peer.mode === 'direct' &&
         [undefined, 'direct'].includes(frame.mode)) {
       this.cancelCurrent();
@@ -378,9 +388,24 @@ export class UsbReceiverProtocol {
     for (let offset = 0; offset < bytes.length; offset += MAX_CHUNK) {
       await this.sendLine(JSON.stringify({ type: 'data', id,
         chunk: bytes.subarray(offset, offset + MAX_CHUNK).toString('base64') }));
+      await this.waitForAck(id);
     }
     await this.sendLine(JSON.stringify({ type: 'end', id }));
     this.onActivity();
+  }
+
+  waitForAck(id) {
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.ackWaiters.delete(id);
+        reject(new Error('USB ACK 超时'));
+      }, 15_000);
+      timer.unref?.();
+      this.ackWaiters.set(id, () => {
+        clearTimeout(timer);
+        resolve();
+      });
+    });
   }
 
   finish(current) {
@@ -395,6 +420,7 @@ export class UsbReceiverProtocol {
   dispose() {
     this.closed = true;
     this.cancelCurrent();
+    this.ackWaiters.clear();
     this.line = Buffer.alloc(0);
   }
 
