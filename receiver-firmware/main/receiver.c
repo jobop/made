@@ -379,10 +379,9 @@ static esp_err_t relay_request(httpd_req_t *req)
 {
     const char *method = req->method == HTTP_GET ? "GET" :
                          req->method == HTTP_POST ? "POST" : NULL;
-    if (method == NULL ||
-        (strncmp(req->uri, "/pair/", 6) != 0 &&
-         strncmp(req->uri, "/device/", 8) != 0 &&
-         strncmp(req->uri, "/api/", 5) != 0)) {
+    if (method == NULL) {
+        // 转发目标固定为本机 8788 设备 API，与 Wi-Fi 直连模式暴露的请求面
+        // 一致；不做路径白名单（热点密码即门槛）。卫生检查保留在桥接器侧。
         return send_error(req, 404, "接收端未提供此接口");
     }
     const size_t path_length = strnlen(req->uri, sizeof(req->uri));
