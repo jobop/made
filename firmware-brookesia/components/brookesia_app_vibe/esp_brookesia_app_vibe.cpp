@@ -1725,7 +1725,20 @@ void VibeCoding::renderThemes()
 {
     if (!theme_panel_ || lv_obj_has_flag(theme_panel_, LV_OBJ_FLAG_HIDDEN)) return;
     const auto sync = vibe_theme::syncStatus();
-    const bool loading = theme_list_loading_.load();
+    bool loading = theme_list_loading_.load();
+    // 看门狗：加载超过 45 秒强制结束，避免状态行永久卡住。
+    if (loading) {
+        if (theme_loading_since_ms_ == 0) theme_loading_since_ms_ = static_cast<int32_t>(lv_tick_get());
+        else if (lv_tick_get() - theme_loading_since_ms_ > 45000) {
+            theme_list_loading_.store(false);
+            loading = false;
+            theme_loading_since_ms_ = 0;
+            std::lock_guard<std::mutex> lock(model_mutex_);
+            theme_live_list_.clear();
+        }
+    } else {
+        theme_loading_since_ms_ = 0;
+    }
     if (theme_status_label_) {
         std::string status = sync.message;
         if (loading && status.empty()) status = T("正在获取主题列表…");
@@ -1742,7 +1755,7 @@ void VibeCoding::renderThemes()
         themes = theme_live_list_;
     }
     std::string signature = vibe_theme::activeName() + "|" + std::to_string(themes.size()) +
-                            "|" + std::to_string(loading ? 1 : 0);
+                            "|" + std::to_string(loading ? 1 : 0) + "|" + sync.message;
     for (const auto &theme : themes) signature += "|" + theme.name;
     if (signature == theme_rows_signature_) return;
     theme_rows_signature_ = signature;

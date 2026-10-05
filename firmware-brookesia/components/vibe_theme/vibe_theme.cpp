@@ -236,10 +236,25 @@ const LockAsset &lockAsset() { return g_lock; }
 std::string activeName() { return g_active; }
 
 esp_err_t fetchThemeList(const std::string &base_url, std::vector<ThemeInfo> &out) {
+    {
+        std::lock_guard<std::mutex> lock(g_sync_mutex);
+        g_sync = {SyncState::Running, base_url.empty() ? "经 USB 获取列表…" : "经网络获取列表…"};
+    }
     std::string body;
-    if (!fetchPath(base_url, "/api/themes", body)) return ESP_FAIL;
+    const esp_err_t fetch_result = fetchPath(base_url, "/api/themes", body) ? ESP_OK : ESP_FAIL;
+    if (fetch_result != ESP_OK) {
+        std::lock_guard<std::mutex> lock(g_sync_mutex);
+        g_sync = {SyncState::Failed, base_url.empty()
+                                            ? "USB 获取列表失败（未配对或未选 USB 直连）"
+                                            : "网络获取列表失败，请点重试"};
+        return fetch_result;
+    }
     cJSON *list = cJSON_Parse(body.c_str());
-    if (list == nullptr) return ESP_ERR_INVALID_STATE;
+    if (list == nullptr) {
+        std::lock_guard<std::mutex> lock(g_sync_mutex);
+        g_sync = {SyncState::Failed, "电脑返回格式错误"};
+        return ESP_ERR_INVALID_STATE;
+    }
     const int count = cJSON_GetArraySize(list);
     for (int i = 0; i < count; ++i) {
         const cJSON *item = cJSON_GetArrayItem(list, i);
@@ -253,7 +268,16 @@ esp_err_t fetchThemeList(const std::string &base_url, std::vector<ThemeInfo> &ou
         out.push_back(std::move(info));
     }
     cJSON_Delete(list);
-    return out.empty() ? ESP_ERR_NOT_FOUND : ESP_OK;
+    if (out.empty()) {
+        std::lock_guard<std::mutex> lock(g_sync_mutex);
+        g_sync = {SyncState::Failed, "电脑上还没有主题包"};
+        return ESP_ERR_NOT_FOUND;
+    }
+    {
+        std::lock_guard<std::mutex> lock(g_sync_mutex);
+        g_sync = {SyncState::Done, ""};
+    }
+    return ESP_OK;
 }
 
 esp_err_t applyFromBridge(const std::string &name, const std::string &base_url) {

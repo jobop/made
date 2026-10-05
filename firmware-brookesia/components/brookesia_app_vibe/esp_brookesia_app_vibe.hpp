@@ -301,6 +301,7 @@ private:
     std::atomic<bool> theme_list_loading_{false};
     std::atomic<bool> theme_reboot_pending_{false};
     std::atomic<bool> theme_reboot_started_{false};
+    int32_t theme_loading_since_ms_ = 0; // LVGL task only.
     lv_obj_t *power_panel_ = nullptr;
     lv_obj_t *power_timeout_button_ = nullptr;
     lv_obj_t *power_timeout_label_ = nullptr;
