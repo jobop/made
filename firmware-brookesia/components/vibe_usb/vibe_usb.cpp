@@ -471,7 +471,6 @@ esp_err_t request(const std::string& path, bool post, const std::string& authori
     response.clear();
     status = 0;
     if (path.size() > 512 || path.find('\0') != std::string::npos ||
-        (path.rfind("/device/", 0) != 0 && path.rfind("/pair/", 0) != 0) ||
         path.find('#') != std::string::npos || !valid_text(path.c_str(), 512) ||
         authorization.find('\0') != std::string::npos || !valid_text(authorization.c_str(), 128) ||
         !valid_text(content_type == nullptr ? "" : content_type, 128) || length > kMaxRequest ||

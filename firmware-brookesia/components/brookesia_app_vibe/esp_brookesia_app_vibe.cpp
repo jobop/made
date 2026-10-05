@@ -1656,7 +1656,6 @@ void VibeCoding::themeSyncCallback(lv_event_t *event)
             }
             delete args;
             args->self->theme_list_loading_.store(false);
-            args->self->theme_rows_signature_ = "";  // 触发 LVGL 任务重建
             vTaskDelete(nullptr);
         }, "vibe_theme_list", 12288, new ListArgs{self, base, usb_mode}, 3, nullptr) != pdPASS) {
         self->theme_list_loading_.store(false);
@@ -1709,7 +1708,6 @@ void VibeCoding::showTheme(bool visible)
                         }
                         delete args;
                         args->self->theme_list_loading_.store(false);
-                        args->self->theme_rows_signature_ = "";
                         vTaskDelete(nullptr);
                     }, "vibe_theme_list", 12288, new ListArgs{this, base, usb_mode}, 3, nullptr) != pdPASS) {
                     theme_list_loading_.store(false);
