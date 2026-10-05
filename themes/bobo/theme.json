@@ -1,5 +1,5 @@
 {
-  "title": "啵啵",
+  "title": "波波",
   "colors": {
     "accent": "E08BB8",
     "btn_normal": "585A85",
@@ -16,9 +16,15 @@
     "danger": "C05870",
     "lock_bg": "C9CDE8"
   },
-  "sound": { "file": "chime.wav" },
+  "sound": {
+    "file": "chime.wav"
+  },
   "lock": {
-    "icon": "icon.bin", "icon_w": 112, "icon_h": 112,
-    "bg": "bg.bin", "bg_w": 240, "bg_h": 320
+    "icon": "icon.bin",
+    "icon_w": 112,
+    "icon_h": 112,
+    "bg": "bg.bin",
+    "bg_w": 240,
+    "bg_h": 320
   }
 }

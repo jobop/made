@@ -50,3 +50,5 @@ themes/<名字>/
   尺寸在 theme.json 里声明；bg 建议与屏幕设计分辨率一致
 - **PNG 转 RGB565**：`python3 -c "from PIL import Image; import sys; im = Image.open(sys.argv[1]).convert('RGB'); open(sys.argv[2],'wb').write(b''.join(bytes(((r>>3)<<11)|((g>>2)<<5)|(b>>3)) for r,g,b in im.getdata()))" in.png out.bin`
 - 颜色缺省时回落到内置默认；恢复默认主题 = 清空全部主题缓存
+- **主题显示名（title）请使用常用汉字或英文**：设备内置中文字库覆盖
+  GB2312 常用字，生僻字（如「啵」）会显示为方框
