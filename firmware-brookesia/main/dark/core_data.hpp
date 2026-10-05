@@ -8,6 +8,9 @@
 #include "systems/base/esp_brookesia_base_context.hpp"
 #include "systems/phone/assets/esp_brookesia_phone_assets.h"
 #include "lvgl.h"
+#include "sdkconfig.h"
+#include "esp_err.h"
+#include "bsp/display.h"
 namespace esp_brookesia::systems::phone {
 
 constexpr uint32_t STYLESHEET_360_360_DARK_CORE_DISPLAY_BG_COLOR = 0x1A1A1A;
@@ -79,7 +82,7 @@ constexpr const char *STYLESHEET_360_360_DARK_CORE_INFO_DATA_NAME = "Default Dar
 
 constexpr base::Context::Data STYLESHEET_360_360_DARK_CORE_DATA = {
     .name = STYLESHEET_360_360_DARK_CORE_INFO_DATA_NAME,
-    .screen_size = gui::StyleSize::RECT(360, 360),
+    .screen_size = gui::StyleSize::RECT(BSP_LCD_H_RES, BSP_LCD_V_RES),
     .display = STYLESHEET_360_360_DARK_CORE_DISPLAY_DATA,
     .manager = STYLESHEET_360_360_DARK_CORE_MANAGER_DATA,
 };

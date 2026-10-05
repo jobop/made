@@ -5,6 +5,7 @@
  */
 #pragma once
 
+#include "sdkconfig.h"
 #include "systems/phone/widgets/app_launcher/esp_brookesia_app_launcher.hpp"
 
 // Reuse the Chinese font already linked for the round-screen app.
@@ -14,12 +15,22 @@ namespace esp_brookesia::systems::phone {
 
 constexpr AppLauncherIcon::Data STYLESHEET_360_360_DARK_APP_LAUNCHER_ICON_DATA = {
     .main = {
+#if CONFIG_BSP_BOARD_LCD_2_8
+        .size = gui::StyleSize::SQUARE(72),
+        .layout_row_pad = 2,
+#else
         .size = gui::StyleSize::SQUARE(120),
         .layout_row_pad = 5, // 95 px icon + 5 px gap + 20 px Chinese line fits 120 px.
+#endif
     },
     .image = {
+#if CONFIG_BSP_BOARD_LCD_2_8
+        .default_size = gui::StyleSize::SQUARE(52),
+        .press_size = gui::StyleSize::SQUARE(44),
+#else
         .default_size = gui::StyleSize::SQUARE(95),
         .press_size = gui::StyleSize::SQUARE(80),
+#endif
     },
     .label = {
         .text_font = gui::StyleFont::CUSTOM_SIZE(16, &font_puhui_16_4),
@@ -33,8 +44,13 @@ constexpr AppLauncherData STYLESHEET_360_360_DARK_APP_LAUNCHER_DATA = {
         .size = gui::StyleSize::RECT_PERCENT(100, 100),
     },
     .table = {
+#if CONFIG_BSP_BOARD_LCD_2_8
+        .default_num = 3,
+        .size = gui::StyleSize::RECT_PERCENT(100, 78),
+#else
         .default_num = 4,
         .size = gui::StyleSize::RECT_PERCENT(80, 70),
+#endif
     },
     .indicator = {
         .main_size = gui::StyleSize::RECT_W_PERCENT(100, 20),

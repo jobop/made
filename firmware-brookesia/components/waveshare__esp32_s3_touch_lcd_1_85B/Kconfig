@@ -66,6 +66,12 @@ menu "Board Support Package"
                 Mount point of the uSD card in the Virtual File System
 
     endmenu
+    config BSP_BOARD_LCD_2_8
+        bool "Waveshare ESP32-S3-Touch-LCD-2.8 (240x320)"
+        default n
+        help
+            Drive the rectangular 2.8 inch ST7789 panel and CST3530 or CST328 touch controller.
+
     menu "Display"
         config BSP_LCD_TRANS_QUEUE_DEPTH
             int "Set The depth of the SPI transmission task queue for the SPI screen"

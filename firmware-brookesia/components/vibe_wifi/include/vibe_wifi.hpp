@@ -49,6 +49,24 @@ ReceiverScanSnapshot receiver_scan_snapshot();
 // so we can release its driver results without stopping another app's Wi-Fi.
 void cancel_receiver_scan();
 
+struct WifiApNetwork {
+    std::string ssid;
+    int rssi = 0;
+    bool open = false;
+};
+
+struct StationScanSnapshot {
+    ReceiverScanState state = ReceiverScanState::Idle;
+    esp_err_t error = ESP_OK;
+    std::vector<WifiApNetwork> networks;
+    uint32_t generation = 0;
+};
+
+// Same ownership rules as the receiver scan, but keeps every visible AP
+// (hidden SSIDs skipped), strongest first, capped at 20 entries.
+esp_err_t request_station_scan();
+StationScanSnapshot station_scan_snapshot();
+
 struct SetupAccessPoint {
     std::string ssid;
     std::string password;

@@ -103,6 +103,44 @@
 #define BSP_LCD_RST           (GPIO_NUM_3)
 #define BSP_LCD_TOUCH_RST     (GPIO_NUM_1)
 #define BSP_LCD_TOUCH_INT     (GPIO_NUM_4)
+#if CONFIG_BSP_BOARD_LCD_2_8
+/* ES3C28P: ILI9341V SPI, FT6336 touch, ES8311 codec plus a MEMS microphone. */
+#undef BSP_I2S_SCLK
+#undef BSP_I2S_MCLK
+#undef BSP_I2S_LCLK
+#undef BSP_I2S_DOUT
+#undef BSP_I2S_DSIN
+#undef BSP_POWER_AMP_IO
+#define BSP_I2S_MCLK          (GPIO_NUM_4)
+#define BSP_I2S_SCLK          (GPIO_NUM_5)
+#define BSP_I2S_LCLK          (GPIO_NUM_7)
+#define BSP_I2S_DOUT          (GPIO_NUM_8)
+#define BSP_I2S_DSIN          (GPIO_NUM_6)
+#define BSP_POWER_AMP_IO      (GPIO_NUM_1)
+#undef BSP_LCD_BACKLIGHT
+#undef BSP_LCD_CS
+#undef BSP_LCD_PCLK
+#undef BSP_LCD_DATA0
+#undef BSP_LCD_RST
+#undef BSP_LCD_TOUCH_RST
+#undef BSP_LCD_TOUCH_INT
+#define BSP_LCD_MOSI          (GPIO_NUM_11)
+#define BSP_LCD_MISO          (GPIO_NUM_13)
+#define BSP_LCD_DC            (GPIO_NUM_46)
+#define BSP_LCD_CS            (GPIO_NUM_10)
+#define BSP_LCD_PCLK          (GPIO_NUM_12)
+#define BSP_LCD_DATA0         (GPIO_NUM_11)
+#define BSP_LCD_RST           (GPIO_NUM_NC)
+#define BSP_LCD_BACKLIGHT     (GPIO_NUM_45)
+#undef BSP_I2C_SCL
+#undef BSP_I2C_SDA
+#define BSP_I2C_SCL           (GPIO_NUM_15)
+#define BSP_I2C_SDA           (GPIO_NUM_16)
+#define BSP_LCD_TOUCH_SDA     (GPIO_NUM_16)
+#define BSP_LCD_TOUCH_SCL     (GPIO_NUM_15)
+#define BSP_LCD_TOUCH_RST     (GPIO_NUM_18)
+#define BSP_LCD_TOUCH_INT     (GPIO_NUM_17)
+#endif
 /** @} */ // end of display
 
 /** @defgroup g02_storage SD Card and SPIFFS
@@ -116,6 +154,21 @@
 #define BSP_SD_D1            (GPIO_NUM_17)
 #define BSP_SD_D2            (GPIO_NUM_12)
 #define BSP_SD_D3            (GPIO_NUM_13)
+#if CONFIG_BSP_BOARD_LCD_2_8
+/* ES3C28P SDIO: CLK 38, CMD 40, D0 39, D1 41, D2 48, D3 47. */
+#undef BSP_SD_CLK
+#undef BSP_SD_CMD
+#undef BSP_SD_D0
+#undef BSP_SD_D1
+#undef BSP_SD_D2
+#undef BSP_SD_D3
+#define BSP_SD_CLK            (GPIO_NUM_38)
+#define BSP_SD_CMD            (GPIO_NUM_40)
+#define BSP_SD_D0             (GPIO_NUM_39)
+#define BSP_SD_D1             (GPIO_NUM_41)
+#define BSP_SD_D2             (GPIO_NUM_48)
+#define BSP_SD_D3             (GPIO_NUM_47)
+#endif
 /** @} */ // end of storage
 
 /** @defgroup g05_buttons Buttons

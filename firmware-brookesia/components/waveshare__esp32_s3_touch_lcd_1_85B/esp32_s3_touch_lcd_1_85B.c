@@ -1,3 +1,4 @@
+#include <stdlib.h>
 #include <string.h>
 #include <sys/unistd.h>
 #include <sys/stat.h>
@@ -11,6 +12,7 @@
 #include "esp_lcd_panel_io.h"
 #include "esp_lcd_panel_vendor.h"
 #include "esp_lcd_panel_ops.h"
+#include "esp_heap_caps.h"
 #include "esp_spiffs.h"
 #include "esp_vfs_fat.h"
 
@@ -19,8 +21,13 @@
 #include "bsp/touch.h"
 #include "bsp_err_check.h"
 
+#if CONFIG_BSP_BOARD_LCD_2_8
+#include "esp_lcd_panel_st7789.h"
+#include "esp_lcd_panel_interface.h"
+#else
 #include "esp_lcd_st77916.h"
 #include "esp_lcd_touch_cst816s.h"
+#endif
 #include "esp_codec_dev_defaults.h"
 #include "iot_button.h"
 
@@ -78,6 +85,7 @@ static esp_codec_dev_handle_t s_mic_codec_dev = NULL;
         .gpio_cfg = BSP_I2S_GPIO_CFG,                                                                 \
     }
 
+#if !CONFIG_BSP_BOARD_LCD_2_8
     static const st77916_lcd_init_cmd_t vendor_specific_init_version_1[] = {
     {0xF0, (uint8_t []){0x28}, 1, 0},
     {0xF2, (uint8_t []){0x28}, 1, 0},
@@ -483,6 +491,7 @@ static const st77916_lcd_init_cmd_t vendor_specific_init_version_2[] = {
   {0x11, (uint8_t []){0x00}, 1, 120},
   {0x29, (uint8_t []){0x00}, 1, 0},  
 };
+#endif
 
 esp_err_t bsp_i2c_init(void)
 {
@@ -571,7 +580,7 @@ void bsp_sdcard_sdmmc_get_slot(const int slot, sdmmc_slot_config_t *config)
     config->d7 = GPIO_NUM_NC;
     config->cd = SDMMC_SLOT_NO_CD;
     config->wp = SDMMC_SLOT_NO_WP;
-    config->width = 4;
+    config->width = (BSP_SD_D1 == GPIO_NUM_NC) ? 1 : 4;
     config->flags = 0;
 }
 
@@ -785,6 +794,219 @@ esp_codec_dev_handle_t bsp_audio_codec_microphone_init(void)
     return s_mic_codec_dev;
 }
 
+#if CONFIG_BSP_BOARD_LCD_2_8
+static esp_lcd_panel_io_handle_t s_lcd_io;
+
+static esp_err_t ili9341_cmd(esp_lcd_panel_io_handle_t io, int cmd, const uint8_t *data, size_t len, int delay_ms)
+{
+    esp_err_t err = esp_lcd_panel_io_tx_param(io, cmd, data, len);
+    if (err == ESP_OK && delay_ms > 0) {
+        vTaskDelay(pdMS_TO_TICKS(delay_ms));
+    }
+    return err;
+}
+
+/* ILI9341V power-on sequence used by the ES3C28P 240x320 panel. */
+static esp_err_t ili9341_es3c28p_init(esp_lcd_panel_io_handle_t io)
+{
+    ESP_RETURN_ON_ERROR(ili9341_cmd(io, 0x01, NULL, 0, 120), TAG, "ILI9341 reset failed");
+    ESP_RETURN_ON_ERROR(ili9341_cmd(io, 0xCF, (uint8_t[]){0x00, 0xC1, 0x30}, 3, 0), TAG, "ILI9341 power B failed");
+    ESP_RETURN_ON_ERROR(ili9341_cmd(io, 0xED, (uint8_t[]){0x64, 0x03, 0x12, 0x81}, 4, 0), TAG, "ILI9341 power seq failed");
+    ESP_RETURN_ON_ERROR(ili9341_cmd(io, 0xE8, (uint8_t[]){0x85, 0x00, 0x78}, 3, 0), TAG, "ILI9341 driver timing failed");
+    ESP_RETURN_ON_ERROR(ili9341_cmd(io, 0xCB, (uint8_t[]){0x39, 0x2C, 0x00, 0x34, 0x02}, 5, 0), TAG, "ILI9341 power A failed");
+    ESP_RETURN_ON_ERROR(ili9341_cmd(io, 0xF7, (uint8_t[]){0x20}, 1, 0), TAG, "ILI9341 pump ratio failed");
+    ESP_RETURN_ON_ERROR(ili9341_cmd(io, 0xEA, (uint8_t[]){0x00, 0x00}, 2, 0), TAG, "ILI9341 driver timing B failed");
+    ESP_RETURN_ON_ERROR(ili9341_cmd(io, 0xC0, (uint8_t[]){0x23}, 1, 0), TAG, "ILI9341 power control failed");
+    ESP_RETURN_ON_ERROR(ili9341_cmd(io, 0xC1, (uint8_t[]){0x10}, 1, 0), TAG, "ILI9341 power control failed");
+    ESP_RETURN_ON_ERROR(ili9341_cmd(io, 0xC5, (uint8_t[]){0x3E, 0x28}, 2, 0), TAG, "ILI9341 VCOM failed");
+    ESP_RETURN_ON_ERROR(ili9341_cmd(io, 0xC7, (uint8_t[]){0x86}, 1, 0), TAG, "ILI9341 VCOM offset failed");
+    ESP_RETURN_ON_ERROR(ili9341_cmd(io, 0x36, (uint8_t[]){0x48}, 1, 0), TAG, "ILI9341 MADCTL failed");
+    ESP_RETURN_ON_ERROR(ili9341_cmd(io, 0x3A, (uint8_t[]){0x55}, 1, 0), TAG, "ILI9341 COLMOD failed");
+    ESP_RETURN_ON_ERROR(ili9341_cmd(io, 0xB1, (uint8_t[]){0x00, 0x18}, 2, 0), TAG, "ILI9341 frame rate failed");
+    ESP_RETURN_ON_ERROR(ili9341_cmd(io, 0xB6, (uint8_t[]){0x08, 0x82, 0x27}, 3, 0), TAG, "ILI9341 display function failed");
+    ESP_RETURN_ON_ERROR(ili9341_cmd(io, 0xF2, (uint8_t[]){0x00}, 1, 0), TAG, "ILI9341 gamma disable failed");
+    ESP_RETURN_ON_ERROR(ili9341_cmd(io, 0x26, (uint8_t[]){0x01}, 1, 0), TAG, "ILI9341 gamma curve failed");
+    ESP_RETURN_ON_ERROR(ili9341_cmd(io, 0xE0, (uint8_t[]){
+        0x0F, 0x31, 0x2B, 0x0C, 0x0E, 0x08, 0x4E, 0xF1, 0x37, 0x07, 0x10, 0x03, 0x0E, 0x09, 0x00
+    }, 15, 0), TAG, "ILI9341 gamma failed");
+    ESP_RETURN_ON_ERROR(ili9341_cmd(io, 0xE1, (uint8_t[]){
+        0x00, 0x0E, 0x14, 0x03, 0x11, 0x07, 0x31, 0xC1, 0x48, 0x08, 0x0F, 0x0C, 0x31, 0x36, 0x0F
+    }, 15, 0), TAG, "ILI9341 gamma failed");
+    ESP_RETURN_ON_ERROR(ili9341_cmd(io, 0x11, NULL, 0, 120), TAG, "ILI9341 sleep out failed");
+    /* This IPS panel shows the framebuffer inverted until INVON. */
+    ESP_RETURN_ON_ERROR(ili9341_cmd(io, 0x21, NULL, 0, 0), TAG, "ILI9341 invert failed");
+    ESP_RETURN_ON_ERROR(ili9341_cmd(io, 0x29, NULL, 0, 20), TAG, "ILI9341 display on failed");
+    return ESP_OK;
+}
+
+static esp_err_t ili9341_panel_init(esp_lcd_panel_t *panel)
+{
+    (void)panel;
+    return ili9341_es3c28p_init(s_lcd_io);
+}
+
+esp_err_t bsp_display_new(const bsp_display_config_t *config, esp_lcd_panel_handle_t *ret_panel, esp_lcd_panel_io_handle_t *ret_io)
+{
+    (void)config;
+    ESP_RETURN_ON_FALSE(ret_panel != NULL && ret_io != NULL, ESP_ERR_INVALID_ARG, TAG, "invalid display handles");
+    ESP_RETURN_ON_ERROR(bsp_display_brightness_init(), TAG, "Backlight init failed");
+    ESP_RETURN_ON_ERROR(bsp_display_brightness_set(100), TAG, "Backlight on failed");
+    const spi_bus_config_t buscfg = {
+        .mosi_io_num = BSP_LCD_MOSI,
+        .miso_io_num = BSP_LCD_MISO,
+        .sclk_io_num = BSP_LCD_PCLK,
+        .quadwp_io_num = GPIO_NUM_NC,
+        .quadhd_io_num = GPIO_NUM_NC,
+        .max_transfer_sz = BSP_LCD_H_RES * 80 * (int)sizeof(uint16_t),
+    };
+    ESP_RETURN_ON_ERROR(spi_bus_initialize(BSP_LCD_SPI_NUM, &buscfg, SPI_DMA_CH_AUTO), TAG, "SPI init failed");
+
+    const esp_lcd_panel_io_spi_config_t io_config = {
+        .cs_gpio_num = BSP_LCD_CS,
+        .dc_gpio_num = BSP_LCD_DC,
+        .spi_mode = 0,
+        .pclk_hz = 40 * 1000 * 1000,
+        .trans_queue_depth = 10,
+        .lcd_cmd_bits = 8,
+        .lcd_param_bits = 8,
+    };
+    ESP_RETURN_ON_ERROR(esp_lcd_new_panel_io_spi((esp_lcd_spi_bus_handle_t)BSP_LCD_SPI_NUM, &io_config, ret_io), TAG, "New panel IO failed");
+
+    const esp_lcd_panel_dev_config_t panel_config = {
+        .reset_gpio_num = BSP_LCD_RST,
+        .rgb_ele_order = BSP_LCD_COLOR_SPACE,
+        .bits_per_pixel = BSP_LCD_BITS_PER_PIXEL,
+    };
+    ESP_RETURN_ON_ERROR(esp_lcd_new_panel_st7789(*ret_io, &panel_config, ret_panel), TAG, "New LCD panel failed");
+    s_lcd_io = *ret_io;
+    (*ret_panel)->init = ili9341_panel_init;
+    ESP_RETURN_ON_ERROR(ili9341_es3c28p_init(*ret_io), TAG, "ILI9341 init failed");
+
+    uint16_t *strip = heap_caps_malloc(BSP_LCD_H_RES * 20 * sizeof(uint16_t), MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);
+    if (strip != NULL) {
+        for (int i = 0; i < BSP_LCD_H_RES * 20; ++i) {
+            strip[i] = 0xFFFF;
+        }
+        for (int y = 0; y < BSP_LCD_V_RES; y += 20) {
+            esp_lcd_panel_draw_bitmap(*ret_panel, 0, y, BSP_LCD_H_RES, y + 20, strip);
+        }
+        vTaskDelay(pdMS_TO_TICKS(30));
+        heap_caps_free(strip);
+    }
+    return ESP_OK;
+}
+
+#define FT6336_ADDR 0x38
+
+static esp_err_t ft6336_read_data(esp_lcd_touch_handle_t tp)
+{
+    uint8_t data[5] = {0};
+    ESP_RETURN_ON_ERROR(esp_lcd_panel_io_rx_param(tp->io, 0x02, data, sizeof(data)), TAG, "FT6336 read failed");
+    uint8_t points = data[0] & 0x0F;
+    if (points > 1) points = 0;
+    portENTER_CRITICAL(&tp->data.lock);
+    tp->data.points = points;
+    if (points > 0) {
+        tp->data.coords[0].x = ((data[1] & 0x0F) << 8) | data[2];
+        tp->data.coords[0].y = ((data[3] & 0x0F) << 8) | data[4];
+    }
+    portEXIT_CRITICAL(&tp->data.lock);
+    return ESP_OK;
+}
+
+static bool ft6336_get_xy(esp_lcd_touch_handle_t tp, uint16_t *x, uint16_t *y, uint16_t *strength,
+                          uint8_t *point_num, uint8_t max_point_num)
+{
+    if (tp == NULL || x == NULL || y == NULL || point_num == NULL || max_point_num == 0) return false;
+    portENTER_CRITICAL(&tp->data.lock);
+    *point_num = tp->data.points > max_point_num ? max_point_num : tp->data.points;
+    for (uint8_t i = 0; i < *point_num; ++i) {
+        x[i] = tp->data.coords[i].x;
+        y[i] = tp->data.coords[i].y;
+        if (strength != NULL) strength[i] = tp->data.coords[i].strength;
+    }
+    tp->data.points = 0;
+    portEXIT_CRITICAL(&tp->data.lock);
+    return *point_num > 0;
+}
+
+static esp_err_t ft6336_del(esp_lcd_touch_handle_t tp)
+{
+    if (tp == NULL) return ESP_ERR_INVALID_ARG;
+    if (tp->config.int_gpio_num != GPIO_NUM_NC) gpio_reset_pin(tp->config.int_gpio_num);
+    if (tp->config.rst_gpio_num != GPIO_NUM_NC) gpio_reset_pin(tp->config.rst_gpio_num);
+    free(tp);
+    return ESP_OK;
+}
+
+esp_err_t bsp_touch_new(const bsp_display_cfg_t *cfg, esp_lcd_touch_handle_t *ret_touch)
+{
+    ESP_RETURN_ON_FALSE(cfg != NULL && ret_touch != NULL, ESP_ERR_INVALID_ARG, TAG, "invalid touch config");
+    ESP_RETURN_ON_ERROR(bsp_i2c_init(), TAG, "I2C init failed");
+    i2c_master_bus_handle_t bus = NULL;
+    ESP_RETURN_ON_ERROR(i2c_master_get_bus_handle(BSP_I2C_NUM, &bus), TAG, "I2C bus missing");
+
+    gpio_config_t reset_config = {
+        .pin_bit_mask = 1ULL << BSP_LCD_TOUCH_RST,
+        .mode = GPIO_MODE_OUTPUT,
+    };
+    ESP_RETURN_ON_ERROR(gpio_config(&reset_config), TAG, "touch reset config failed");
+    gpio_set_level(BSP_LCD_TOUCH_RST, 0);
+    vTaskDelay(pdMS_TO_TICKS(10));
+    gpio_set_level(BSP_LCD_TOUCH_RST, 1);
+    vTaskDelay(pdMS_TO_TICKS(50));
+
+    if (i2c_master_probe(bus, FT6336_ADDR, 50) != ESP_OK) {
+        ESP_LOGW(TAG, "FT6336 not found at 0x38");
+        return ESP_ERR_NOT_FOUND;
+    }
+
+    const esp_lcd_panel_io_i2c_config_t io_config = {
+        .dev_addr = FT6336_ADDR,
+        .scl_speed_hz = 400000,
+        .control_phase_bytes = 1,
+        .lcd_cmd_bits = 8,
+        .flags = {
+            .disable_control_phase = 1,
+        },
+    };
+    esp_lcd_panel_io_handle_t io = NULL;
+    ESP_RETURN_ON_ERROR(esp_lcd_new_panel_io_i2c(bus, &io_config, &io), TAG, "FT6336 IO failed");
+
+    esp_lcd_touch_handle_t touch = calloc(1, sizeof(esp_lcd_touch_t));
+    if (touch == NULL) return ESP_ERR_NO_MEM;
+    touch->io = io;
+    touch->read_data = ft6336_read_data;
+    touch->get_xy = ft6336_get_xy;
+    touch->del = ft6336_del;
+    touch->data.lock.owner = portMUX_FREE_VAL;
+    touch->config = (esp_lcd_touch_config_t){
+        .x_max = BSP_LCD_H_RES,
+        .y_max = BSP_LCD_V_RES,
+        .rst_gpio_num = BSP_LCD_TOUCH_RST,
+        .int_gpio_num = BSP_LCD_TOUCH_INT,
+        .levels = {
+            .reset = 0,
+            .interrupt = 0,
+        },
+        .flags = {
+            .swap_xy = cfg->touch_flags.swap_xy,
+            .mirror_x = cfg->touch_flags.mirror_x,
+            .mirror_y = cfg->touch_flags.mirror_y,
+        },
+    };
+    const gpio_config_t int_config = {
+        .mode = GPIO_MODE_INPUT,
+        .pull_up_en = GPIO_PULLUP_ENABLE,
+        .intr_type = GPIO_INTR_NEGEDGE,
+        .pin_bit_mask = 1ULL << BSP_LCD_TOUCH_INT,
+    };
+    gpio_config(&int_config);
+    *ret_touch = touch;
+    ESP_LOGI(TAG, "FT6336 touch ready");
+    return ESP_OK;
+}
+#else
 esp_err_t bsp_display_new(const bsp_display_config_t *config, esp_lcd_panel_handle_t *ret_panel, esp_lcd_panel_io_handle_t *ret_io)
 {
     // reset lcd
@@ -947,6 +1169,7 @@ esp_err_t bsp_touch_new(const bsp_display_cfg_t *cfg, esp_lcd_touch_handle_t *re
     esp_lcd_new_panel_io_i2c((i2c_master_bus_handle_t)i2c_handle, &tp_io_config, &tp_io_handle);
     return esp_lcd_touch_new_i2c_cst816s(tp_io_handle, &tp_cfg, ret_touch);
 }
+#endif
 
 
 #if (BSP_CONFIG_NO_GRAPHIC_LIB == 0)
@@ -1011,6 +1234,29 @@ static lv_indev_t *bsp_display_indev_init(const bsp_display_cfg_t *cfg, lv_displ
 
 esp_err_t bsp_display_brightness_init(void)
 {
+#if CONFIG_BSP_BOARD_LCD_2_8
+    const ledc_timer_config_t LCD_backlight_timer = {
+        .speed_mode = LEDC_LOW_SPEED_MODE,
+        .duty_resolution = LEDC_TIMER_10_BIT,
+        .timer_num = LEDC_TIMER_1,
+        .freq_hz = 20000,
+        .clk_cfg = LEDC_AUTO_CLK,
+    };
+    const ledc_channel_config_t LCD_backlight_channel = {
+        .gpio_num = BSP_LCD_BACKLIGHT,
+        .speed_mode = LEDC_LOW_SPEED_MODE,
+        .channel = LEDC_CHANNEL_1,
+        .intr_type = LEDC_INTR_DISABLE,
+        .timer_sel = LEDC_TIMER_1,
+        .duty = 1023,
+        .hpoint = 0,
+        .sleep_mode = LEDC_SLEEP_MODE_KEEP_ALIVE,
+    };
+    BSP_ERROR_CHECK_RETURN_ERR(ledc_timer_config(&LCD_backlight_timer));
+    BSP_ERROR_CHECK_RETURN_ERR(ledc_channel_config(&LCD_backlight_channel));
+    gpio_sleep_sel_dis(BSP_LCD_BACKLIGHT);
+    return ESP_OK;
+#else
     const ledc_channel_config_t LCD_backlight_channel = {
         .gpio_num = BSP_LCD_BACKLIGHT,
         .speed_mode = LEDC_LOW_SPEED_MODE,
@@ -1032,6 +1278,7 @@ esp_err_t bsp_display_brightness_init(void)
     BSP_ERROR_CHECK_RETURN_ERR(ledc_channel_config(&LCD_backlight_channel));
 
     return ESP_OK;
+#endif
 }
 
 esp_err_t bsp_display_brightness_set(int brightness_percent)
@@ -1049,8 +1296,13 @@ esp_err_t bsp_display_brightness_set(int brightness_percent)
     ESP_LOGI(TAG, "Setting flipped LCD backlight: %d%% (original: %d%%)", flipped_brightness, brightness_percent);
 
     uint32_t duty_cycle = (1023 * flipped_brightness) / 100;
-    BSP_ERROR_CHECK_RETURN_ERR(ledc_set_duty(LEDC_LOW_SPEED_MODE, LCD_LEDC_CH, duty_cycle));
-    BSP_ERROR_CHECK_RETURN_ERR(ledc_update_duty(LEDC_LOW_SPEED_MODE, LCD_LEDC_CH));
+#if CONFIG_BSP_BOARD_LCD_2_8
+    const ledc_channel_t backlight_channel = LEDC_CHANNEL_1;
+#else
+    const ledc_channel_t backlight_channel = LCD_LEDC_CH;
+#endif
+    BSP_ERROR_CHECK_RETURN_ERR(ledc_set_duty(LEDC_LOW_SPEED_MODE, backlight_channel, duty_cycle));
+    BSP_ERROR_CHECK_RETURN_ERR(ledc_update_duty(LEDC_LOW_SPEED_MODE, backlight_channel));
     return ESP_OK;
 }
 
@@ -1101,7 +1353,14 @@ lv_display_t *bsp_display_start_with_config(bsp_display_cfg_t *cfg)
 
     BSP_NULL_CHECK(disp = bsp_display_lcd_init(cfg), NULL);
 
-    BSP_NULL_CHECK(disp_indev = bsp_display_indev_init(cfg, disp), NULL);
+    disp_indev = bsp_display_indev_init(cfg, disp);
+#if !CONFIG_BSP_BOARD_LCD_2_8
+    BSP_NULL_CHECK(disp_indev, NULL);
+#else
+    if (disp_indev == NULL) {
+        ESP_LOGW(TAG, "Touch unavailable; display will continue");
+    }
+#endif
 
     BSP_ERROR_CHECK_RETURN_NULL(bsp_display_brightness_init());
 

@@ -12,6 +12,7 @@
 #include "cJSON.h"
 #include "esp_http_server.h"
 #include "esp_random.h"
+#include "esp_log.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -305,8 +306,14 @@ esp_err_t start(bool use_english, const InitialConfig &initial) {
         if (error != ESP_ERR_INVALID_STATE || attempt == 30) break;
         vTaskDelay(pdMS_TO_TICKS(100));
     }
-    if (error != ESP_OK) return start_failed(error);
-    if (ap.address != kUrl && ap.address != std::string(kUrl) + "/") return start_failed(ESP_ERR_INVALID_STATE);
+    if (error != ESP_OK) {
+        ESP_LOGE("made_setup", "Phone setup start failed: %s", esp_err_to_name(error));
+        return start_failed(error);
+    }
+    if (ap.address != kUrl && ap.address != std::string(kUrl) + "/") {
+        ESP_LOGE("made_setup", "Unexpected AP url: %s", ap.address.c_str());
+        return start_failed(ESP_ERR_INVALID_STATE);
+    }
     uint8_t random[16];
     esp_fill_random(random, sizeof(random));
     constexpr char digits[] = "0123456789abcdef";
@@ -336,15 +343,27 @@ esp_err_t start(bool use_english, const InitialConfig &initial) {
     config.open_fn = open_connection;
     config.uri_match_fn = httpd_uri_match_wildcard;
     error = httpd_start(&http_server, &config);
-    if (error != ESP_OK) return start_failed(error);
+    if (error != ESP_OK) {
+        ESP_LOGE("made_setup", "Phone setup start failed: %s", esp_err_to_name(error));
+        return start_failed(error);
+    }
     httpd_uri_t submit_uri{}; submit_uri.uri = "/api/config"; submit_uri.method = HTTP_POST; submit_uri.handler = configure;
     error = httpd_register_uri_handler(http_server, &submit_uri);
-    if (error != ESP_OK) return start_failed(error);
+    if (error != ESP_OK) {
+        ESP_LOGE("made_setup", "Phone setup start failed: %s", esp_err_to_name(error));
+        return start_failed(error);
+    }
     httpd_uri_t page_uri{}; page_uri.uri = "/*"; page_uri.method = HTTP_GET; page_uri.handler = get_page;
     error = httpd_register_uri_handler(http_server, &page_uri);
-    if (error != ESP_OK) return start_failed(error);
+    if (error != ESP_OK) {
+        ESP_LOGE("made_setup", "Phone setup start failed: %s", esp_err_to_name(error));
+        return start_failed(error);
+    }
     error = start_dns();
-    if (error != ESP_OK) return start_failed(error);
+    if (error != ESP_OK) {
+        ESP_LOGE("made_setup", "Phone setup start failed: %s", esp_err_to_name(error));
+        return start_failed(error);
+    }
     return ESP_OK;
 }
 

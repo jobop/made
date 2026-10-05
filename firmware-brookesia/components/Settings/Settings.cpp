@@ -374,7 +374,11 @@ void Settings::showAbout()
     createPage("About");
     settings_ui::add_section(list_, "Device", style_section_);
     settings_ui::add_info_row(list_, nullptr, "Board", "1.85B", style_row_);
+#if CONFIG_BSP_BOARD_LCD_2_8
+    settings_ui::add_info_row(list_, nullptr, "Screen", "240 x 320", style_row_);
+#else
     settings_ui::add_info_row(list_, nullptr, "Screen", "360 x 360", style_row_);
+#endif
     settings_ui::add_section(list_, "Software", style_section_);
     settings_ui::add_info_row(list_, nullptr, "Desktop", "Brookesia", style_row_);
     settings_ui::add_info_row(list_, nullptr, "Bridge", "Vibe Coding", style_row_);

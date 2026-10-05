@@ -10,6 +10,7 @@
 
 #include "esp_http_client.h"
 #include "provider_catalog.hpp"
+#include "vibe_wifi.hpp"
 #include "systems/phone/esp_brookesia_phone_app.hpp"
 
 namespace vibe_pairing { struct Snapshot; }
@@ -103,6 +104,22 @@ private:
     static void receiverSelectCallback(lv_event_t *event);
     void showReceiverScan(bool visible);
     void renderReceiverScan();
+    static void powerOpenCallback(lv_event_t *event);
+    static void powerBackCallback(lv_event_t *event);
+    static void powerTimeoutCallback(lv_event_t *event);
+    static void screenWakeCallback(lv_event_t *event);
+    void showPower(bool visible);
+    void renderPower();
+    void loadScreenOffTimeout();
+    void applyScreenOff(bool off);
+    static void wifiScanOpenCallback(lv_event_t *event);
+    static void wifiScanBackCallback(lv_event_t *event);
+    static void wifiScanRefreshCallback(lv_event_t *event);
+    static void wifiNetworkCallback(lv_event_t *event);
+    void showWifiScan(bool visible);
+    void renderWifiNetworks();
+    void startWifiScan();
+    void connectSelectedWifi();
     static void phoneSetupOpenCallback(lv_event_t *event);
     static void phoneSetupBackCallback(lv_event_t *event);
     void showPhoneSetup(bool visible);
@@ -146,6 +163,7 @@ private:
     void startVoice();
     void showAnswer(const std::string &scope, const std::string &text);
     void render();
+    void layoutReadableText();
 
     std::mutex model_mutex_;
     std::mutex voice_action_mutex_; // Serializes BOOT/touch voice actions with app pause/close.
@@ -261,6 +279,20 @@ private:
     lv_obj_t *receiver_pressed_button_ = nullptr;
     lv_point_t receiver_press_point_{};
     bool receiver_press_moved_ = false;
+    lv_obj_t *wifi_scan_button_ = nullptr;
+    lv_obj_t *wifi_picker_ = nullptr;
+    lv_obj_t *wifi_network_list_ = nullptr;
+    lv_obj_t *wifi_scan_status_ = nullptr;
+    lv_obj_t *wifi_password_input_ = nullptr;
+    vibe_wifi::StationScanSnapshot wifi_scan_snapshot_; // LVGL task only.
+    lv_obj_t *power_panel_ = nullptr;
+    lv_obj_t *power_timeout_button_ = nullptr;
+    lv_obj_t *power_timeout_label_ = nullptr;
+    lv_obj_t *power_off_overlay_ = nullptr;
+    uint32_t screen_off_timeout_s_ = 0; // 0 = never.
+    bool screen_off_ = false;
+    uint32_t wifi_scan_list_revision_ = UINT32_MAX; // LVGL task only.
+    std::string wifi_selected_ssid_; // LVGL task only.
     bool access_manual_selected_ = false;
     bool access_picker_open_ = true;
     bool access_receiver_selected_ = false;
@@ -282,6 +314,7 @@ private:
     lv_point_t bridge_press_point_{};
     bool bridge_press_moved_ = false;
     lv_obj_t *position_label_ = nullptr;
+    lv_obj_t *session_title_tap_ = nullptr;
     lv_obj_t *meta_label_ = nullptr;
     lv_obj_t *instruction_label_ = nullptr;
     lv_obj_t *answer_area_ = nullptr;
@@ -290,6 +323,11 @@ private:
     std::string answer_text_;
     bool showing_pairing_layout_ = false;
     std::string displayed_task_id_;
+    std::string reply_watch_id_;
+    bool reply_watch_ready_ = false;
+    bool reply_saw_pending_ = false;
+    bool reply_wait_new_ = false;
+    void noteComputerReply(const Task &task);
     std::string rendered_session_id_;
     std::string last_voice_message_;
     int last_voice_phase_ = -1;

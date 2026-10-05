@@ -10,6 +10,7 @@
 #include <new>
 
 #include "esp_heap_caps.h"
+#include "esp_system.h"
 #include "esp_crt_bundle.h"
 #include "esp_http_client.h"
 #include "esp_log.h"
@@ -434,11 +435,18 @@ bool start(const std::string& bridge_url, const std::string& token,
     while (!parameters->url.empty() && parameters->url.back() == '/') parameters->url.pop_back();
     cancel_requested.store(false);
     ESP_LOGI(kTag, "Recording requested for provider=%s", provider.c_str());
+    ESP_LOGW(kTag, "Memory before voice task: free=%lu largest_internal=%lu total_internal=%lu",
+             (unsigned long)esp_get_free_heap_size(),
+             (unsigned long)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
+             (unsigned long)heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
     portENTER_CRITICAL(&state_lock);
     current_task_id[0] = '\0';
     portEXIT_CRITICAL(&state_lock);
     set_status(Phase::Recording, "正在启动麦克风");
     if (xTaskCreate(record_task, "vibe_voice", 12288, parameters, 4, nullptr) != pdPASS) {
+        ESP_LOGE(kTag, "xTaskCreate(vibe_voice, 12288) failed: free=%lu largest_internal=%lu",
+                 (unsigned long)esp_get_free_heap_size(),
+                 (unsigned long)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
         delete parameters;
         busy.store(false);
         set_status(Phase::Error, "无法启动录音任务");

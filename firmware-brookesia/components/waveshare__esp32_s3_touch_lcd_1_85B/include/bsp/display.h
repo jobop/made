@@ -15,6 +15,7 @@
  */
 
 #pragma once
+#include "sdkconfig.h"
 #include "esp_lcd_types.h"
 
 /** @defgroup g04_display Display and Touch
@@ -35,8 +36,13 @@
 /* LCD display color space */
 #define BSP_LCD_COLOR_SPACE         (LCD_RGB_ELEMENT_ORDER_RGB)
 /* LCD definition */
+#if CONFIG_BSP_BOARD_LCD_2_8
+#define BSP_LCD_H_RES              (240)
+#define BSP_LCD_V_RES              (320)
+#else
 #define BSP_LCD_H_RES              (360)
 #define BSP_LCD_V_RES              (360)
+#endif
 
 #ifdef __cplusplus
 extern "C" {

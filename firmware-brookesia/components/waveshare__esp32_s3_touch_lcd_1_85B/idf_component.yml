@@ -4,6 +4,8 @@ dependencies:
     version: ~1.5
   espressif/button: ^4.1.4
   espressif/esp_lcd_touch_cst816s: ^1.1.0
+  waveshare/esp_lcd_touch_cst3530: "1.0.0"
+  waveshare/esp_lcd_touch_cst328: "2.0.0"
   espressif/esp_lvgl_adapter:
     public: true
     version: ^0.3.*

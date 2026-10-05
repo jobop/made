@@ -40,6 +40,8 @@ std::atomic<bool> using_receiver{false};
 std::atomic<bool> receiver_scan_in_flight{false};
 bool receiver_scan_cancelled = false;
 ReceiverScanSnapshot receiver_scan;
+std::atomic<bool> station_scan_in_flight{false};
+StationScanSnapshot station_scan;
 std::atomic<bool> setup_active{false};
 bool setup_ready = false;
 SetupAccessPoint setup_access_point;
@@ -113,7 +115,8 @@ bool hasDriverConfig(const wifi_config_t& config) {
 }
 
 void scheduleRetry(uint32_t delay_ms) {
-    if (retry_timer == nullptr || !have_credentials.load() || receiver_scan_in_flight.load() || setup_active.load()) return;
+    if (retry_timer == nullptr || !have_credentials.load() || receiver_scan_in_flight.load() ||
+        station_scan_in_flight.load() || setup_active.load()) return;
     (void)esp_timer_stop(retry_timer);
     const esp_err_t error = esp_timer_start_once(retry_timer, static_cast<uint64_t>(delay_ms) * 1000);
     if (error != ESP_OK) ESP_LOGW(kTag, "Schedule Wi-Fi retry failed: %s", esp_err_to_name(error));
@@ -121,7 +124,8 @@ void scheduleRetry(uint32_t delay_ms) {
 
 void retryCallback(void*) {
     std::lock_guard<std::mutex> lock(station_mutex);
-    if (!have_credentials.load() || connected.load() || receiver_scan_in_flight.load() || setup_active.load()) return;
+    if (!have_credentials.load() || connected.load() || receiver_scan_in_flight.load() ||
+        station_scan_in_flight.load() || setup_active.load()) return;
     const esp_err_t error = esp_wifi_connect();
     if (error != ESP_OK) {
         ESP_LOGW(kTag, "Wi-Fi connect failed: %s", esp_err_to_name(error));
@@ -181,15 +185,63 @@ void collectReceiverScan(const wifi_event_sta_scan_done_t* event) {
     finishReceiverScan(error);
 }
 
+void collectStationScan(const wifi_event_sta_scan_done_t* event) {
+    // Sibling of collectReceiverScan: each scan consumer early-returns unless
+    // it owns the radio, so exactly one of them consumes the driver list.
+    if (!station_scan_in_flight.load()) return;
+    esp_err_t error = event != nullptr && event->status == 0 ? ESP_OK : ESP_FAIL;
+    uint16_t count = 0;
+    wifi_ap_record_t* records = nullptr;
+    if (error == ESP_OK) {
+        error = esp_wifi_scan_get_ap_num(&count);
+        if (error == ESP_OK && count != 0) {
+            if (count > 20) count = 20;
+            records = static_cast<wifi_ap_record_t*>(std::calloc(count, sizeof(wifi_ap_record_t)));
+            error = records == nullptr ? ESP_ERR_NO_MEM : esp_wifi_scan_get_ap_records(&count, records);
+        }
+    }
+    if (error == ESP_OK) {
+        std::vector<WifiApNetwork> networks;
+        for (uint16_t i = 0; records != nullptr && i < count; ++i) {
+            const size_t length = strnlen(reinterpret_cast<const char*>(records[i].ssid),
+                                          sizeof(records[i].ssid));
+            if (length == 0) continue; // Hidden SSIDs are not selectable.
+            networks.push_back({std::string(reinterpret_cast<const char*>(records[i].ssid), length),
+                                records[i].rssi, records[i].authmode == WIFI_AUTH_OPEN});
+        }
+        std::sort(networks.begin(), networks.end(), [](const WifiApNetwork& a, const WifiApNetwork& b) {
+            return a.rssi != b.rssi ? a.rssi > b.rssi : a.ssid < b.ssid;
+        });
+        station_scan.networks = std::move(networks);
+        station_scan.state = ReceiverScanState::Done;
+    } else {
+        station_scan.networks.clear();
+        station_scan.state = ReceiverScanState::Failed;
+    }
+    std::free(records);
+    (void)esp_wifi_clear_ap_list();
+    station_scan_in_flight.store(false);
+    ++station_scan.generation;
+    if (!connected.load()) scheduleRetry(100);
+}
+
 void eventHandler(void*, esp_event_base_t base, int32_t event_id, void* data) {
     std::lock_guard<std::mutex> lock(station_mutex);
     if (base == WIFI_EVENT && event_id == WIFI_EVENT_STA_START) {
         scheduleRetry(100);
     } else if (base == WIFI_EVENT && event_id == WIFI_EVENT_SCAN_DONE) {
         collectReceiverScan(static_cast<const wifi_event_sta_scan_done_t*>(data));
+        collectStationScan(static_cast<const wifi_event_sta_scan_done_t*>(data));
     } else if (base == WIFI_EVENT && event_id == WIFI_EVENT_STA_STOP) {
         connected.store(false);
         if (receiver_scan_in_flight.load()) finishReceiverScan(ESP_ERR_INVALID_STATE);
+        if (station_scan_in_flight.load()) {
+            station_scan_in_flight.store(false);
+            station_scan.state = ReceiverScanState::Failed;
+            station_scan.error = ESP_ERR_INVALID_STATE;
+            station_scan.networks.clear();
+            ++station_scan.generation;
+        }
         if (retry_timer != nullptr) (void)esp_timer_stop(retry_timer);
     } else if (base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED) {
         connected.store(false);
@@ -288,9 +340,19 @@ esp_err_t start() {
     wifi_mode_t mode = WIFI_MODE_NULL;
     error = esp_wifi_get_mode(&mode);
     if (error != ESP_OK) return error;
-    if (mode == WIFI_MODE_NULL || mode == WIFI_MODE_AP) {
-        error = esp_wifi_set_mode(mode == WIFI_MODE_AP ? WIFI_MODE_APSTA : WIFI_MODE_STA);
+    if (mode != WIFI_MODE_STA && mode != WIFI_MODE_NULL) {
+        // A previous session (typically factory test firmware) left an AP or
+        // APSTA configuration in flash NVS. The made app owns the radio from
+        // here on: drop the stray softAP so phone setup works and no unknown
+        // hotspot broadcasts. A runtime-created AP is still respected by
+        // start_setup_ap()'s guard — this only cleans persisted boot state.
+        wifi_config_t empty_ap = {};
+        error = esp_wifi_set_config(WIFI_IF_AP, &empty_ap);
         if (error != ESP_OK) return error;
+        error = esp_wifi_set_mode(WIFI_MODE_STA);
+        if (error != ESP_OK) return error;
+        mode = WIFI_MODE_STA;
+        ESP_LOGW(kTag, "Cleared persisted AP state from NVS, STA-only");
     }
 
     wifi_config_t config = {};
@@ -481,6 +543,7 @@ esp_err_t request_receiver_scan() {
     if (!started.load()) return ESP_ERR_INVALID_STATE;
     std::lock_guard<std::mutex> lock(station_mutex);
     if (setup_active.load()) return ESP_ERR_INVALID_STATE;
+    if (station_scan_in_flight.load()) return ESP_ERR_INVALID_STATE;
     if (receiver_scan_in_flight.load()) {
         // Re-entering the page can reuse a scan that was already running when
         // it closed. Repeated refresh taps never restart the radio scan.
@@ -514,6 +577,46 @@ ReceiverScanSnapshot receiver_scan_snapshot() {
     return receiver_scan;
 }
 
+esp_err_t request_station_scan() {
+    if (!started.load()) return ESP_ERR_INVALID_STATE;
+    std::lock_guard<std::mutex> lock(station_mutex);
+    if (setup_active.load()) return ESP_ERR_INVALID_STATE;
+    if (receiver_scan_in_flight.load()) return ESP_ERR_INVALID_STATE;
+    if (station_scan_in_flight.load()) {
+        // A scan is already owning the radio; the caller just re-requests.
+        station_scan.state = ReceiverScanState::Scanning;
+        station_scan.error = ESP_OK;
+        return ESP_OK;
+    }
+    station_scan.networks.clear();
+    station_scan.state = ReceiverScanState::Scanning;
+    station_scan.error = ESP_OK;
+    ++station_scan.generation;
+    station_scan_in_flight.store(true);
+    if (retry_timer != nullptr) (void)esp_timer_stop(retry_timer);
+    // The driver cannot scan while it is trying to associate. Abort only a
+    // pending attempt; never disconnect a station that already has an IP.
+    if (!connected.load()) (void)esp_wifi_disconnect();
+    wifi_scan_config_t config = {};
+    config.show_hidden = false;
+    config.scan_type = WIFI_SCAN_TYPE_ACTIVE;
+    const esp_err_t error = esp_wifi_scan_start(&config, false);
+    if (error != ESP_OK) {
+        station_scan.state = ReceiverScanState::Failed;
+        station_scan.error = error;
+        station_scan.networks.clear();
+        ++station_scan.generation;
+        station_scan_in_flight.store(false);
+        if (!connected.load()) scheduleRetry(100);
+    }
+    return error;
+}
+
+StationScanSnapshot station_scan_snapshot() {
+    std::lock_guard<std::mutex> lock(station_mutex);
+    return station_scan;
+}
+
 void cancel_receiver_scan() {
     std::lock_guard<std::mutex> lock(station_mutex);
     receiver_scan_cancelled = receiver_scan_in_flight.load();
@@ -538,11 +641,22 @@ esp_err_t start_setup_ap(SetupAccessPoint& out) {
     if (receiver_scan_in_flight.load()) return ESP_ERR_INVALID_STATE;
     esp_err_t error = esp_wifi_get_mode(&setup_previous_mode);
     if (error != ESP_OK) return error;
-    // Respect a provisioning hotspot already owned by the factory desktop.
-    if (setup_previous_mode != WIFI_MODE_STA) return ESP_ERR_INVALID_STATE;
     error = esp_wifi_get_config(WIFI_IF_AP, &setup_previous_ap);
     if (error != ESP_OK) return error;
     setup_previous_ap_configured = setup_previous_ap.ap.ssid_len > 0 || setup_previous_ap.ap.ssid[0] != 0;
+    // Respect a provisioning hotspot already owned by the factory desktop:
+    // that is an AP interface with a configured SSID, not merely APSTA mode.
+    // A persisted APSTA with an empty AP (accidental NVS state) must not make
+    // phone setup permanently unavailable.
+    if (setup_previous_mode == WIFI_MODE_APSTA && setup_previous_ap_configured) {
+        ESP_LOGW(kTag, "Setup AP refused: APSTA with configured AP ssid='%s'",
+                 reinterpret_cast<const char*>(setup_previous_ap.ap.ssid));
+        return ESP_ERR_INVALID_STATE;
+    }
+    if (setup_previous_mode != WIFI_MODE_STA && setup_previous_mode != WIFI_MODE_APSTA) {
+        ESP_LOGW(kTag, "Setup AP refused: Wi-Fi mode %d is owned elsewhere", (int)setup_previous_mode);
+        return ESP_ERR_INVALID_STATE;
+    }
     uint8_t mac[6] = {};
     error = esp_wifi_get_mac(WIFI_IF_STA, mac);
     if (error != ESP_OK) return error;
