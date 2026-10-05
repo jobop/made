@@ -104,6 +104,13 @@ private:
     static void receiverSelectCallback(lv_event_t *event);
     void showReceiverScan(bool visible);
     void renderReceiverScan();
+    static void themeOpenCallback(lv_event_t *event);
+    static void themeBackCallback(lv_event_t *event);
+    static void themeSelectCallback(lv_event_t *event);
+    static void themeSyncCallback(lv_event_t *event);
+    static void themeRebootCallback(lv_timer_t *timer);
+    void showTheme(bool visible);
+    void renderThemes();
     static void powerOpenCallback(lv_event_t *event);
     static void powerBackCallback(lv_event_t *event);
     static void powerTimeoutCallback(lv_event_t *event);
@@ -285,6 +292,11 @@ private:
     lv_obj_t *wifi_scan_status_ = nullptr;
     lv_obj_t *wifi_password_input_ = nullptr;
     vibe_wifi::StationScanSnapshot wifi_scan_snapshot_; // LVGL task only.
+    lv_obj_t *theme_panel_ = nullptr;
+    lv_obj_t *theme_rows_ = nullptr;
+    lv_obj_t *theme_status_label_ = nullptr;
+    std::string theme_rows_signature_; // LVGL task only.
+    std::string theme_pending_name_;   // 已应用待重启的主题。
     lv_obj_t *power_panel_ = nullptr;
     lv_obj_t *power_timeout_button_ = nullptr;
     lv_obj_t *power_timeout_label_ = nullptr;

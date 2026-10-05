@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "made_lock_screen.hpp"
+#include "vibe_theme.hpp"
 #include "made_layout.hpp"
 
 #include <algorithm>
@@ -10,7 +11,7 @@ LV_FONT_DECLARE(font_puhui_16_4);
 
 namespace made_lock_screen {
 namespace {
-constexpr uint32_t kBackground = 0x0B1518;
+constexpr uint32_t kBackground = 0x0B1518;  // 默认值；运行时取 vibe_theme::palette().lock_bg
 constexpr uint32_t kLime = 0xC7F58B;
 constexpr uint32_t kWhite = 0xF0F5EE;
 constexpr uint32_t kMuted = 0x99B3B1;
@@ -102,7 +103,7 @@ lv_obj_t *create(lv_obj_t *parent, lv_event_cb_t swipe_callback, void *user_data
     lv_obj_remove_style_all(root);
     lv_obj_set_pos(root, made_s(0), made_s(0));
     lv_obj_set_size(root, made_screen_w(), made_screen_h());
-    lv_obj_set_style_bg_color(root, lv_color_hex(kBackground), 0);
+    lv_obj_set_style_bg_color(root, lv_color_hex(vibe_theme::palette().lock_bg), 0);
     lv_obj_set_style_bg_opa(root, LV_OPA_COVER, 0);
     lv_obj_remove_flag(root, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_remove_flag(root, LV_OBJ_FLAG_GESTURE_BUBBLE);
@@ -117,17 +118,20 @@ lv_obj_t *create(lv_obj_t *parent, lv_event_cb_t swipe_callback, void *user_data
         lv_obj_add_event_cb(root, swipe_callback, LV_EVENT_PRESS_LOST, user_data);
     }
 
+    const bool theme_icon = vibe_theme::lockAsset().has_icon;
     // A soft stage and a small brand mark leave the character the main focus.
     auto *halo = shape(root, 81, 48, 198, 198, 0x12282B);
-    lv_obj_set_style_bg_grad_color(halo, lv_color_hex(kBackground), 0);
+    lv_obj_set_style_bg_grad_color(halo, lv_color_hex(vibe_theme::palette().lock_bg), 0);
     lv_obj_set_style_bg_grad_dir(halo, LV_GRAD_DIR_VER, 0);
     parts->brand = label(root, "made", 125, 27, 110, &lv_font_montserrat_16, kLime);
     lv_obj_set_style_text_letter_space(parts->brand, 3, 0);
-    parts->shadow = shape(root, 139, 214, 82, 9, 0x5B846D, 55);
-    parts->left_arm = line(root, 0xABD885, 6);
-    parts->right_arm = line(root, 0xABD885, 6);
-    parts->left_foot = shape(root, 150, 196, 18, 8, kLime);
-    parts->right_foot = shape(root, 194, 196, 18, 8, kLime);
+    if (!theme_icon) {
+        parts->shadow = shape(root, 139, 214, 82, 9, 0x5B846D, 55);
+        parts->left_arm = line(root, 0xABD885, 6);
+        parts->right_arm = line(root, 0xABD885, 6);
+        parts->left_foot = shape(root, 150, 196, 18, 8, kLime);
+        parts->right_foot = shape(root, 194, 196, 18, 8, kLime);
+    }
 
     // Crop the approved icon's frame away with an LVGL circular clip. The
     // original bean/face pixels remain intact; the limbs supply a dancing pose.
@@ -142,7 +146,18 @@ lv_obj_t *create(lv_obj_t *parent, lv_event_cb_t swipe_callback, void *user_data
     lv_obj_set_style_clip_corner(parts->body, true, 0);
     parts->image = lv_image_create(parts->body);
     passive(parts->image);
-    lv_image_set_src(parts->image, &img_app_vibe);
+    if (theme_icon) {
+        const auto &asset = vibe_theme::lockAsset();
+        static lv_image_dsc_t theme_icon_dsc = {};
+        theme_icon_dsc.header.cf = LV_COLOR_FORMAT_RGB565;
+        theme_icon_dsc.header.w = asset.icon_w;
+        theme_icon_dsc.header.h = asset.icon_h;
+        theme_icon_dsc.data = asset.icon_data;
+        theme_icon_dsc.data_size = static_cast<uint32_t>(asset.icon_w) * asset.icon_h * 2;
+        lv_image_set_src(parts->image, &theme_icon_dsc);
+    } else {
+        lv_image_set_src(parts->image, &img_app_vibe);
+    }
     lv_obj_set_pos(parts->image, 12, 12);
     lv_image_set_pivot(parts->image, 56, 56);
     lv_image_set_scale(parts->image, 368);

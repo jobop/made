@@ -1,0 +1,19 @@
+{
+  "title": "日落",
+  "colors": {
+    "accent": "E07840",
+    "btn_normal": "5C3328",
+    "btn_cancel": "6B4A38",
+    "border": "E0A080",
+    "text_primary": "FFF3E8",
+    "text_secondary": "E8C4A8",
+    "text_hint": "C09070",
+    "text_accent": "FFC088",
+    "title": "FFE8D0",
+    "bg_page": "1F1210",
+    "bg_panel": "2A1714",
+    "bg_row": "3A201B",
+    "danger": "A84040",
+    "lock_bg": "1A0F0C"
+  }
+}

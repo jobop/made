@@ -21,6 +21,7 @@
 #include "XiaozhiApp.hpp"
 #include "esp_brookesia_app_vibe.hpp"
 #include "vibe_wifi.hpp"
+#include "vibe_theme.hpp"
 
 
 using namespace esp_brookesia;
@@ -48,6 +49,10 @@ extern "C" void app_main(void)
     const esp_err_t spiffs_result = bsp_spiffs_mount();
     if (spiffs_result != ESP_OK) {
         ESP_LOGW(TAG, "Optional font assets unavailable: %s", esp_err_to_name(spiffs_result));
+    }
+
+    if (vibe_theme::init() != ESP_OK) {
+        ESP_LOGW(TAG, "Theme init failed; using default palette");
     }
 
 

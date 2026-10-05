@@ -468,6 +468,67 @@ export function createApp(config, { run, transcribe, tunnel: providedTunnel, ena
         }
         return;
       }
+      // ---- 主题包（themes/<名字>/theme.json + 可选资产文件）----
+      if (req.method === 'GET' && url.pathname === '/api/themes') {
+        const themesDir = path.join(ROOT, 'themes');
+        const out = [];
+        try {
+          for (const entry of fs.readdirSync(themesDir, { withFileTypes: true })) {
+            if (!entry.isDirectory()) continue;
+            const manifestPath = path.join(themesDir, entry.name, 'theme.json');
+            if (!fs.existsSync(manifestPath)) continue;
+            let title = entry.name;
+            try {
+              title = JSON.parse(fs.readFileSync(manifestPath, 'utf8')).title || title;
+            } catch {}
+            out.push({ name: entry.name, title });
+          }
+        } catch {}
+        deviceSend(res, 200, out, false);
+        return;
+      }
+      const themeManifestMatch =
+        req.method === 'GET' && url.pathname.match(/^\/api\/themes\/([^/]+)$/);
+      if (themeManifestMatch) {
+        const name = themeManifestMatch[1];
+        if (!/^[A-Za-z0-9_-]+$/.test(name)) {
+          deviceSend(res, 400, { error: '主题名无效' });
+          return;
+        }
+        const dir = path.join(ROOT, 'themes', name);
+        const manifestPath = path.join(dir, 'theme.json');
+        if (!fs.existsSync(manifestPath)) {
+          deviceSend(res, 404, { error: '主题不存在' });
+          return;
+        }
+        let title = name;
+        try {
+          title = JSON.parse(fs.readFileSync(manifestPath, 'utf8')).title || title;
+        } catch {}
+        const files = fs
+          .readdirSync(dir)
+          .filter((f) => fs.statSync(path.join(dir, f)).isFile());
+        deviceSend(res, 200, { name, title, files }, false);
+        return;
+      }
+      const themeFileMatch =
+        req.method === 'GET' &&
+        url.pathname.match(/^\/api\/themes\/([^/]+)\/files\/([A-Za-z0-9_.-]+)$/);
+      if (themeFileMatch) {
+        const [, themeName, themeFile] = themeFileMatch;
+        if (!/^[A-Za-z0-9_-]+$/.test(themeName)) {
+          deviceSend(res, 400, { error: '主题名无效' });
+          return;
+        }
+        const filePath = path.join(ROOT, 'themes', themeName, themeFile);
+        if (!fs.existsSync(filePath) || !fs.statSync(filePath).isFile()) {
+          deviceSend(res, 404, { error: '文件不存在' });
+          return;
+        }
+        res.writeHead(200, { 'Content-Type': 'application/octet-stream' });
+        fs.createReadStream(filePath).pipe(res);
+        return;
+      }
       if (req.method === 'POST' && url.pathname === '/pair/request') {
         deviceSend(res, 202, pairing.request(await body(req), address, normalizedAuthority(req.headers.host) || '未知地址'));
         return;

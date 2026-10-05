@@ -16,6 +16,7 @@
 #include "driver/gpio.h"
 #include "esp_crt_bundle.h"
 #include "esp_log.h"
+#include "esp_system.h"
 #include "esp_timer.h"
 #include "esp_wifi.h"
 #include "freertos/FreeRTOS.h"
@@ -25,6 +26,7 @@
 #include "vibe_pairing.hpp"
 #include "vibe_voice_capture.hpp"
 #include "vibe_wifi.hpp"
+#include "vibe_theme.hpp"
 #include "vibe_usb.hpp"
 #include "vibe_i18n.hpp"
 #include "vibe_touch_keyboard.hpp"
@@ -43,6 +45,8 @@ std::vector<LocalizedLabel> localized_labels; // LVGL thread only; all belong to
 void bindLabel(lv_obj_t *label, const char *key) {
     if (key && vibe_i18n::known(key)) localized_labels.push_back({label, key});
 }
+
+#define VT(key) (vibe_theme::palette().key)
 
 constexpr size_t MAX_RESPONSE_BYTES = 32 * 1024;
 constexpr uint32_t POLL_INTERVAL_MS = 2200;
@@ -111,16 +115,17 @@ void placePageHeader(lv_obj_t *left, lv_obj_t *title, lv_obj_t *right)
 
 lv_obj_t *touchButton(lv_obj_t *parent, int x, int y, int width, int height,
                       const char *caption, lv_event_cb_t callback, void *user,
-                      uint32_t color = 0x284668)
+                      uint32_t color = 0)
 {
     const bool page = isPage(parent);
+    if (color == 0) color = VT(btn_normal);
     lv_obj_t *button = lv_btn_create(parent);
     lv_obj_set_pos(button, page ? made_page_x(x) : made_x(x), page ? made_page_y(y) : made_y(y));
     lv_obj_set_size(button, page ? made_page_w(width) : made_s(width), page ? made_page_h(height) : made_s(height));
     lv_obj_set_style_radius(button, made_s(12) > 0 ? made_s(12) : 1, 0);
     lv_obj_set_overflow_visible(button, true);
     lv_obj_set_style_bg_color(button, lv_color_hex(color), 0);
-    lv_obj_set_style_border_color(button, lv_color_hex(0x83B5E6), 0);
+    lv_obj_set_style_border_color(button, lv_color_hex(VT(border)), 0);
     lv_obj_set_style_border_width(button, 1, 0);
     lv_obj_set_style_pad_all(button, 0, 0);
     lv_obj_remove_flag(button, LV_OBJ_FLAG_SCROLLABLE);
@@ -131,7 +136,7 @@ lv_obj_t *touchButton(lv_obj_t *parent, int x, int y, int width, int height,
         lv_label_set_text(label, T(caption));
         bindLabel(label, caption);
         lv_obj_set_style_text_align(label, LV_TEXT_ALIGN_CENTER, 0);
-        lv_obj_set_style_text_color(label, lv_color_hex(0xF1F5FF), 0);
+        lv_obj_set_style_text_color(label, lv_color_hex(VT(text_primary)), 0);
         lv_obj_set_style_text_font(label, text_font, 0);
         made_text(label, width - 12, true);
         lv_obj_center(label);
@@ -141,9 +146,10 @@ lv_obj_t *touchButton(lv_obj_t *parent, int x, int y, int width, int height,
 }
 
 lv_obj_t *settingsLabel(lv_obj_t *parent, const char *caption, int x, int y, int width,
-                        uint32_t color = 0xE7EEFF, bool localize = true)
+                        uint32_t color = 0, bool localize = true)
 {
     lv_obj_t *label = lv_label_create(parent);
+    if (color == 0) color = VT(title);
     lv_label_set_text(label, localize ? T(caption) : caption);
     if (localize) bindLabel(label, caption);
     lv_obj_set_style_text_align(label, LV_TEXT_ALIGN_CENTER, 0);
@@ -267,7 +273,7 @@ bool VibeCoding::run()
     // swipes beginning on blank space or a non-clickable label reach Vibe.
     lv_obj_add_flag(screen, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_remove_flag(screen, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_set_style_bg_color(screen, lv_color_hex(0x091321), 0);
+    lv_obj_set_style_bg_color(screen, lv_color_hex(VT(bg_page)), 0);
     lv_obj_set_style_bg_opa(screen, LV_OPA_COVER, 0);
     lv_obj_add_event_cb(screen, providerSwipeCallback, LV_EVENT_GESTURE, this);
     // Vertical swipes on the header browse sessions. The answer area below owns
@@ -291,7 +297,7 @@ bool VibeCoding::run()
     icon_placeholder_ = lv_label_create(animal_halo_);
     lv_label_set_text(icon_placeholder_, "?");
     lv_obj_set_style_text_font(icon_placeholder_, &lv_font_montserrat_26, 0);
-    lv_obj_set_style_text_color(icon_placeholder_, lv_color_hex(0x9FADD0), 0);
+    lv_obj_set_style_text_color(icon_placeholder_, lv_color_hex(VT(text_hint)), 0);
     lv_obj_center(icon_placeholder_);
     lv_obj_add_flag(animal_halo_, LV_OBJ_FLAG_HIDDEN);
     rendered_icon_ = {};
@@ -301,7 +307,7 @@ bool VibeCoding::run()
     lv_obj_set_pos(page_label_, made_x(246), made_y(111));
     lv_obj_set_width(page_label_, made_s(60));
     lv_obj_set_style_text_align(page_label_, LV_TEXT_ALIGN_CENTER, 0);
-    lv_obj_set_style_text_color(page_label_, lv_color_hex(0x9FADD0), 0);
+    lv_obj_set_style_text_color(page_label_, lv_color_hex(VT(text_hint)), 0);
     lv_obj_set_style_text_font(page_label_, &lv_font_montserrat_12, 0);
 
     // Creating a conversation is explicit. This touch target is large enough
@@ -310,15 +316,15 @@ bool VibeCoding::run()
     lv_obj_set_pos(new_session_button_, made_x(270), made_y(59));
     lv_obj_set_size(new_session_button_, made_s(40), made_s(40));
     lv_obj_set_style_radius(new_session_button_, 20, 0);
-    lv_obj_set_style_bg_color(new_session_button_, lv_color_hex(0x284668), 0);
-    lv_obj_set_style_border_color(new_session_button_, lv_color_hex(0x83B5E6), 0);
+    lv_obj_set_style_bg_color(new_session_button_, lv_color_hex(VT(btn_normal)), 0);
+    lv_obj_set_style_border_color(new_session_button_, lv_color_hex(VT(border)), 0);
     lv_obj_set_style_border_width(new_session_button_, 1, 0);
     lv_obj_set_style_pad_all(new_session_button_, 0, 0);
     lv_obj_remove_flag(new_session_button_, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_add_event_cb(new_session_button_, newSessionCallback, LV_EVENT_CLICKED, this);
     lv_obj_t *new_session_mark = lv_label_create(new_session_button_);
     lv_label_set_text(new_session_mark, "+");
-    lv_obj_set_style_text_color(new_session_mark, lv_color_hex(0xF1F5FF), 0);
+    lv_obj_set_style_text_color(new_session_mark, lv_color_hex(VT(text_primary)), 0);
     lv_obj_set_style_text_font(new_session_mark, &lv_font_montserrat_26, 0);
     lv_obj_remove_flag(new_session_mark, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_center(new_session_mark);
@@ -327,8 +333,8 @@ bool VibeCoding::run()
     lv_obj_set_pos(delete_session_button_, made_x(225), made_y(59));
     lv_obj_set_size(delete_session_button_, made_s(40), made_s(40));
     lv_obj_set_style_radius(delete_session_button_, 20, 0);
-    lv_obj_set_style_bg_color(delete_session_button_, lv_color_hex(0x284668), 0);
-    lv_obj_set_style_border_color(delete_session_button_, lv_color_hex(0x83B5E6), 0);
+    lv_obj_set_style_bg_color(delete_session_button_, lv_color_hex(VT(btn_normal)), 0);
+    lv_obj_set_style_border_color(delete_session_button_, lv_color_hex(VT(border)), 0);
     lv_obj_set_style_border_width(delete_session_button_, 1, 0);
     lv_obj_set_style_pad_all(delete_session_button_, 0, 0);
     lv_obj_remove_flag(delete_session_button_, LV_OBJ_FLAG_SCROLLABLE);
@@ -336,7 +342,7 @@ bool VibeCoding::run()
     lv_obj_add_event_cb(delete_session_button_, deleteSessionCallback, LV_EVENT_CLICKED, this);
     lv_obj_t *delete_session_mark = lv_label_create(delete_session_button_);
     lv_label_set_text(delete_session_mark, "-");
-    lv_obj_set_style_text_color(delete_session_mark, lv_color_hex(0xF1F5FF), 0);
+    lv_obj_set_style_text_color(delete_session_mark, lv_color_hex(VT(text_primary)), 0);
     lv_obj_set_style_text_font(delete_session_mark, &lv_font_montserrat_26, 0);
     lv_obj_remove_flag(delete_session_mark, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_center(delete_session_mark);
@@ -352,7 +358,7 @@ bool VibeCoding::run()
         lv_obj_t *part = lv_obj_create(settings_button_);
         lv_obj_set_pos(part, made_s(tooth[0]), made_s(tooth[1]));
         lv_obj_set_size(part, made_s(8), made_s(8));
-        lv_obj_set_style_bg_color(part, lv_color_hex(0xF1F5FF), 0);
+        lv_obj_set_style_bg_color(part, lv_color_hex(VT(text_primary)), 0);
         lv_obj_set_style_border_width(part, 0, 0);
         lv_obj_set_style_pad_all(part, 0, 0);
         lv_obj_remove_flag(part, LV_OBJ_FLAG_CLICKABLE);
@@ -362,7 +368,7 @@ bool VibeCoding::run()
     lv_obj_set_pos(gear_ring, made_s(10), made_s(10));
     lv_obj_set_size(gear_ring, made_s(20), made_s(20));
     lv_obj_set_style_radius(gear_ring, 10, 0);
-    lv_obj_set_style_bg_color(gear_ring, lv_color_hex(0xF1F5FF), 0);
+    lv_obj_set_style_bg_color(gear_ring, lv_color_hex(VT(text_primary)), 0);
     lv_obj_set_style_border_width(gear_ring, 0, 0);
     lv_obj_set_style_pad_all(gear_ring, 0, 0);
     lv_obj_remove_flag(gear_ring, LV_OBJ_FLAG_CLICKABLE);
@@ -370,14 +376,14 @@ bool VibeCoding::run()
     lv_obj_set_pos(gear_hole, made_s(6), made_s(6));
     lv_obj_set_size(gear_hole, made_s(8), made_s(8));
     lv_obj_set_style_radius(gear_hole, 4, 0);
-    lv_obj_set_style_bg_color(gear_hole, lv_color_hex(0x284668), 0);
+    lv_obj_set_style_bg_color(gear_hole, lv_color_hex(VT(btn_normal)), 0);
     lv_obj_set_style_border_width(gear_hole, 0, 0);
     lv_obj_remove_flag(gear_hole, LV_OBJ_FLAG_CLICKABLE);
 
     settings_overlay_ = lv_obj_create(screen);
     lv_obj_set_pos(settings_overlay_, made_s(0), made_s(0));
     lv_obj_set_size(settings_overlay_, made_screen_w(), made_screen_h());
-    lv_obj_set_style_bg_color(settings_overlay_, lv_color_hex(0x091321), 0);
+    lv_obj_set_style_bg_color(settings_overlay_, lv_color_hex(VT(bg_page)), 0);
     lv_obj_set_style_bg_opa(settings_overlay_, LV_OPA_COVER, 0);
     lv_obj_set_style_border_width(settings_overlay_, 0, 0);
     lv_obj_set_style_pad_all(settings_overlay_, 0, 0);
@@ -391,10 +397,11 @@ bool VibeCoding::run()
     lv_obj_set_style_pad_all(settings_home_, 0, 0);
     lv_obj_remove_flag(settings_home_, LV_OBJ_FLAG_SCROLLABLE);
     settingsLabel(settings_home_, T("设置"), 92, 48, 176);
-    touchButton(settings_home_, 63, 100, 234, 52, "settings.connection", accessOpenCallback, this);
-    touchButton(settings_home_, 63, 160, 234, 52, T("电源设置"), powerOpenCallback, this);
-    touchButton(settings_home_, 63, 220, 234, 52, "settings.language", languageOpenCallback, this);
-    touchButton(settings_home_, 125, 279, 110, 38, T("返回"), settingsCloseCallback, this);
+    touchButton(settings_home_, 63, 98, 234, 42, "settings.connection", accessOpenCallback, this);
+    touchButton(settings_home_, 63, 144, 234, 42, T("主题设置"), themeOpenCallback, this);
+    touchButton(settings_home_, 63, 190, 234, 42, T("电源设置"), powerOpenCallback, this);
+    touchButton(settings_home_, 63, 236, 234, 42, "settings.language", languageOpenCallback, this);
+    touchButton(settings_home_, 125, 284, 110, 32, T("返回"), settingsCloseCallback, this);
 
     language_panel_ = lv_obj_create(settings_overlay_);
     lv_obj_set_size(language_panel_, made_screen_w(), made_screen_h());
@@ -407,9 +414,31 @@ bool VibeCoding::run()
     language_zh_button_ = touchButton(language_panel_, 70, 85, 220, 46, "中文", languageCallback, this);
     language_en_button_ = touchButton(language_panel_, 70, 143, 220, 46, "English", languageCallback, this);
     language_auto_button_ = touchButton(language_panel_, 70, 201, 220, 46, T("跟随电脑"), languageCallback, this);
-    language_hint_ = settingsLabel(language_panel_, T("设备语言独立保存"), 55, 259, 250, 0x9FADD0);
+    language_hint_ = settingsLabel(language_panel_, T("设备语言独立保存"), 55, 259, 250, VT(text_hint));
     touchButton(language_panel_, 125, 292, 110, 34, T("返回"), languageBackCallback, this);
     lv_obj_add_flag(language_panel_, LV_OBJ_FLAG_HIDDEN);
+
+    theme_panel_ = lv_obj_create(settings_overlay_);
+    lv_obj_set_size(theme_panel_, made_screen_w(), made_screen_h());
+    markPage(theme_panel_);
+    lv_obj_set_style_bg_opa(theme_panel_, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(theme_panel_, 0, 0);
+    lv_obj_set_style_pad_all(theme_panel_, 0, 0);
+    lv_obj_remove_flag(theme_panel_, LV_OBJ_FLAG_SCROLLABLE);
+    settingsLabel(theme_panel_, T("主题设置"), 70, 34, 220);
+    touchButton(theme_panel_, 70, 60, 220, 32, T("从电脑同步主题"), themeSyncCallback, this, 0x42566B);
+    theme_status_label_ = settingsLabel(theme_panel_, "", 40, 96, 280, VT(text_hint));
+    theme_rows_ = lv_obj_create(theme_panel_);
+    lv_obj_set_pos(theme_rows_, made_page_x(20), made_page_y(112));
+    lv_obj_set_size(theme_rows_, made_page_w(280), made_page_y(280) - made_page_y(112));
+    lv_obj_set_style_bg_opa(theme_rows_, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(theme_rows_, 0, 0);
+    lv_obj_set_style_pad_all(theme_rows_, 0, 0);
+    lv_obj_set_scroll_dir(theme_rows_, LV_DIR_VER);
+    lv_obj_set_scrollbar_mode(theme_rows_, LV_SCROLLBAR_MODE_AUTO);
+    lv_obj_remove_flag(theme_rows_, LV_OBJ_FLAG_GESTURE_BUBBLE);
+    touchButton(theme_panel_, 125, 288, 110, 30, T("返回"), themeBackCallback, this);
+    lv_obj_add_flag(theme_panel_, LV_OBJ_FLAG_HIDDEN);
 
     power_panel_ = lv_obj_create(settings_overlay_);
     lv_obj_set_size(power_panel_, made_screen_w(), made_screen_h());
@@ -419,10 +448,10 @@ bool VibeCoding::run()
     lv_obj_set_style_pad_all(power_panel_, 0, 0);
     lv_obj_remove_flag(power_panel_, LV_OBJ_FLAG_SCROLLABLE);
     settingsLabel(power_panel_, T("电源设置"), 70, 38, 220);
-    settingsLabel(power_panel_, T("空闲自动熄屏"), 55, 100, 250, 0xB8C9E4);
+    settingsLabel(power_panel_, T("空闲自动熄屏"), 55, 100, 250, VT(text_secondary));
     power_timeout_button_ = touchButton(power_panel_, 70, 130, 220, 46, nullptr, powerTimeoutCallback, this);
     power_timeout_label_ = settingsLabel(power_timeout_button_, "", 0, 12, 220);
-    settingsLabel(power_panel_, T("熄屏只关背光，连接与心跳不受影响；触摸屏幕即可点亮"), 45, 205, 270, 0x9FADD0);
+    settingsLabel(power_panel_, T("熄屏只关背光，连接与心跳不受影响；触摸屏幕即可点亮"), 45, 205, 270, VT(text_hint));
     touchButton(power_panel_, 125, 292, 110, 34, T("返回"), powerBackCallback, this);
     lv_obj_add_flag(power_panel_, LV_OBJ_FLAG_HIDDEN);
     loadScreenOffTimeout();
@@ -436,13 +465,13 @@ bool VibeCoding::run()
     lv_obj_remove_flag(access_panel_, LV_OBJ_FLAG_SCROLLABLE);
     // Keep the editor actions near the top of the round display. Buttons at
     // y=314 were inside the drawn circle but unreliable at its touch edge.
-    lv_obj_t *access_back = touchButton(access_panel_, 86, 29, 58, 36, T("返回"), accessBackCallback, this, 0x42566B);
+    lv_obj_t *access_back = touchButton(access_panel_, 86, 29, 58, 36, T("返回"), accessBackCallback, this, VT(btn_cancel));
     lv_obj_t *access_title = settingsLabel(access_panel_, T("接入设置"), 144, 39, 72);
-    access_save_button_ = touchButton(access_panel_, 216, 29, 58, 36, T("保存"), accessSaveCallback, this, 0x1C856F);
+    access_save_button_ = touchButton(access_panel_, 216, 29, 58, 36, T("保存"), accessSaveCallback, this, VT(accent));
     placePageHeader(access_back, access_title, access_save_button_);
     // Choose a transport separately from editing its fields. Four narrow tabs
     // were easy to mistap on this round display; these targets have 18 px gaps.
-    access_picker_hint_ = settingsLabel(access_panel_, T("选择连接方式"), 65, 78, 230, 0xB8C9E4);
+    access_picker_hint_ = settingsLabel(access_panel_, T("选择连接方式"), 65, 78, 230, VT(text_secondary));
     access_auto_button_ = touchButton(access_panel_, 45, 104, 126, 64,
                                       "Wi-Fi", accessModeCallback, this);
     access_manual_button_ = touchButton(access_panel_, 189, 104, 126, 64,
@@ -452,16 +481,16 @@ bool VibeCoding::run()
     access_usb_button_ = touchButton(access_panel_, 189, 186, 126, 64,
                                      T("USB 直连"), accessModeCallback, this);
     phone_setup_button_ = touchButton(access_panel_, 70, 273, 220, 44,
-                                       "手机配置", phoneSetupOpenCallback, this, 0x1C856F);
+                                       "手机配置", phoneSetupOpenCallback, this, VT(accent));
     access_change_button_ = touchButton(access_panel_, 54, 74, 252, 32,
                                         nullptr, accessPickerCallback, this);
     access_change_label_ = settingsLabel(access_change_button_, "", 0, 6, 252);
     lv_obj_set_pos(access_change_label_, made_s(0), made_s(6));
     lv_obj_remove_flag(access_change_label_, LV_OBJ_FLAG_CLICKABLE);
-    access_status_label_ = settingsLabel(access_panel_, T("公网地址请选择 HTTPS"), 47, 109, 266, 0x8CE4CB);
+    access_status_label_ = settingsLabel(access_panel_, T("公网地址请选择 HTTPS"), 47, 109, 266, VT(text_accent));
     lv_label_set_long_mode(access_status_label_, LV_LABEL_LONG_DOT);
     access_usb_hint_ = settingsLabel(access_panel_,
-        T("用数据线连接电脑\n打开电脑桥接器\n保存后核对六位配对码"), 65, 152, 230, 0xB8C9E4);
+        T("用数据线连接电脑\n打开电脑桥接器\n保存后核对六位配对码"), 65, 152, 230, VT(text_secondary));
     lv_obj_set_style_text_line_space(access_usb_hint_, 10, 0);
     lv_obj_add_flag(access_usb_hint_, LV_OBJ_FLAG_HIDDEN);
     access_host_input_ = lv_textarea_create(access_panel_);
@@ -511,7 +540,7 @@ bool VibeCoding::run()
     lv_obj_set_pos(receiver_picker_, made_s(0), made_s(0));
     lv_obj_set_size(receiver_picker_, made_screen_w(), made_screen_h());
     markPage(receiver_picker_);
-    lv_obj_set_style_bg_color(receiver_picker_, lv_color_hex(0x091321), 0);
+    lv_obj_set_style_bg_color(receiver_picker_, lv_color_hex(VT(bg_page)), 0);
     lv_obj_set_style_bg_opa(receiver_picker_, LV_OPA_COVER, 0);
     lv_obj_set_style_border_width(receiver_picker_, 0, 0);
     lv_obj_set_style_pad_all(receiver_picker_, 0, 0);
@@ -530,19 +559,19 @@ bool VibeCoding::run()
     lv_obj_set_scroll_dir(receiver_list_, LV_DIR_VER);
     lv_obj_set_scrollbar_mode(receiver_list_, LV_SCROLLBAR_MODE_AUTO);
     lv_obj_remove_flag(receiver_list_, LV_OBJ_FLAG_GESTURE_BUBBLE);
-    receiver_hint_ = settingsLabel(receiver_picker_, "", 60, 274, 240, 0xB8C9E4);
+    receiver_hint_ = settingsLabel(receiver_picker_, "", 60, 274, 240, VT(text_secondary));
     touchButton(receiver_picker_, 125, 304, 110, 34, "手动填写", receiverScanBackCallback, this);
     lv_obj_add_flag(receiver_picker_, LV_OBJ_FLAG_HIDDEN);
     receiver_scan_revision_ = UINT32_MAX;
     // Wi-Fi 模式页里的扫描入口与选网卡子页（布局沿用接收端选择器）。
     wifi_scan_button_ = touchButton(access_panel_, 65, 215, 230, 46,
-        T("扫描 Wi-Fi 网络"), wifiScanOpenCallback, this, 0x1C856F);
+        T("扫描 Wi-Fi 网络"), wifiScanOpenCallback, this, VT(accent));
     lv_obj_add_flag(wifi_scan_button_, LV_OBJ_FLAG_HIDDEN);
     wifi_picker_ = lv_obj_create(access_panel_);
     lv_obj_set_pos(wifi_picker_, made_s(0), made_s(0));
     lv_obj_set_size(wifi_picker_, made_screen_w(), made_screen_h());
     markPage(wifi_picker_);
-    lv_obj_set_style_bg_color(wifi_picker_, lv_color_hex(0x091321), 0);
+    lv_obj_set_style_bg_color(wifi_picker_, lv_color_hex(VT(bg_page)), 0);
     lv_obj_set_style_bg_opa(wifi_picker_, LV_OPA_COVER, 0);
     lv_obj_set_style_border_width(wifi_picker_, 0, 0);
     lv_obj_set_style_pad_all(wifi_picker_, 0, 0);
@@ -560,7 +589,7 @@ bool VibeCoding::run()
     lv_obj_set_scroll_dir(wifi_network_list_, LV_DIR_VER);
     lv_obj_set_scrollbar_mode(wifi_network_list_, LV_SCROLLBAR_MODE_AUTO);
     lv_obj_remove_flag(wifi_network_list_, LV_OBJ_FLAG_GESTURE_BUBBLE);
-    wifi_scan_status_ = settingsLabel(wifi_picker_, "", 60, 274, 240, 0xB8C9E4);
+    wifi_scan_status_ = settingsLabel(wifi_picker_, "", 60, 274, 240, VT(text_secondary));
     lv_obj_add_flag(wifi_picker_, LV_OBJ_FLAG_HIDDEN);
     wifi_scan_list_revision_ = UINT32_MAX;
     // A field opens a full-screen editor with five wide keys per row.
@@ -568,14 +597,14 @@ bool VibeCoding::run()
     lv_obj_set_pos(access_editor_panel_, made_s(0), made_s(0));
     lv_obj_set_size(access_editor_panel_, made_screen_w(), made_screen_h());
     markPage(access_editor_panel_);
-    lv_obj_set_style_bg_color(access_editor_panel_, lv_color_hex(0x0B1830), 0);
+    lv_obj_set_style_bg_color(access_editor_panel_, lv_color_hex(VT(bg_panel)), 0);
     lv_obj_set_style_bg_opa(access_editor_panel_, LV_OPA_COVER, 0);
     lv_obj_set_style_border_width(access_editor_panel_, 0, 0);
     lv_obj_set_style_pad_all(access_editor_panel_, 0, 0);
     lv_obj_remove_flag(access_editor_panel_, LV_OBJ_FLAG_SCROLLABLE);
-    touchButton(access_editor_panel_, 78, 29, 76, 38, T("取消"), accessEditorCancelCallback, this, 0x42566B);
-    touchButton(access_editor_panel_, 206, 29, 76, 38, T("完成"), accessEditorDoneCallback, this, 0x1C856F);
-    access_editor_title_ = settingsLabel(access_editor_panel_, "", 55, 75, 250, 0xB8C9E4);
+    touchButton(access_editor_panel_, 78, 29, 76, 38, T("取消"), accessEditorCancelCallback, this, VT(btn_cancel));
+    touchButton(access_editor_panel_, 206, 29, 76, 38, T("完成"), accessEditorDoneCallback, this, VT(accent));
+    access_editor_title_ = settingsLabel(access_editor_panel_, "", 55, 75, 250, VT(text_secondary));
     access_editor_input_ = lv_textarea_create(access_editor_panel_);
     lv_obj_set_pos(access_editor_input_, made_page_x(54), made_page_y(105));
     lv_obj_set_size(access_editor_input_, made_page_w(252), made_page_h(44));
@@ -584,11 +613,11 @@ bool VibeCoding::run()
     lv_obj_add_event_cb(access_editor_input_, accessEditorDoneCallback, LV_EVENT_READY, this);
     for (lv_obj_t *field : {access_host_input_, access_port_input_,
                            access_password_input_, access_editor_input_}) {
-        lv_obj_set_style_bg_color(field, lv_color_hex(0x10243B), LV_PART_MAIN);
+        lv_obj_set_style_bg_color(field, lv_color_hex(VT(bg_row)), LV_PART_MAIN);
         lv_obj_set_style_bg_opa(field, LV_OPA_COVER, LV_PART_MAIN);
-        lv_obj_set_style_text_color(field, lv_color_hex(0xF1F5FF), LV_PART_MAIN);
+        lv_obj_set_style_text_color(field, lv_color_hex(VT(text_primary)), LV_PART_MAIN);
         lv_obj_set_style_text_color(field, lv_color_hex(0xA8BED9), LV_PART_TEXTAREA_PLACEHOLDER);
-        lv_obj_set_style_border_color(field, lv_color_hex(0x83B5E6), LV_PART_MAIN);
+        lv_obj_set_style_border_color(field, lv_color_hex(VT(border)), LV_PART_MAIN);
         lv_obj_set_style_border_width(field, 1, LV_PART_MAIN);
     }
     lv_obj_add_flag(access_editor_panel_, LV_OBJ_FLAG_HIDDEN);
@@ -598,7 +627,7 @@ bool VibeCoding::run()
     phone_setup_panel_ = lv_obj_create(settings_overlay_);
     lv_obj_set_size(phone_setup_panel_, made_screen_w(), made_screen_h());
     markPage(phone_setup_panel_);
-    lv_obj_set_style_bg_color(phone_setup_panel_, lv_color_hex(0x091321), 0);
+    lv_obj_set_style_bg_color(phone_setup_panel_, lv_color_hex(VT(bg_page)), 0);
     lv_obj_set_style_bg_opa(phone_setup_panel_, LV_OPA_COVER, 0);
     lv_obj_set_style_border_width(phone_setup_panel_, 0, 0);
     lv_obj_set_style_pad_all(phone_setup_panel_, 0, 0);
@@ -607,7 +636,7 @@ bool VibeCoding::run()
     lv_obj_t *phone_back = touchButton(phone_setup_panel_, 76, 28, 68, 36, "返回", phoneSetupBackCallback, this);
     lv_obj_t *phone_title = settingsLabel(phone_setup_panel_, "手机配置", 148, 37, 136);
     placePageHeader(phone_back, phone_title, nullptr);
-    phone_setup_hint_ = settingsLabel(phone_setup_panel_, "", 55, 69, 250, 0x8CE4CB, false);
+    phone_setup_hint_ = settingsLabel(phone_setup_panel_, "", 55, 69, 250, VT(text_accent), false);
     phone_setup_qr_ = lv_qrcode_create(phone_setup_panel_);
     lv_qrcode_set_size(phone_setup_qr_, made_s(150));
     lv_qrcode_set_dark_color(phone_setup_qr_, lv_color_black());
@@ -615,15 +644,15 @@ bool VibeCoding::run()
     lv_qrcode_set_quiet_zone(phone_setup_qr_, true);
     lv_obj_set_pos(phone_setup_qr_, (made_screen_w() - made_s(150)) / 2, made_page_y(108));
     lv_obj_add_flag(phone_setup_qr_, LV_OBJ_FLAG_HIDDEN);
-    phone_setup_network_ = settingsLabel(phone_setup_panel_, "", 55, 281, 250, 0xE7EEFF, false);
-    phone_setup_password_ = settingsLabel(phone_setup_panel_, "", 65, 302, 230, 0xE7EEFF, false);
-    phone_setup_address_ = settingsLabel(phone_setup_panel_, "", 85, 323, 190, 0xB8C9E4, false);
+    phone_setup_network_ = settingsLabel(phone_setup_panel_, "", 55, 281, 250, VT(title), false);
+    phone_setup_password_ = settingsLabel(phone_setup_panel_, "", 65, 302, 230, VT(title), false);
+    phone_setup_address_ = settingsLabel(phone_setup_panel_, "", 85, 323, 190, VT(text_secondary), false);
     lv_obj_add_flag(phone_setup_panel_, LV_OBJ_FLAG_HIDDEN);
 
     provider_label_ = lv_label_create(screen);
     lv_obj_set_pos(provider_label_, made_x(50), made_y(108));
     lv_obj_set_style_text_align(provider_label_, LV_TEXT_ALIGN_CENTER, 0);
-    lv_obj_set_style_text_color(provider_label_, lv_color_hex(0xF1F5FF), 0);
+    lv_obj_set_style_text_color(provider_label_, lv_color_hex(VT(text_primary)), 0);
     lv_obj_set_style_text_font(provider_label_, &lv_font_montserrat_26, 0);
     made_text(provider_label_, 260, false);
 
@@ -631,7 +660,7 @@ bool VibeCoding::run()
     lv_obj_set_pos(position_label_, made_x(50), made_y(145));
     lv_label_set_long_mode(position_label_, LV_LABEL_LONG_DOT);
     lv_obj_set_style_text_align(position_label_, LV_TEXT_ALIGN_CENTER, 0);
-    lv_obj_set_style_text_color(position_label_, lv_color_hex(0x8CE4CB), 0);
+    lv_obj_set_style_text_color(position_label_, lv_color_hex(VT(text_accent)), 0);
     lv_obj_set_style_text_font(position_label_, text_font, 0);
     made_text(position_label_, 260, false);
 
@@ -652,7 +681,7 @@ bool VibeCoding::run()
     meta_label_ = lv_label_create(screen);
     lv_obj_set_pos(meta_label_, made_x(65), made_y(202));
     lv_obj_set_style_text_align(meta_label_, LV_TEXT_ALIGN_CENTER, 0);
-    lv_obj_set_style_text_color(meta_label_, lv_color_hex(0xF1F5FF), 0);
+    lv_obj_set_style_text_color(meta_label_, lv_color_hex(VT(text_primary)), 0);
     lv_obj_set_style_text_font(meta_label_, &lv_font_montserrat_26, 0);
     made_text(meta_label_, 230, false);
     lv_obj_add_flag(meta_label_, LV_OBJ_FLAG_HIDDEN);
@@ -684,7 +713,7 @@ bool VibeCoding::run()
     lv_obj_set_pos(result_label_, made_s(13), made_s(4));
     lv_label_set_long_mode(result_label_, LV_LABEL_LONG_WRAP);
     lv_obj_set_style_text_align(result_label_, LV_TEXT_ALIGN_LEFT, 0);
-    lv_obj_set_style_text_color(result_label_, lv_color_hex(0xE7EEFF), 0);
+    lv_obj_set_style_text_color(result_label_, lv_color_hex(VT(title)), 0);
     lv_obj_set_style_text_font(result_label_, text_font, 0);
     made_text(result_label_, 196, false);
     lv_obj_set_style_text_line_space(result_label_, 4, 0);
@@ -732,16 +761,16 @@ bool VibeCoding::run()
     lv_obj_set_pos(bridge_picker_, made_s(0), made_s(0));
     lv_obj_set_size(bridge_picker_, made_screen_w(), made_screen_h());
     markPage(bridge_picker_);
-    lv_obj_set_style_bg_color(bridge_picker_, lv_color_hex(0x091321), 0);
+    lv_obj_set_style_bg_color(bridge_picker_, lv_color_hex(VT(bg_page)), 0);
     lv_obj_set_style_bg_opa(bridge_picker_, LV_OPA_COVER, 0);
     lv_obj_set_style_border_width(bridge_picker_, 0, 0);
     lv_obj_set_style_pad_all(bridge_picker_, 0, 0);
     lv_obj_remove_flag(bridge_picker_, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_remove_flag(bridge_picker_, LV_OBJ_FLAG_GESTURE_BUBBLE);
-    lv_obj_t *bridge_settings = touchButton(bridge_picker_, 86, 29, 58, 36, "settings.short", settingsCallback, this, 0x42566B);
+    lv_obj_t *bridge_settings = touchButton(bridge_picker_, 86, 29, 58, 36, "settings.short", settingsCallback, this, VT(btn_cancel));
     lv_obj_t *bridge_title = settingsLabel(bridge_picker_, T("选择电脑"), 144, 39, 72);
     bridge_refresh_button_ = touchButton(bridge_picker_, 216, 29, 58, 36,
-                                          T("刷新"), bridgeRefreshCallback, this, 0x1C856F);
+                                          T("刷新"), bridgeRefreshCallback, this, VT(accent));
     placePageHeader(bridge_settings, bridge_title, bridge_refresh_button_);
     bridge_list_ = lv_obj_create(bridge_picker_);
     lv_obj_set_pos(bridge_list_, made_page_x(45), made_page_y(88));
@@ -752,7 +781,7 @@ bool VibeCoding::run()
     lv_obj_set_scroll_dir(bridge_list_, LV_DIR_VER);
     lv_obj_set_scrollbar_mode(bridge_list_, LV_SCROLLBAR_MODE_AUTO);
     lv_obj_remove_flag(bridge_list_, LV_OBJ_FLAG_GESTURE_BUBBLE);
-    bridge_hint_ = settingsLabel(bridge_picker_, T("正在扫描电脑…"), 76, 287, 208, 0x8CE4CB);
+    bridge_hint_ = settingsLabel(bridge_picker_, T("正在扫描电脑…"), 76, 287, 208, VT(text_accent));
     lv_obj_add_flag(bridge_picker_, LV_OBJ_FLAG_HIDDEN);
     bridge_list_revision_ = UINT32_MAX;
     bridge_rows_.clear();
@@ -761,18 +790,18 @@ bool VibeCoding::run()
     lv_obj_set_pos(delete_dialog_, made_s(0), made_s(0));
     lv_obj_set_size(delete_dialog_, made_screen_w(), made_screen_h());
     markPage(delete_dialog_);
-    lv_obj_set_style_bg_color(delete_dialog_, lv_color_hex(0x091321), 0);
+    lv_obj_set_style_bg_color(delete_dialog_, lv_color_hex(VT(bg_page)), 0);
     lv_obj_set_style_bg_opa(delete_dialog_, LV_OPA_COVER, 0);
     lv_obj_set_style_border_width(delete_dialog_, 0, 0);
     lv_obj_set_style_pad_all(delete_dialog_, 0, 0);
     lv_obj_remove_flag(delete_dialog_, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_remove_flag(delete_dialog_, LV_OBJ_FLAG_GESTURE_BUBBLE);
     settingsLabel(delete_dialog_, T("删除当前任务？"), 55, 88, 250);
-    delete_dialog_title_ = settingsLabel(delete_dialog_, "", 55, 129, 250, 0x8CE4CB, false);
+    delete_dialog_title_ = settingsLabel(delete_dialog_, "", 55, 129, 250, VT(text_accent), false);
     lv_label_set_long_mode(delete_dialog_title_, LV_LABEL_LONG_DOT);
-    settingsLabel(delete_dialog_, T("任务及对话记录将被删除"), 55, 171, 250, 0x9FADD0);
+    settingsLabel(delete_dialog_, T("任务及对话记录将被删除"), 55, 171, 250, VT(text_hint));
     touchButton(delete_dialog_, 65, 230, 105, 50, T("返回"), deleteSessionCancelCallback, this);
-    touchButton(delete_dialog_, 190, 230, 105, 50, T("删除"), deleteSessionConfirmCallback, this, 0x9C4856);
+    touchButton(delete_dialog_, 190, 230, 105, 50, T("删除"), deleteSessionConfirmCallback, this, VT(danger));
     lv_obj_add_flag(delete_dialog_, LV_OBJ_FLAG_HIDDEN);
 
     lock_screen_ = made_lock_screen::create(screen, lockSwipeCallback, this);
@@ -892,6 +921,9 @@ bool VibeCoding::close()
     language_en_button_ = nullptr;
     language_auto_button_ = nullptr;
     language_hint_ = nullptr;
+    theme_panel_ = nullptr;
+    theme_rows_ = nullptr;
+    theme_status_label_ = nullptr;
     power_panel_ = nullptr;
     power_timeout_button_ = nullptr;
     power_timeout_label_ = nullptr;
@@ -1406,9 +1438,9 @@ void VibeCoding::refreshLanguage()
     drawn_revision_ = UINT32_MAX;
     const bool automatic = vibe_i18n::follows_bridge();
     const bool english = vibe_i18n::locale() == vibe_i18n::Locale::English;
-    lv_obj_set_style_bg_color(language_zh_button_, lv_color_hex(!automatic && !english ? 0x1C856F : 0x284668), 0);
-    lv_obj_set_style_bg_color(language_en_button_, lv_color_hex(!automatic && english ? 0x1C856F : 0x284668), 0);
-    lv_obj_set_style_bg_color(language_auto_button_, lv_color_hex(automatic ? 0x1C856F : 0x284668), 0);
+    lv_obj_set_style_bg_color(language_zh_button_, lv_color_hex(!automatic && !english ? VT(accent) : VT(btn_normal)), 0);
+    lv_obj_set_style_bg_color(language_en_button_, lv_color_hex(!automatic && english ? VT(accent) : VT(btn_normal)), 0);
+    lv_obj_set_style_bg_color(language_auto_button_, lv_color_hex(automatic ? VT(accent) : VT(btn_normal)), 0);
     lv_label_set_text(language_hint_, automatic ? T("离线沿用上次语言") : T("设备语言独立保存"));
 }
 
@@ -1486,6 +1518,7 @@ void VibeCoding::showPower(bool visible)
     if (!power_panel_) return;
     if (visible) {
         lv_obj_add_flag(settings_home_, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_flag(theme_panel_, LV_OBJ_FLAG_HIDDEN);
         renderPower();
         lv_obj_remove_flag(power_panel_, LV_OBJ_FLAG_HIDDEN);
         lv_obj_move_foreground(power_panel_);
@@ -1550,6 +1583,132 @@ void VibeCoding::applyScreenOff(bool off)
         (void)bsp_display_backlight_on();
         ESP_LOGI("vibe_power", "Screen on");
     }
+}
+
+void VibeCoding::themeRebootCallback(lv_timer_t *timer)
+{
+    (void)timer;
+    esp_restart();
+}
+
+void VibeCoding::themeSelectCallback(lv_event_t *event)
+{
+    auto *self = static_cast<VibeCoding *>(lv_event_get_user_data(event));
+    if (!self) return;
+    auto *button = static_cast<lv_obj_t *>(lv_event_get_target(event));
+    const char *selected = static_cast<const char *>(lv_obj_get_user_data(button));
+    if (selected == nullptr) return;
+    if (vibe_theme::apply(selected) != ESP_OK) {
+        if (self->theme_status_label_) lv_label_set_text(self->theme_status_label_, T("应用主题失败"));
+        return;
+    }
+    self->theme_pending_name_ = selected;
+    if (self->theme_status_label_)
+        lv_label_set_text(self->theme_status_label_, (std::string(T("已应用主题：")) + selected + T("，正在重启…")).c_str());
+    lv_timer_t *timer = lv_timer_create(themeRebootCallback, 1200, nullptr);
+    lv_timer_set_repeat_count(timer, 1);
+}
+
+void VibeCoding::themeSyncCallback(lv_event_t *event)
+{
+    auto *self = static_cast<VibeCoding *>(lv_event_get_user_data(event));
+    if (!self) return;
+    const auto pairing = vibe_pairing::snapshot();
+    std::string base = !pairing.url.empty() ? pairing.url : pairing.manual_url;
+    if (base.empty()) {
+        if (self->theme_status_label_) lv_label_set_text(self->theme_status_label_, T("尚未连接电脑，无法同步"));
+        return;
+    }
+    if (xTaskCreate([](void *arg) {
+            auto *url = static_cast<std::string *>(arg);
+            (void)vibe_theme::syncFromBridge(*url);
+            delete url;
+            vTaskDelete(nullptr);
+        }, "vibe_theme_sync", 12288, new std::string(base), 3, nullptr) != pdPASS) {
+        if (self->theme_status_label_) lv_label_set_text(self->theme_status_label_, T("同步任务启动失败"));
+    }
+}
+
+void VibeCoding::themeBackCallback(lv_event_t *event)
+{
+    auto *self = static_cast<VibeCoding *>(lv_event_get_user_data(event));
+    if (self) self->showTheme(false);
+}
+
+void VibeCoding::themeOpenCallback(lv_event_t *event)
+{
+    auto *self = static_cast<VibeCoding *>(lv_event_get_user_data(event));
+    if (self) self->showTheme(true);
+}
+
+void VibeCoding::showTheme(bool visible)
+{
+    if (!theme_panel_) return;
+    if (visible) {
+        lv_obj_add_flag(settings_home_, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_remove_flag(theme_panel_, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_move_foreground(theme_panel_);
+        theme_rows_signature_ = "";  // 强制重建列表
+        renderThemes();
+    } else {
+        lv_obj_add_flag(theme_panel_, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_remove_flag(settings_home_, LV_OBJ_FLAG_HIDDEN);
+    }
+}
+
+void VibeCoding::renderThemes()
+{
+    if (!theme_panel_ || lv_obj_has_flag(theme_panel_, LV_OBJ_FLAG_HIDDEN)) return;
+    const auto sync = vibe_theme::syncStatus();
+    if (theme_status_label_) {
+        std::string status = sync.message;
+        if (sync.state == vibe_theme::SyncState::Running && status.empty()) status = T("正在同步…");
+        lv_label_set_text(theme_status_label_, status.c_str());
+    }
+    const auto themes = vibe_theme::list();
+    std::string signature = vibe_theme::activeName() + "|" + std::to_string(themes.size()) +
+                            "|" + std::to_string(static_cast<int>(sync.state));
+    for (const auto &theme : themes) signature += "|" + theme.name;
+    if (signature == theme_rows_signature_) return;
+    theme_rows_signature_ = signature;
+
+    lv_obj_clean(theme_rows_);
+    // 第一行：内置默认。
+    {
+        const bool active = vibe_theme::activeName().empty();
+        lv_obj_t *button = touchButton(theme_rows_, 8, 4, 264, 40,
+            nullptr, themeSelectCallback, this, active ? VT(accent) : VT(bg_row));
+        lv_obj_set_user_data(button, strdup(""));  // 统一走堆分配，行删除时释放
+        lv_obj_t *name = settingsLabel(button, T("默认主题（当前界面）"), 10, 11, 244,
+                                       active ? VT(text_primary) : VT(text_secondary), false);
+        lv_obj_set_style_text_font(name, text_font, 0);
+        lv_obj_remove_flag(name, LV_OBJ_FLAG_CLICKABLE);
+    }
+    int row = 1;
+    for (const auto &theme : themes) {
+        const int y = 4 + row * 46;
+        const bool active = vibe_theme::activeName() == theme.name;
+        lv_obj_t *button = touchButton(theme_rows_, 8, y, 264, 40,
+            nullptr, themeSelectCallback, this, active ? VT(accent) : VT(bg_row));
+        // 行对象 user_data 保存主题名（堆上拷贝，行重建时释放）。
+        lv_obj_set_user_data(button, strdup(theme.name.c_str()));
+        lv_obj_add_event_cb(button, [](lv_event_t *event) {
+            // 行删除时释放 user_data 字符串。
+            if (lv_event_get_code(event) == LV_EVENT_DELETE) {
+                auto *name = static_cast<char *>(lv_obj_get_user_data(lv_event_get_target(event)));
+                if (name != nullptr) free(name);
+            }
+        }, LV_EVENT_DELETE, nullptr);
+        char title[96];
+        std::snprintf(title, sizeof(title), "%s%s", theme.title.c_str(), active ? T(" · 使用中") : "");
+        lv_obj_t *name = settingsLabel(button, title, 10, 11, 244,
+                                       active ? VT(text_primary) : VT(text_secondary), false);
+        lv_obj_set_style_text_font(name, text_font, 0);
+        lv_label_set_long_mode(name, LV_LABEL_LONG_DOT);
+        lv_obj_remove_flag(name, LV_OBJ_FLAG_CLICKABLE);
+        ++row;
+    }
+    if (sync.state == vibe_theme::SyncState::Running) theme_rows_signature_ = "";  // 同步完成后重建
 }
 
 void VibeCoding::accessOpenCallback(lv_event_t *event)
@@ -1783,13 +1942,13 @@ void VibeCoding::updateAccessModeButtons()
 {
     if (!access_panel_) return;
     lv_obj_set_style_bg_color(access_auto_button_,
-        lv_color_hex(access_manual_selected_ || access_receiver_selected_ || access_usb_selected_ ? 0x284668 : 0x1C856F), 0);
+        lv_color_hex(access_manual_selected_ || access_receiver_selected_ || access_usb_selected_ ? VT(btn_normal) : VT(accent)), 0);
     lv_obj_set_style_bg_color(access_manual_button_,
-        lv_color_hex(access_manual_selected_ ? 0x1C856F : 0x284668), 0);
+        lv_color_hex(access_manual_selected_ ? VT(accent) : VT(btn_normal)), 0);
     lv_obj_set_style_bg_color(access_receiver_button_,
-        lv_color_hex(access_receiver_selected_ ? 0x1C856F : 0x284668), 0);
+        lv_color_hex(access_receiver_selected_ ? VT(accent) : VT(btn_normal)), 0);
     lv_obj_set_style_bg_color(access_usb_button_,
-        lv_color_hex(access_usb_selected_ ? 0x1C856F : 0x284668), 0);
+        lv_color_hex(access_usb_selected_ ? VT(accent) : VT(btn_normal)), 0);
     for (lv_obj_t *item : {access_auto_button_, access_manual_button_,
                           access_receiver_button_, access_usb_button_, access_picker_hint_, phone_setup_button_}) {
         if (access_picker_open_) lv_obj_remove_flag(item, LV_OBJ_FLAG_HIDDEN);
@@ -2053,7 +2212,7 @@ void VibeCoding::renderWifiNetworks()
         } else {
             std::snprintf(hint, sizeof(hint), "%s", T("未发现网络，点刷新重试"));
         }
-        lv_obj_t *hint_label = settingsLabel(wifi_network_list_, hint, 8, 10, 254, 0xB8C9E4, false);
+        lv_obj_t *hint_label = settingsLabel(wifi_network_list_, hint, 8, 10, 254, VT(text_secondary), false);
         lv_obj_set_style_text_font(hint_label, text_font, 0);
         return;
     }
@@ -2066,12 +2225,12 @@ void VibeCoding::renderWifiNetworks()
         char sub[48];
         std::snprintf(sub, sizeof(sub), "%d%%  %s", strength, network.open ? T("开放") : T("已加密"));
         lv_obj_t *button = touchButton(wifi_network_list_, 8, y, 254, 48,
-                                       nullptr, wifiNetworkCallback, this, 0x10243B);
-        lv_obj_t *name = settingsLabel(button, network.ssid.c_str(), 10, 4, 234, 0xF1F5FF, false);
+                                       nullptr, wifiNetworkCallback, this, VT(bg_row));
+        lv_obj_t *name = settingsLabel(button, network.ssid.c_str(), 10, 4, 234, VT(text_primary), false);
         lv_obj_set_style_text_font(name, text_font, 0);
         lv_label_set_long_mode(name, LV_LABEL_LONG_DOT);
         lv_obj_remove_flag(name, LV_OBJ_FLAG_CLICKABLE);
-        lv_obj_t *sub_label = settingsLabel(button, sub, 10, 26, 234, 0xB8C9E4, false);
+        lv_obj_t *sub_label = settingsLabel(button, sub, 10, 26, 234, VT(text_secondary), false);
         lv_obj_set_style_text_font(sub_label, text_font, 0);
         lv_obj_remove_flag(sub_label, LV_OBJ_FLAG_CLICKABLE);
         ++row;
@@ -2140,13 +2299,13 @@ void VibeCoding::renderReceiverScan()
             nullptr, receiverSelectCallback, this);
         lv_obj_add_event_cb(button, receiverSelectCallback, LV_EVENT_PRESSED, this);
         lv_obj_add_event_cb(button, receiverSelectCallback, LV_EVENT_PRESSING, this);
-        lv_obj_t *name = settingsLabel(button, network.ssid.c_str(), 10, 7, 234, 0xF1F5FF, false);
+        lv_obj_t *name = settingsLabel(button, network.ssid.c_str(), 10, 7, 234, VT(text_primary), false);
         lv_obj_set_style_text_font(name, &lv_font_montserrat_16, 0);
         lv_obj_set_height(name, made_s(20));
         lv_label_set_long_mode(name, LV_LABEL_LONG_DOT);
         lv_obj_remove_flag(name, LV_OBJ_FLAG_CLICKABLE);
         const std::string strength = std::to_string(network.rssi) + " dBm";
-        lv_obj_t *signal = settingsLabel(button, strength.c_str(), 10, 31, 234, 0xB8C9E4, false);
+        lv_obj_t *signal = settingsLabel(button, strength.c_str(), 10, 31, 234, VT(text_secondary), false);
         lv_obj_set_style_text_font(signal, &lv_font_montserrat_14, 0);
         lv_obj_remove_flag(signal, LV_OBJ_FLAG_CLICKABLE);
         if (scanning) lv_obj_add_state(button, LV_STATE_DISABLED);
@@ -2541,14 +2700,14 @@ void VibeCoding::renderBridgeChoices(const vibe_pairing::Snapshot &pairing)
                                        nullptr, bridgeSelectCallback, this);
         lv_obj_add_event_cb(button, bridgeSelectCallback, LV_EVENT_PRESSED, this);
         lv_obj_add_event_cb(button, bridgeSelectCallback, LV_EVENT_PRESSING, this);
-        lv_obj_t *name = settingsLabel(button, bridge.name.c_str(), 12, 6, 230, 0xE7EEFF, false);
+        lv_obj_t *name = settingsLabel(button, bridge.name.c_str(), 12, 6, 230, VT(title), false);
         lv_obj_set_height(name, made_s(20));
         lv_label_set_long_mode(name, LV_LABEL_LONG_DOT);
         lv_obj_set_style_text_align(name, LV_TEXT_ALIGN_LEFT, 0);
         lv_obj_remove_flag(name, LV_OBJ_FLAG_CLICKABLE);
         const size_t scheme = bridge.url.find("://");
         const std::string address = bridge.url.substr(scheme == std::string::npos ? 0 : scheme + 3);
-        lv_obj_t *host = settingsLabel(button, address.c_str(), 12, 28, 230, 0xB8C9E4, false);
+        lv_obj_t *host = settingsLabel(button, address.c_str(), 12, 28, 230, VT(text_secondary), false);
         lv_obj_set_style_text_font(host, &lv_font_montserrat_14, 0);
         lv_obj_set_height(host, made_s(16));
         lv_obj_set_style_text_align(host, LV_TEXT_ALIGN_LEFT, 0);
@@ -2633,6 +2792,7 @@ void VibeCoding::render()
     renderBridgeChoices(pairing);
     renderReceiverScan();
     renderWifiNetworks();
+    renderThemes();
     renderPhoneSetup();
     const bool catalog_ready = config_loaded_.load() &&
         pairing.phase == vibe_pairing::Phase::Paired && vibe_pairing::authorized_for_foreground();
