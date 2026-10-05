@@ -195,14 +195,16 @@ uint32_t colorFromJson(const cJSON *colors, const char *key, uint32_t fallback) 
 
 // ---- 传输：base_url 为空 = USB 串口帧；否则 HTTP ----
 
-bool fetchPath(const std::string &base_url, const std::string &path, std::string &out);
+bool fetchPath(const std::string &base_url, const std::string &path, std::string &out,
+               const char *progress_label = nullptr);
 
-bool fetchPathRetry(const std::string &base_url, const std::string &path, std::string &out) {
+bool fetchPathRetry(const std::string &base_url, const std::string &path, std::string &out,
+                    const char *progress_label = nullptr) {
     // 接收器中继一次只转一个请求，与设备自身的心跳/轮询竞争；失败重试 3 次。
     for (int attempt = 0; attempt < 3; ++attempt) {
         if (attempt > 0) vTaskDelay(pdMS_TO_TICKS(400));
         std::string result;
-        if (fetchPath(base_url, path, result)) {
+        if (fetchPath(base_url, path, result, progress_label)) {
             out = std::move(result);
             return true;
         }
@@ -210,7 +212,8 @@ bool fetchPathRetry(const std::string &base_url, const std::string &path, std::s
     return false;
 }
 
-bool fetchPath(const std::string &base_url, const std::string &path, std::string &out) {
+bool fetchPath(const std::string &base_url, const std::string &path, std::string &out,
+               const char *progress_label) {
     if (base_url.empty()) {
         const auto pairing = vibe_pairing::snapshot();
         if (pairing.token.empty()) return false;
@@ -224,18 +227,34 @@ bool fetchPath(const std::string &base_url, const std::string &path, std::string
     const std::string url = base + path;
     esp_http_client_config_t config = {};
     config.url = url.c_str();
-    config.timeout_ms = 15000;
+    // 大文件（提示音 ~224KB）经接收器串口中继需 10s+；须长于接收器的 30s 转发超时。
+    config.timeout_ms = 35000;
     if (url.rfind("https://", 0) == 0) config.crt_bundle_attach = esp_crt_bundle_attach;
     esp_http_client_handle_t client = esp_http_client_init(&config);
     if (client == nullptr) return false;
     esp_http_client_set_header(client, "Connection", "close");
     bool ok = false;
     if (esp_http_client_open(client, 0) == ESP_OK) {
-        esp_http_client_fetch_headers(client);
-        char buffer[1024];
+        const int64_t total = esp_http_client_fetch_headers(client) > 0
+                                  ? esp_http_client_get_content_length(client)
+                                  : -1;
+        char buffer[2048];
         int read = 0;
-        while ((read = esp_http_client_read(client, buffer, sizeof(buffer))) > 0)
+        size_t received = 0;
+        int last_bucket = -1;
+        while ((read = esp_http_client_read(client, buffer, sizeof(buffer))) > 0) {
             out.append(buffer, read);
+            received += static_cast<size_t>(read);
+            if (progress_label != nullptr && total > 0) {
+                const int bucket = static_cast<int>(received * 100 / static_cast<size_t>(total)) / 10;
+                if (bucket != last_bucket) {
+                    last_bucket = bucket;
+                    std::lock_guard<std::mutex> lock(g_sync_mutex);
+                    g_sync.message = std::string(progress_label) + " " +
+                                     std::to_string(bucket * 10) + "%";
+                }
+            }
+        }
         esp_http_client_close(client);
         ok = true;
     }
@@ -264,7 +283,7 @@ esp_err_t fetchThemeList(const std::string &base_url, std::vector<ThemeInfo> &ou
         g_sync = {SyncState::Running, base_url.empty() ? "经 USB 获取列表…" : "经网络获取列表…"};
     }
     std::string body;
-    const esp_err_t fetch_result = fetchPathRetry(base_url, "/api/themes", body) ? ESP_OK : ESP_FAIL;
+    const esp_err_t fetch_result = fetchPathRetry(base_url, "/api/themes", body, "获取列表") ? ESP_OK : ESP_FAIL;
     if (fetch_result != ESP_OK) {
         std::lock_guard<std::mutex> lock(g_sync_mutex);
         g_sync = {SyncState::Failed, base_url.empty()
@@ -336,7 +355,7 @@ esp_err_t applyFromBridge(const std::string &name, const std::string &base_url) 
 
     // 1) 拉取 theme.json。
     std::string json;
-    if (!fetchPathRetry(base_url, "/api/themes/" + name + "/files/theme.json", json)) {
+    if (!fetchPathRetry(base_url, "/api/themes/" + name + "/files/theme.json", json, "主题数据")) {
         finish(SyncState::Failed, "无法获取主题数据");
         return ESP_FAIL;
     }
@@ -374,7 +393,7 @@ esp_err_t applyFromBridge(const std::string &name, const std::string &base_url) 
             g_sync.message = "下载 提示音…";
             std::string content;
             if (!fetchPath(base_url, "/api/themes/" + name + "/files/" + file_item->valuestring,
-                           content) ||
+                           content, "提示音") ||
                 content.empty() || content.size() > kMaxSoundBytes) {
                 cJSON_Delete(root);
                 finish(SyncState::Failed, "提示音下载失败（≤256KB）");
