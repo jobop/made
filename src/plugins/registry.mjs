@@ -28,6 +28,15 @@ export function validatePlugin(plugin) {
     if (plugin.model && (!c.model || !isRecord(plugin.model) || typeof plugin.model.default !== 'string' || typeof plugin.model.required !== 'boolean')) fail('model 元数据无效');
     if (plugin.model && ((!plugin.model.default && plugin.model.required) || (plugin.model.default && !MODEL_ID.test(plugin.model.default)))) fail('model 默认值无效');
     for (const k of ['readUpdates', 'syncJobState']) if (plugin[k] !== undefined && typeof plugin[k] !== 'function') fail(`${k} 必须是函数`);
+  } else if (plugin.kind === 'board-plugin') {
+    const names = (key, min) => {
+      const list = plugin[key];
+      if (!Array.isArray(list) || list.length > 16 || list.length < min || list.some((name) => typeof name !== 'string' || !/^[a-z][a-z0-9_]{0,15}(?:\.[a-z][a-z0-9_]{0,15}){0,2}$/.test(name))) fail(`${key} 无效`);
+      if (new Set(list).size !== list.length) fail(`${key} 有重复项`);
+    };
+    names('events', 1);
+    names('commands', 0);
+    if (typeof plugin.onEvent !== 'function') fail('缺少 onEvent');
   } else if (plugin.kind === 'speech-recognizer') {
     if (typeof plugin.transcribe !== 'function' || !Array.isArray(plugin.fields) || plugin.fields.length > 16) fail('缺少 transcribe 或 fields 无效');
     const keys = new Set();
@@ -47,7 +56,7 @@ export function validatePlugin(plugin) {
         ids.add(p.id);
       }
     }
-  } else fail('kind 应为 coding-agent 或 speech-recognizer');
+  } else fail('kind 应为 coding-agent、board-plugin 或 speech-recognizer');
   return plugin;
 }
 
@@ -60,10 +69,12 @@ export function createPluginRegistry(plugins = [...builtinAgents, ...builtinSpee
   }
   const agents = [...entries.values()].filter(p => p.kind === 'coding-agent');
   const speech = [...entries.values()].filter(p => p.kind === 'speech-recognizer');
+  const boards = [...entries.values()].filter(p => p.kind === 'board-plugin');
   if (agents.length > MAX_DEVICE_AGENTS) throw new Error(`码得最多支持 ${MAX_DEVICE_AGENTS} 个助手，请禁用多余插件`);
   return Object.freeze({
     agents: () => [...agents], agent: (id) => agents.find(p => p.id === id), hasAgent: (id) => agents.some(p => p.id === id),
     speechRecognizers: () => [...speech], speechRecognizer: (id) => speech.find(p => p.id === id), hasSpeechRecognizer: (id) => speech.some(p => p.id === id),
+    boardPlugins: () => [...boards], boardPlugin: (id) => boards.find(p => p.id === id),
   });
 }
 
@@ -81,7 +92,7 @@ export async function loadConfiguredPlugins(config) {
     const bundle = Array.isArray(exported) ? exported : [exported];
     for (const p of bundle) {
       validatePlugin(p);
-      if (p.kind !== 'coding-agent') throw new Error(`插件 ${p.id}：外部插件仅支持 coding-agent；语音识别请配置兼容接口的 URL、API Key 和模型名`);
+      if (p.kind !== 'coding-agent' && p.kind !== 'board-plugin') throw new Error(`插件 ${p.id}：外部插件仅支持 coding-agent；语音识别请配置兼容接口的 URL、API Key 和模型名`);
       if (!disabled.has(p.id)) plugins.push(p);
     }
   }

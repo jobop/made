@@ -65,4 +65,23 @@ export interface CodingAgentPlugin {
     appendResult: string;
   }>;
 }
-export type VibePlugin = CodingAgentPlugin;
+export interface BoardEvent {
+  name: string;
+  fields: Record<string, string>;
+}
+export interface BoardCommand {
+  name: string;
+  fields?: Record<string, string>;
+}
+/** Bridge plugin: subscribes to board events and may return board commands. */
+export interface BoardPlugin {
+  apiVersion: 1;
+  kind: 'board-plugin';
+  id: string;
+  label: string;
+  events: string[];
+  commands: string[];
+  probe: (config: PluginConfig) => { available: boolean; reason?: string };
+  onEvent: (context: { event: BoardEvent; config: PluginConfig; deviceId: string }) => Promise<{ commands?: BoardCommand[] } | void> | { commands?: BoardCommand[] } | void;
+}
+export type VibePlugin = CodingAgentPlugin | BoardPlugin;

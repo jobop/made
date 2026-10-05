@@ -21,6 +21,7 @@ import { TunnelManager } from './tunnel.mjs';
 import { UsbReceiver, USB_DIRECT_AUTHORITY, USB_RECEIVER_AUTHORITY } from './usb-receiver.mjs';
 
 import { createPluginRegistry, loadConfiguredPlugins } from './plugins/registry.mjs';
+import { createBoardLink } from './board-link.mjs';
 import { initializeSpeechSettings, saveSpeechSettings } from './speech-settings.mjs';
 import { builtinSpeechRecognizers } from './speech/index.mjs';
 const PAIRED_DISCOVERY_REQUEST = /^VIBE_DISCOVER_PAIRED_V2 ([0-9a-f]{12}) ([0-9a-f]{32})$/;
@@ -218,6 +219,7 @@ export function createApp(config, { run, transcribe, tunnel: providedTunnel, ena
   const sessionToken = randomUUID();
   const usbForwardSecret = randomUUID();
   const pairing = new PairingStore(config.stateDir);
+  const boardLink = createBoardLink();
   const tunnel = providedTunnel || new TunnelManager({
     devicePort: config.devicePort, stateDir: config.stateDir, bridgeId: pairing.bridgeId,
   });
@@ -570,6 +572,16 @@ export function createApp(config, { run, transcribe, tunnel: providedTunnel, ena
         deviceSend(res, 200, { status: 'ok', serverTime: Date.now() });
         return;
       }
+      const deviceId = pairing.deviceIdForToken(token);
+      if (req.method === 'POST' && url.pathname === '/device/capabilities') {
+        boardLink.setCatalog(deviceId, await body(req));
+        deviceSend(res, 200, { events: boardLink.subscription(deviceId, config.pluginsRuntime, config) });
+        return;
+      }
+      if (req.method === 'POST' && url.pathname === '/device/events') {
+        deviceSend(res, 200, await boardLink.handleEvent(deviceId, await body(req), config.pluginsRuntime, config));
+        return;
+      }
       if (req.method === 'GET' && url.pathname === '/device/tasks') {
         const provider = url.searchParams.get('provider');
         if (provider && !config.pluginsRuntime.hasAgent(provider)) throw new Error('未知编程工具');
@@ -638,6 +650,7 @@ export function createApp(config, { run, transcribe, tunnel: providedTunnel, ena
           projects: config.projects.filter(({ id }) => id === config.defaultProject).map(({ id, label }) => ({ id, label: devicePreview(label, 64) })),
           defaultProject: config.defaultProject,
           voice: { mode: voice.mode, available: voice.available },
+          board: { events: boardLink.subscription(pairing.deviceIdForToken(token), config.pluginsRuntime, config) },
         };
         if (Buffer.byteLength(JSON.stringify(payload)) > 32 * 1024) throw new Error('码得配置超过 32 KB，请检查助手元数据');
         deviceSend(res, 200, payload);

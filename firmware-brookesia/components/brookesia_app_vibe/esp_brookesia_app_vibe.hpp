@@ -164,7 +164,11 @@ private:
     void showProviderIcon(const vibe_provider::Icon &icon);
     void sendHeartbeat();
     void sendAction(PendingAction action);
-    bool request(const std::string &path, bool post, std::string &response, int &status);
+    bool request(const std::string &path, bool post, std::string &response, int &status,
+                 const std::string &json_body = {});
+    void queueBoardEvent(const char *name);
+    void announceBoardCatalog();
+    void flushBoardEvent();
     void setConnectionError(std::string error);
     void queueActionForId(const char *verb, const std::string &task_id);
     void queueSubmittedVoiceCancel(const std::string &task_id);
@@ -217,6 +221,9 @@ private:
     std::string visible_task_id_; // Protected by model_mutex_; used by BOOT task.
     std::string voice_session_id_; // Protected by model_mutex_; tags voice status to its session.
     std::string voice_project_id_; // Protected by model_mutex_.
+    std::vector<std::string> board_events_; // Protected by model_mutex_. Subscribed event names.
+    std::string pending_board_event_; // Protected by model_mutex_. At most one report in flight.
+    bool board_catalog_sent_ = false; // Worker only; cleared when the catalog is invalidated.
     std::vector<vibe_provider::Provider> providers_; // Protected by model_mutex_; starts empty.
     std::string catalog_identity_; // Protected by model_mutex_; URL + authenticated token.
 

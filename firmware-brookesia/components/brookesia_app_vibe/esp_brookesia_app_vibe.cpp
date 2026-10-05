@@ -1105,6 +1105,14 @@ void VibeCoding::buttonLoop()
                                          armed_task_id);
                     }
                 }
+                if (!locked_.load() && !settings_open_.load() && !delete_dialog_open_.load()) {
+                    const char *board_event = nullptr;
+                    if (decision == BootClickGesture::Decision::Home) board_event = "boot.long";
+                    else if (decision == BootClickGesture::Decision::Voice) board_event = "boot.click";
+                    else if (decision == BootClickGesture::Decision::Confirm) board_event = "boot.double";
+                    else if (decision == BootClickGesture::Decision::Cancel) board_event = "boot.triple";
+                    if (board_event) queueBoardEvent(board_event);
+                }
             }
             armed_task_id.clear();
             armed_provider = -1;
@@ -3199,7 +3207,8 @@ esp_err_t VibeCoding::httpEvent(esp_http_client_event_t *event)
     return ESP_OK;
 }
 
-bool VibeCoding::request(const std::string &path, bool post, std::string &response, int &status)
+bool VibeCoding::request(const std::string &path, bool post, std::string &response, int &status,
+                         const std::string &json_body)
 {
     if (locked_.load()) return false;
     if (!post && receiverVoiceUploading()) return false;
@@ -3218,7 +3227,10 @@ bool VibeCoding::request(const std::string &path, bool post, std::string &respon
     const std::string authorization = "Bearer " + token;
     esp_err_t error = ESP_FAIL;
     if (pairing.access_mode == vibe_pairing::AccessMode::UsbDirect) {
-        error = vibe_usb::request(wire_path, post, authorization, "", nullptr, 0,
+        error = vibe_usb::request(wire_path, post, authorization,
+                                  json_body.empty() ? "" : "application/json",
+                                  json_body.empty() ? nullptr : reinterpret_cast<const uint8_t *>(json_body.data()),
+                                  json_body.size(),
                                   response, status, MAX_RESPONSE_BYTES, 5000);
     } else {
         esp_http_client_config_t config = {};
@@ -3234,6 +3246,10 @@ bool VibeCoding::request(const std::string &path, bool post, std::string &respon
         esp_http_client_set_header(client, "ngrok-skip-browser-warning", "1");
         esp_http_client_set_header(client, "Authorization", authorization.c_str());
         if (post) esp_http_client_set_method(client, HTTP_METHOD_POST);
+        if (post && !json_body.empty()) {
+            esp_http_client_set_header(client, "Content-Type", "application/json");
+            esp_http_client_set_post_field(client, json_body.c_str(), static_cast<int>(json_body.size()));
+        }
         error = esp_http_client_perform(client);
         status = error == ESP_OK ? esp_http_client_get_status_code(client) : 0;
         esp_http_client_cleanup(client);
@@ -3274,6 +3290,9 @@ void VibeCoding::invalidateCatalog(bool clear)
         pending_create_provider_id_.clear();
         pending_create_project_id_.clear();
     }
+    board_events_.clear();
+    pending_board_event_.clear();
+    board_catalog_sent_ = false;
     ++model_.revision;
 }
 
@@ -3332,6 +3351,18 @@ void VibeCoding::refreshConfig()
         cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(voice, "available"));
     const std::string project = jsonString(root, "defaultProject");
     const std::string received_locale = jsonString(root, "locale");
+    std::vector<std::string> board_events;
+    const cJSON *board = cJSON_GetObjectItemCaseSensitive(root, "board");
+    const cJSON *event_list = cJSON_IsObject(board) ? cJSON_GetObjectItemCaseSensitive(board, "events") : nullptr;
+    if (cJSON_IsArray(event_list)) {
+        cJSON *item = nullptr;
+        cJSON_ArrayForEach(item, event_list) {
+            if (!cJSON_IsString(item) || !item->valuestring || board_events.size() >= 32) continue;
+            const std::string name = item->valuestring;
+            if (name.size() <= 48 && name.find_first_not_of("abcdefghijklmnopqrstuvwxyz0123456789._") == std::string::npos)
+                board_events.push_back(name);
+        }
+    }
     cJSON_Delete(root);
     if (!has_catalog) { invalidateCatalog(); return; }
     const auto latest = vibe_pairing::snapshot();
@@ -3373,11 +3404,78 @@ void VibeCoding::refreshConfig()
             }
         }
         voice_project_id_ = project;
+        board_events_ = std::move(board_events);
         if (can_voice) model_.voice_hint.clear();
         voice_available_.store(can_voice);
         config_loaded_.store(true);
         ++model_.revision;
     }
+}
+
+void VibeCoding::queueBoardEvent(const char *name)
+{
+    if (!name || !name[0]) return;
+    std::lock_guard<std::mutex> lock(model_mutex_);
+    if (std::find(board_events_.begin(), board_events_.end(), name) == board_events_.end()) return;
+    if (!pending_board_event_.empty()) return;
+    pending_board_event_ = name;
+}
+
+void VibeCoding::announceBoardCatalog()
+{
+    static constexpr const char *body =
+        "{\"events\":["
+        "{\"name\":\"boot.click\",\"cadence\":\"edge\"},"
+        "{\"name\":\"boot.double\",\"cadence\":\"edge\"},"
+        "{\"name\":\"boot.triple\",\"cadence\":\"edge\"},"
+        "{\"name\":\"boot.long\",\"cadence\":\"edge\"}"
+        "],\"commands\":[{\"name\":\"caption.show\"}]}";
+    std::string response;
+    int status = 0;
+    if (!request("/device/capabilities", true, response, status, body) || status != 200) return;
+    board_catalog_sent_ = true;
+}
+
+void VibeCoding::flushBoardEvent()
+{
+    std::string name;
+    {
+        std::lock_guard<std::mutex> lock(model_mutex_);
+        if (pending_board_event_.empty()) return;
+        if (std::find(board_events_.begin(), board_events_.end(), pending_board_event_) == board_events_.end()) {
+            pending_board_event_.clear();
+            return;
+        }
+        name = std::move(pending_board_event_);
+        pending_board_event_.clear();
+    }
+    const std::string body = std::string("{\"name\":\"") + name + "\"}";
+    std::string response;
+    int status = 0;
+    if (!request("/device/events", true, response, status, body) || status != 200) return;
+    cJSON *root = cJSON_Parse(response.c_str());
+    if (!root) return;
+    const cJSON *commands = cJSON_GetObjectItemCaseSensitive(root, "commands");
+    if (cJSON_IsArray(commands)) {
+        cJSON *command = nullptr;
+        cJSON_ArrayForEach(command, commands) {
+            if (!cJSON_IsObject(command)) continue;
+            const cJSON *command_name = cJSON_GetObjectItemCaseSensitive(command, "name");
+            if (!cJSON_IsString(command_name) || std::strcmp(command_name->valuestring, "caption.show") != 0) continue;
+            const cJSON *fields = cJSON_GetObjectItemCaseSensitive(command, "fields");
+            const cJSON *text = cJSON_IsObject(fields) ? cJSON_GetObjectItemCaseSensitive(fields, "text") : nullptr;
+            if (!cJSON_IsString(text) || !text->valuestring || !text->valuestring[0]) continue;
+            std::string caption(text->valuestring, strnlen(text->valuestring, 120));
+            while (!caption.empty() && (static_cast<unsigned char>(caption.back()) & 0xC0) == 0x80) caption.pop_back();
+            if (!caption.empty() && (static_cast<unsigned char>(caption.back()) & 0xC0) == 0xC0) caption.pop_back();
+            if (caption.empty()) continue;
+            std::lock_guard<std::mutex> lock(model_mutex_);
+            model_.session_notice = std::move(caption);
+            ++model_.revision;
+            break;
+        }
+    }
+    cJSON_Delete(root);
 }
 
 void VibeCoding::sendHeartbeat()
@@ -3970,6 +4068,8 @@ void VibeCoding::workerLoop()
         }
         if (!delete_session_id.empty()) deleteSession(delete_provider, delete_session_id);
         if (canOperate() && config_loaded_.load()) {
+            if (!board_catalog_sent_) announceBoardCatalog();
+            flushBoardEvent();
             refreshSessions();
             refreshTasks();
         }

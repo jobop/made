@@ -153,6 +153,14 @@ export class PairingStore {
     return this.summary();
   }
 
+  deviceIdForToken(token) {
+    if (!this.authenticate(token)) return null;
+    for (const item of this.paired.values()) {
+      if (safeEqual(item.token, token)) return item.deviceId;
+    }
+    return null;
+  }
+
   authenticate(token) {
     if (typeof token !== 'string' || !/^[0-9a-f]{64}$/.test(token)) return false;
     for (const item of this.paired.values()) {
