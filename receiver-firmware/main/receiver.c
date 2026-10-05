@@ -54,32 +54,30 @@ static serial_reader_t s_reader;
 
 static bool serial_is_connected(void)
 {
-#if CONFIG_VIBE_RECEIVER_UART_TRANSPORT
-    // UART has no host-presence signal. The ready handshake verifies that
-    // the computer is available before any HTTP request is forwarded.
+    // 双通道常开：UART 无主机在场信号，原生 USB 断开时写入会被跳过。
+    // 真正的在场判定由 hello → ready 握手完成。
     return true;
-#else
-    return usb_serial_jtag_is_connected();
-#endif
 }
 
 static int serial_read_bytes(void *buffer, size_t size, TickType_t ticks)
 {
-#if CONFIG_VIBE_RECEIVER_UART_TRANSPORT
-    return uart_read_bytes(UART_NUM_0, buffer, size, ticks);
-#else
-    return usb_serial_jtag_read_bytes(buffer, size, ticks);
-#endif
+    // 两个通道都可能连着电脑：先听原生 USB，再听 UART0，各自分一半超时。
+    const TickType_t half = (ticks / 2) ? (ticks / 2) : 1;
+    const int from_usb = usb_serial_jtag_read_bytes(buffer, size, half);
+    if (from_usb > 0) return from_usb;
+    return uart_read_bytes(UART_NUM_0, buffer, size, half);
 }
 
 static int serial_write_bytes(const void *buffer, size_t size, TickType_t ticks)
 {
-#if CONFIG_VIBE_RECEIVER_UART_TRANSPORT
-    (void)ticks;
-    return uart_write_bytes(UART_NUM_0, buffer, size);
-#else
-    return usb_serial_jtag_write_bytes(buffer, size, ticks);
-#endif
+    // 广播到两个通道：UART 永远写（无主机在场信号，无人接收也无副作用），
+    // 原生 USB 仅在主机已连接时写，避免无人读取时阻塞。
+    const TickType_t half = (ticks / 2) ? (ticks / 2) : 1;
+    uart_write_bytes(UART_NUM_0, buffer, size);
+    if (usb_serial_jtag_is_connected()) {
+        return usb_serial_jtag_write_bytes(buffer, size, half);
+    }
+    return (int)size;
 }
 
 static int64_t deadline_after(int64_t duration_us)
@@ -581,8 +579,9 @@ static esp_err_t load_hotspot_password(void)
 
 static esp_err_t init_serial_transport(void)
 {
-#if CONFIG_VIBE_RECEIVER_UART_TRANSPORT
-    const uart_config_t config = {
+    // 双通道常开：UART0（GPIO21/20，可接 USB 转串口）与原生 USB-Serial/JTAG
+    // 同时初始化。电脑用直连或转接头都能工作，无需重新烧录。
+    const uart_config_t uart_config = {
         .baud_rate = 921600,
         .data_bits = UART_DATA_8_BITS,
         .parity = UART_PARITY_DISABLE,
@@ -590,17 +589,16 @@ static esp_err_t init_serial_transport(void)
         .flow_ctrl = UART_HW_FLOWCTRL_DISABLE,
         .source_clk = UART_SCLK_DEFAULT,
     };
-    ESP_RETURN_ON_ERROR(uart_param_config(UART_NUM_0, &config), TAG, "UART config failed");
+    ESP_RETURN_ON_ERROR(uart_param_config(UART_NUM_0, &uart_config), TAG, "UART config failed");
     ESP_RETURN_ON_ERROR(uart_set_pin(UART_NUM_0, 21, 20, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE),
                         TAG, "UART pins failed");
-    return uart_driver_install(UART_NUM_0, 16 * 1024, 16 * 1024, 0, NULL, 0);
-#else
-    usb_serial_jtag_driver_config_t config = {
+    ESP_RETURN_ON_ERROR(uart_driver_install(UART_NUM_0, 16 * 1024, 16 * 1024, 0, NULL, 0),
+                        TAG, "UART driver install failed");
+    usb_serial_jtag_driver_config_t usb_config = {
         .rx_buffer_size = 16 * 1024,
         .tx_buffer_size = 16 * 1024,
     };
-    return usb_serial_jtag_driver_install(&config);
-#endif
+    return usb_serial_jtag_driver_install(&usb_config);
 }
 
 static esp_err_t init_http(void)
