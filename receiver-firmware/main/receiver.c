@@ -369,9 +369,9 @@ static esp_err_t relay_response(httpd_req_t *req, uint32_t id, int64_t deadline)
         if (ack == NULL) return ESP_FAIL;
         cJSON_AddStringToObject(ack, "type", "ack");
         cJSON_AddNumberToObject(ack, "id", (double)id);
-        const bool ack_sent = serial_write_json(ack, deadline);
-        cJSON_Delete(ack);
-        if (!ack_sent) return ESP_FAIL;
+        // serial_write_json 接管并释放对象（内部 cJSON_Delete），严禁再删——
+        // 此前这里多删一次造成 double free，接收器每次中继响应即崩溃重启。
+        if (!serial_write_json(ack, deadline)) return ESP_FAIL;
     }
 }
 

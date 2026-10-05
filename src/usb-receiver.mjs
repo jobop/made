@@ -207,7 +207,11 @@ export class UsbReceiverProtocol {
 
   handleLine(line) {
     let frame;
-    try { frame = JSON.parse(line); } catch { this.rejectCurrent(400, 'USB 帧格式无效'); return; }
+    try { frame = JSON.parse(line); } catch {
+      console.error(`[usb-link] unparseable: ${line.slice(0, 240)}`);
+      this.rejectCurrent(400, 'USB 帧格式无效');
+      return;
+    }
     if (!frame || typeof frame !== 'object' || Array.isArray(frame)) {
       this.rejectCurrent(400, 'USB 帧格式无效');
       return;
@@ -225,6 +229,7 @@ export class UsbReceiverProtocol {
         ssid: direct ? '' : frame.ssid, password: direct ? '' : frame.password };
       if (this.peer && (this.peer.mode !== peer.mode || this.peer.deviceId !== peer.deviceId)) return;
       if (this.onHello(peer) === false) return;
+      console.error(`[usb-link] hello: mode=${peer.mode} ${new Date().toISOString()}`);
       this.peer = peer;
       this.helloReceived = true;
       this.onActivity();
@@ -391,12 +396,14 @@ export class UsbReceiverProtocol {
       await this.waitForAck(id);
     }
     await this.sendLine(JSON.stringify({ type: 'end', id }));
+    console.error(`[usb-link] response done id=${id} bytes=${bytes.length} ${new Date().toISOString()}`);
     this.onActivity();
   }
 
   waitForAck(id) {
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
+        console.error(`[usb-link] ack TIMEOUT id=${id} ${new Date().toISOString()}`);
         this.ackWaiters.delete(id);
         reject(new Error('USB ACK 超时'));
       }, 15_000);
@@ -418,6 +425,7 @@ export class UsbReceiverProtocol {
   }
 
   dispose() {
+    console.error(`[usb-link] dispose ${new Date().toISOString()}`);
     this.closed = true;
     this.cancelCurrent();
     this.ackWaiters.clear();
