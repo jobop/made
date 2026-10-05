@@ -118,6 +118,13 @@ private:
     static void screenWakeCallback(lv_event_t *event);
     void showPower(bool visible);
     void renderPower();
+    static void volumeOpenCallback(lv_event_t *event);
+    static void volumeBackCallback(lv_event_t *event);
+    static void volumeDownCallback(lv_event_t *event);
+    static void volumeUpCallback(lv_event_t *event);
+    void showVolume(bool visible);
+    void renderVolume();
+    void adjustVolume(int delta);
     void loadScreenOffTimeout();
     void applyScreenOff(bool off);
     static void wifiScanOpenCallback(lv_event_t *event);
@@ -312,6 +319,8 @@ private:
     lv_obj_t *power_panel_ = nullptr;
     lv_obj_t *power_timeout_button_ = nullptr;
     lv_obj_t *power_timeout_label_ = nullptr;
+    lv_obj_t *volume_panel_ = nullptr;
+    lv_obj_t *volume_value_label_ = nullptr;
     lv_obj_t *power_off_overlay_ = nullptr;
     uint32_t screen_off_timeout_s_ = 0; // 0 = never.
     bool screen_off_ = false;

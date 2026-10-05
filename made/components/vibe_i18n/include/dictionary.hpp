@@ -262,6 +262,11 @@ inline constexpr Entry dictionary[] = {
     {"正在寻找电脑", "Finding your PC"},
     {"连接", "Connection", "settings.connection"},
     {"语音", "Language", "settings.language"},
+    {"音量", "Volume", "settings.volume"},
+    {"减小", "Quieter"},
+    {"增大", "Louder"},
+    {"静音", "Muted"},
+    {"提示音和语音回答都用这个音量", "Chimes and replies use this volume"},
 };
 inline constexpr size_t dictionary_size = sizeof(dictionary) / sizeof(dictionary[0]);
 }

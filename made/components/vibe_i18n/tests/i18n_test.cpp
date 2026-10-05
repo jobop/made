@@ -29,6 +29,7 @@ int main(int argc,char **argv) {
     assert(std::string(tr("设置"))=="Settings");assert(std::string(tr("settings.short"))=="Setup");
     assert(std::string(tr("settings.connection"))=="Connection");
     assert(std::string(tr("settings.language"))=="Language");
+    assert(std::string(tr("settings.volume"))=="Volume");
     assert(message("Bridge HTTP 503")=="Bridge HTTP 503");
     assert(transport_error("电脑接收端响应超时")=="Receiver response timed out");
     assert(transport_error("用户自定义错误：设置")=="用户自定义错误：设置");
@@ -45,6 +46,7 @@ int main(int argc,char **argv) {
     assert(set_locale("zh-CN"));assert(message("Bridge HTTP 503")=="桥接响应 HTTP 503");
     assert(std::string(tr("settings.connection"))=="连接");
     assert(std::string(tr("settings.language"))=="语音");
+    assert(std::string(tr("settings.volume"))=="音量");
     assert(message("Settings")=="设置");assert(message("unknown plugin output")=="unknown plugin output");
     assert(request_path("/device/config")=="/device/config?uiLocale=zh-CN");
     assert(request_path("/device/sessions?providerId=test")=="/device/sessions?providerId=test&uiLocale=zh-CN");

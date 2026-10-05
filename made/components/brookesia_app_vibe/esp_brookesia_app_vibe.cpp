@@ -2,11 +2,13 @@
 #include "esp_brookesia_app_vibe.hpp"
 
 #include <algorithm>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <iterator>
 #include <utility>
 
+#include "board_voice_audio.h"
 #include "boot_click_gesture.hpp"
 #include "made_lock_screen.hpp"
 #include "made_layout.hpp"
@@ -396,12 +398,13 @@ bool VibeCoding::run()
     lv_obj_set_style_border_width(settings_home_, 0, 0);
     lv_obj_set_style_pad_all(settings_home_, 0, 0);
     lv_obj_remove_flag(settings_home_, LV_OBJ_FLAG_SCROLLABLE);
-    settingsLabel(settings_home_, T("设置"), 92, 48, 176);
-    touchButton(settings_home_, 63, 98, 234, 42, "settings.connection", accessOpenCallback, this);
-    touchButton(settings_home_, 63, 144, 234, 42, T("主题设置"), themeOpenCallback, this);
-    touchButton(settings_home_, 63, 190, 234, 42, T("电源设置"), powerOpenCallback, this);
-    touchButton(settings_home_, 63, 236, 234, 42, "settings.language", languageOpenCallback, this);
-    touchButton(settings_home_, 125, 284, 110, 32, T("返回"), settingsCloseCallback, this);
+    settingsLabel(settings_home_, T("设置"), 92, 52, 176);
+    touchButton(settings_home_, 85, 92, 190, 28, "settings.connection", accessOpenCallback, this);
+    touchButton(settings_home_, 85, 126, 190, 28, T("主题设置"), themeOpenCallback, this);
+    touchButton(settings_home_, 85, 160, 190, 28, "settings.volume", volumeOpenCallback, this);
+    touchButton(settings_home_, 85, 194, 190, 28, T("电源设置"), powerOpenCallback, this);
+    touchButton(settings_home_, 85, 228, 190, 28, "settings.language", languageOpenCallback, this);
+    touchButton(settings_home_, 125, 268, 110, 28, T("返回"), settingsCloseCallback, this);
 
     language_panel_ = lv_obj_create(settings_overlay_);
     lv_obj_set_size(language_panel_, made_screen_w(), made_screen_h());
@@ -455,6 +458,22 @@ bool VibeCoding::run()
     touchButton(power_panel_, 125, 292, 110, 34, T("返回"), powerBackCallback, this);
     lv_obj_add_flag(power_panel_, LV_OBJ_FLAG_HIDDEN);
     loadScreenOffTimeout();
+
+    volume_panel_ = lv_obj_create(settings_overlay_);
+    lv_obj_set_size(volume_panel_, made_screen_w(), made_screen_h());
+    markPage(volume_panel_);
+    lv_obj_set_style_bg_opa(volume_panel_, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(volume_panel_, 0, 0);
+    lv_obj_set_style_pad_all(volume_panel_, 0, 0);
+    lv_obj_remove_flag(volume_panel_, LV_OBJ_FLAG_SCROLLABLE);
+    settingsLabel(volume_panel_, "settings.volume", 70, 48, 220);
+    volume_value_label_ = settingsLabel(volume_panel_, "", 70, 118, 220, 0, false);
+    settingsLabel(volume_panel_, "提示音和语音回答都用这个音量", 45, 168, 270, VT(text_hint));
+    touchButton(volume_panel_, 60, 214, 110, 46, "减小", volumeDownCallback, this);
+    touchButton(volume_panel_, 190, 214, 110, 46, "增大", volumeUpCallback, this);
+    touchButton(volume_panel_, 125, 292, 110, 34, T("返回"), volumeBackCallback, this);
+    lv_obj_add_flag(volume_panel_, LV_OBJ_FLAG_HIDDEN);
+    renderVolume();
 
     access_panel_ = lv_obj_create(settings_overlay_);
     lv_obj_set_size(access_panel_, made_screen_w(), made_screen_h());
@@ -844,6 +863,7 @@ bool VibeCoding::back()
         else if (wifi_picker_ && !lv_obj_has_flag(wifi_picker_, LV_OBJ_FLAG_HIDDEN)) showWifiScan(false);
         else if (receiver_picker_ && !lv_obj_has_flag(receiver_picker_, LV_OBJ_FLAG_HIDDEN)) showReceiverScan(false);
         else if (access_panel_ && !lv_obj_has_flag(access_panel_, LV_OBJ_FLAG_HIDDEN)) showAccess(false);
+        else if (volume_panel_ && !lv_obj_has_flag(volume_panel_, LV_OBJ_FLAG_HIDDEN)) showVolume(false);
         else showSettings(false);
         return true;
     }
@@ -927,6 +947,8 @@ bool VibeCoding::close()
     power_panel_ = nullptr;
     power_timeout_button_ = nullptr;
     power_timeout_label_ = nullptr;
+    volume_panel_ = nullptr;
+    volume_value_label_ = nullptr;
     power_off_overlay_ = nullptr;
     provider_label_ = nullptr;
     session_title_tap_ = nullptr;
@@ -1561,6 +1583,71 @@ void VibeCoding::powerTimeoutCallback(lv_event_t *event)
     self->renderPower();
 }
 
+void VibeCoding::renderVolume()
+{
+    if (!volume_value_label_) return;
+    const int volume = bsp_extra_out_volume_get();
+    if (volume <= 0) {
+        lv_label_set_text(volume_value_label_, T("静音"));
+        return;
+    }
+    char text[16];
+    std::snprintf(text, sizeof text, "%d%%", volume);
+    lv_label_set_text(volume_value_label_, text);
+}
+
+void VibeCoding::showVolume(bool visible)
+{
+    if (!volume_panel_) return;
+    if (visible) {
+        lv_obj_add_flag(settings_home_, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_flag(theme_panel_, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_flag(power_panel_, LV_OBJ_FLAG_HIDDEN);
+        renderVolume();
+        lv_obj_remove_flag(volume_panel_, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_move_foreground(volume_panel_);
+    } else {
+        lv_obj_add_flag(volume_panel_, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_remove_flag(settings_home_, LV_OBJ_FLAG_HIDDEN);
+    }
+}
+
+void VibeCoding::volumeOpenCallback(lv_event_t *event)
+{
+    auto *self = static_cast<VibeCoding *>(lv_event_get_user_data(event));
+    if (self) self->showVolume(true);
+}
+
+void VibeCoding::volumeBackCallback(lv_event_t *event)
+{
+    auto *self = static_cast<VibeCoding *>(lv_event_get_user_data(event));
+    if (self) self->showVolume(false);
+}
+
+void VibeCoding::adjustVolume(int delta)
+{
+    const int current = bsp_extra_out_volume_get();
+    int next = current + delta;
+    if (next < 0) next = 0;
+    if (next > 100) next = 100;
+    if (next == current) return;
+    if (bsp_extra_out_volume_set(next) != ESP_OK) return;
+    renderVolume();
+    if (next > 0) made_chime_preview();
+}
+
+void VibeCoding::volumeDownCallback(lv_event_t *event)
+{
+    auto *self = static_cast<VibeCoding *>(lv_event_get_user_data(event));
+    if (self) self->adjustVolume(-10);
+}
+
+void VibeCoding::volumeUpCallback(lv_event_t *event)
+{
+    auto *self = static_cast<VibeCoding *>(lv_event_get_user_data(event));
+    if (self) self->adjustVolume(10);
+}
+
 void VibeCoding::screenWakeCallback(lv_event_t *event)
 {
     auto *self = static_cast<VibeCoding *>(lv_event_get_user_data(event));
@@ -1986,6 +2073,7 @@ void VibeCoding::showSettings(bool visible)
         lv_obj_remove_flag(settings_home_, LV_OBJ_FLAG_HIDDEN);
         lv_obj_add_flag(access_panel_, LV_OBJ_FLAG_HIDDEN);
         lv_obj_add_flag(language_panel_, LV_OBJ_FLAG_HIDDEN);
+        if (volume_panel_) lv_obj_add_flag(volume_panel_, LV_OBJ_FLAG_HIDDEN);
         lv_obj_move_foreground(settings_overlay_);
     } else {
         lv_obj_add_flag(settings_overlay_, LV_OBJ_FLAG_HIDDEN);

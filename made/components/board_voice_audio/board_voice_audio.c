@@ -10,6 +10,7 @@
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "nvs.h"
 
 static const char* TAG = "board_voice_audio";
 static portMUX_TYPE s_owner_lock = portMUX_INITIALIZER_UNLOCKED;
@@ -29,6 +30,29 @@ static bool s_speaker_open = false;
 static bool s_mic_open = false;
 static bool s_stereo_to_tdm = false;
 static uint32_t s_rate = 0;
+static int s_out_volume = 80;
+static bool s_volume_loaded = false;
+static bool s_output_held_mute = false;
+
+static void load_out_volume(void) {
+    if (s_volume_loaded) return;
+    s_volume_loaded = true;
+    nvs_handle_t handle;
+    if (nvs_open("vibe_audio", NVS_READONLY, &handle) != ESP_OK) return;
+    uint8_t stored = 80;
+    if (nvs_get_u8(handle, "volume", &stored) == ESP_OK && stored <= 100) s_out_volume = stored;
+    nvs_close(handle);
+}
+
+static esp_err_t apply_out_volume(bool opening) {
+    if (!s_speaker_open || s_speaker == NULL) return ESP_OK;
+    if (opening) s_output_held_mute = false;
+    esp_err_t result = esp_codec_dev_set_out_vol(s_speaker, s_out_volume);
+    if (result == ESP_OK) {
+        result = esp_codec_dev_set_out_mute(s_speaker, s_output_held_mute || s_out_volume == 0);
+    }
+    return result;
+}
 
 static esp_err_t close_codecs(void) {
     esp_err_t result = ESP_OK;
@@ -419,8 +443,8 @@ esp_err_t bsp_extra_codec_set_voice_fs(uint32_t rate, uint32_t bits,
     result = esp_codec_dev_open(s_speaker, &output);
     if (result != ESP_OK) return result;
     s_speaker_open = true;
-    result = esp_codec_dev_set_out_mute(s_speaker, false);
-    if (result == ESP_OK) result = esp_codec_dev_set_out_vol(s_speaker, 80);
+    load_out_volume();
+    result = apply_out_volume(true);
     if (result == ESP_OK) result = esp_codec_dev_open(s_mic, &input);
     if (result != ESP_OK) {
         (void)close_codecs();
@@ -447,10 +471,31 @@ esp_err_t bsp_extra_codec_set_fs(uint32_t rate, uint32_t bits, i2s_slot_mode_t c
     };
     result = esp_codec_dev_open(s_speaker, &output);
     if (result == ESP_OK) s_speaker_open = true;
-    if (result == ESP_OK) result = esp_codec_dev_set_out_mute(s_speaker, false);
-    if (result == ESP_OK) result = esp_codec_dev_set_out_vol(s_speaker, 80);
+    load_out_volume();
+    if (result == ESP_OK) result = apply_out_volume(true);
     if (result != ESP_OK) (void)close_codecs();
     return result;
+}
+
+int bsp_extra_out_volume_get(void) {
+    load_out_volume();
+    return s_out_volume;
+}
+
+esp_err_t bsp_extra_out_volume_set(int volume) {
+    if (volume < 0) volume = 0;
+    if (volume > 100) volume = 100;
+    load_out_volume();
+    if (volume != s_out_volume) {
+        nvs_handle_t handle;
+        if (nvs_open("vibe_audio", NVS_READWRITE, &handle) != ESP_OK) return ESP_FAIL;
+        esp_err_t saved = nvs_set_u8(handle, "volume", (uint8_t)volume);
+        if (saved == ESP_OK) saved = nvs_commit(handle);
+        nvs_close(handle);
+        if (saved != ESP_OK) return saved;
+        s_out_volume = volume;
+    }
+    return apply_out_volume(false);
 }
 
 esp_err_t bsp_extra_codec_dev_stop(void) {
@@ -458,8 +503,9 @@ esp_err_t bsp_extra_codec_dev_stop(void) {
 }
 
 esp_err_t bsp_extra_codec_mute_set(bool muted) {
+    s_output_held_mute = muted;
     if (!s_speaker_open) return ESP_ERR_INVALID_STATE;
-    return esp_codec_dev_set_out_mute(s_speaker, muted);
+    return esp_codec_dev_set_out_mute(s_speaker, muted || s_out_volume == 0);
 }
 
 esp_err_t bsp_extra_i2s_read(void* buffer, size_t length, size_t* bytes_read, uint32_t timeout_ms) {
