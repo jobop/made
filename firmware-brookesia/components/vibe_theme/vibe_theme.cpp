@@ -270,6 +270,7 @@ esp_err_t applyFromBridge(const std::string &name, const std::string &base_url) 
     if (name.empty()) {
         g_palette = defaults();
         freeLockAsset();
+        savePaletteNvs(g_palette);  // 必须同步覆盖 NVS 调色板，否则重启后又加载回来
         unlink(kIconPath);
         unlink(kBgPath);
         saveDimsNvs("icon_w", 0);
