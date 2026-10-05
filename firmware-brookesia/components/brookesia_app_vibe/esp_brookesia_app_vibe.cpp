@@ -1597,49 +1597,70 @@ void VibeCoding::themeSelectCallback(lv_event_t *event)
     if (!self) return;
     auto *button = static_cast<lv_obj_t *>(lv_event_get_target(event));
     const char *selected = static_cast<const char *>(lv_obj_get_user_data(button));
-    if (selected == nullptr) return;
-    if (vibe_theme::apply(selected) != ESP_OK) {
-        if (self->theme_status_label_) lv_label_set_text(self->theme_status_label_, T("应用主题失败"));
+    if (selected == nullptr || self->theme_list_loading_.load()) return;
+    const auto pairing = vibe_pairing::snapshot();
+    const bool usb_mode = pairing.access_mode == vibe_pairing::AccessMode::UsbDirect;
+    std::string base = !pairing.url.empty() ? pairing.url : pairing.manual_url;
+    if (!usb_mode && base.empty()) {
+        if (self->theme_status_label_) lv_label_set_text(self->theme_status_label_, T("尚未连接电脑，无法应用"));
         return;
     }
-    self->theme_pending_name_ = selected;
-    if (self->theme_status_label_)
-        lv_label_set_text(self->theme_status_label_, (std::string(T("已应用主题：")) + selected + T("，正在重启…")).c_str());
-    lv_timer_t *timer = lv_timer_create(themeRebootCallback, 1200, nullptr);
-    lv_timer_set_repeat_count(timer, 1);
+    struct ApplyArgs {
+        VibeCoding *self;
+        std::string name;
+        std::string base;
+        bool usb_mode;
+    };
+    if (xTaskCreate([](void *arg) {
+            auto *args = static_cast<ApplyArgs *>(arg);
+            const esp_err_t result = args->usb_mode
+                                         ? vibe_theme::applyFromBridge(args->name, "")
+                                         : vibe_theme::applyFromBridge(args->name, args->base);
+            if (result == ESP_OK) args->self->theme_reboot_pending_.store(true);
+            delete args;
+            vTaskDelete(nullptr);
+        }, "vibe_theme_apply", 12288,
+        new ApplyArgs{self, selected, base, usb_mode}, 3, nullptr) != pdPASS) {
+        if (self->theme_status_label_) lv_label_set_text(self->theme_status_label_, T("应用任务启动失败"));
+    }
 }
 
 void VibeCoding::themeSyncCallback(lv_event_t *event)
 {
     auto *self = static_cast<VibeCoding *>(lv_event_get_user_data(event));
-    if (!self) return;
+    if (!self || self->theme_list_loading_.load()) return;
     const auto pairing = vibe_pairing::snapshot();
-    std::string base = !pairing.url.empty() ? pairing.url : pairing.manual_url;
     const bool usb_mode = pairing.access_mode == vibe_pairing::AccessMode::UsbDirect;
+    std::string base = !pairing.url.empty() ? pairing.url : pairing.manual_url;
     if (!usb_mode && base.empty()) {
-        if (self->theme_status_label_) lv_label_set_text(self->theme_status_label_, T("尚未连接电脑，无法同步"));
+        if (self->theme_status_label_) lv_label_set_text(self->theme_status_label_, T("尚未连接电脑，无法获取"));
         return;
     }
-    if (!usb_mode && base.rfind("https://", 0) == 0 && !vibe_pairing::tls_time_ready()) {
-        if (self->theme_status_label_)
-            lv_label_set_text(self->theme_status_label_,
-                vibe_pairing::tls_time_failed() ? T("设备时间同步失败，无法校验 HTTPS 证书")
-                                                : T("正在同步设备时间，以校验 HTTPS 证书"));
-        return;
-    }
-    // USB 直连走串口帧转发（无需局域网）；Wi-Fi/接收器模式走 HTTP。
-    struct SyncArgs {
-        bool via_usb;
+    self->theme_list_loading_.store(true);
+    self->theme_rows_signature_ = "";  // 立即显示加载态
+    struct ListArgs {
+        VibeCoding *self;
         std::string base;
+        bool usb_mode;
     };
     if (xTaskCreate([](void *arg) {
-            auto *args = static_cast<SyncArgs *>(arg);
-            if (args->via_usb) (void)vibe_theme::syncOverUsb();
-            else (void)vibe_theme::syncFromBridge(args->base);
+            auto *args = static_cast<ListArgs *>(arg);
+            std::vector<vibe_theme::ThemeInfo> list;
+            const bool ok = (args->usb_mode
+                                 ? vibe_theme::fetchThemeList("", list)
+                                 : vibe_theme::fetchThemeList(args->base, list)) == ESP_OK;
+            {
+                std::lock_guard<std::mutex> lock(args->self->model_mutex_);
+                args->self->theme_live_list_ =
+                    ok ? std::move(list) : std::vector<vibe_theme::ThemeInfo>{};
+            }
             delete args;
+            args->self->theme_list_loading_.store(false);
+            args->self->theme_rows_signature_ = "";  // 触发 LVGL 任务重建
             vTaskDelete(nullptr);
-        }, "vibe_theme_sync", 12288, new SyncArgs{usb_mode, base}, 3, nullptr) != pdPASS) {
-        if (self->theme_status_label_) lv_label_set_text(self->theme_status_label_, T("同步任务启动失败"));
+        }, "vibe_theme_list", 12288, new ListArgs{self, base, usb_mode}, 3, nullptr) != pdPASS) {
+        self->theme_list_loading_.store(false);
+        if (self->theme_status_label_) lv_label_set_text(self->theme_status_label_, T("列表任务启动失败"));
     }
 }
 
@@ -1662,7 +1683,39 @@ void VibeCoding::showTheme(bool visible)
         lv_obj_add_flag(settings_home_, LV_OBJ_FLAG_HIDDEN);
         lv_obj_remove_flag(theme_panel_, LV_OBJ_FLAG_HIDDEN);
         lv_obj_move_foreground(theme_panel_);
-        theme_rows_signature_ = "";  // 强制重建列表
+        // 打开即实时拉取主题列表。
+        if (!theme_list_loading_.load()) {
+            const auto pairing = vibe_pairing::snapshot();
+            const bool usb_mode = pairing.access_mode == vibe_pairing::AccessMode::UsbDirect;
+            std::string base = !pairing.url.empty() ? pairing.url : pairing.manual_url;
+            if (usb_mode || !base.empty()) {
+                theme_list_loading_.store(true);
+                theme_rows_signature_ = "";
+                struct ListArgs {
+                    VibeCoding *self;
+                    std::string base;
+                    bool usb_mode;
+                };
+                if (xTaskCreate([](void *arg) {
+                        auto *args = static_cast<ListArgs *>(arg);
+                        std::vector<vibe_theme::ThemeInfo> list;
+                        const bool ok = (args->usb_mode
+                                             ? vibe_theme::fetchThemeList("", list)
+                                             : vibe_theme::fetchThemeList(args->base, list)) == ESP_OK;
+                        {
+                            std::lock_guard<std::mutex> lock(args->self->model_mutex_);
+                            args->self->theme_live_list_ =
+                                ok ? std::move(list) : std::vector<vibe_theme::ThemeInfo>{};
+                        }
+                        delete args;
+                        args->self->theme_list_loading_.store(false);
+                        args->self->theme_rows_signature_ = "";
+                        vTaskDelete(nullptr);
+                    }, "vibe_theme_list", 12288, new ListArgs{this, base, usb_mode}, 3, nullptr) != pdPASS) {
+                    theme_list_loading_.store(false);
+                }
+            }
+        }
         renderThemes();
     } else {
         lv_obj_add_flag(theme_panel_, LV_OBJ_FLAG_HIDDEN);
@@ -1674,14 +1727,24 @@ void VibeCoding::renderThemes()
 {
     if (!theme_panel_ || lv_obj_has_flag(theme_panel_, LV_OBJ_FLAG_HIDDEN)) return;
     const auto sync = vibe_theme::syncStatus();
+    const bool loading = theme_list_loading_.load();
     if (theme_status_label_) {
         std::string status = sync.message;
-        if (sync.state == vibe_theme::SyncState::Running && status.empty()) status = T("正在同步…");
+        if (loading && status.empty()) status = T("正在获取主题列表…");
         lv_label_set_text(theme_status_label_, status.c_str());
     }
-    const auto themes = vibe_theme::list();
+    // 应用成功后安排重启（LVGL 任务内创建一次性定时器）。
+    if (theme_reboot_pending_.load() && !theme_reboot_started_.exchange(true)) {
+        lv_timer_t *timer = lv_timer_create(themeRebootCallback, 1200, nullptr);
+        lv_timer_set_repeat_count(timer, 1);
+    }
+    std::vector<vibe_theme::ThemeInfo> themes;
+    {
+        std::lock_guard<std::mutex> lock(model_mutex_);
+        themes = theme_live_list_;
+    }
     std::string signature = vibe_theme::activeName() + "|" + std::to_string(themes.size()) +
-                            "|" + std::to_string(static_cast<int>(sync.state));
+                            "|" + std::to_string(loading ? 1 : 0);
     for (const auto &theme : themes) signature += "|" + theme.name;
     if (signature == theme_rows_signature_) return;
     theme_rows_signature_ = signature;
@@ -1692,7 +1755,13 @@ void VibeCoding::renderThemes()
         const bool active = vibe_theme::activeName().empty();
         lv_obj_t *button = touchButton(theme_rows_, 8, 4, 264, 40,
             nullptr, themeSelectCallback, this, active ? VT(accent) : VT(bg_row));
-        lv_obj_set_user_data(button, strdup(""));  // 统一走堆分配，行删除时释放
+        lv_obj_set_user_data(button, strdup(""));
+        lv_obj_add_event_cb(button, [](lv_event_t *event) {
+            if (lv_event_get_code(event) == LV_EVENT_DELETE) {
+                auto *name = static_cast<char *>(lv_obj_get_user_data(lv_event_get_target(event)));
+                if (name != nullptr) free(name);
+            }
+        }, LV_EVENT_DELETE, nullptr);
         lv_obj_t *name = settingsLabel(button, T("默认主题（当前界面）"), 10, 11, 244,
                                        active ? VT(text_primary) : VT(text_secondary), false);
         lv_obj_set_style_text_font(name, text_font, 0);
@@ -1704,10 +1773,8 @@ void VibeCoding::renderThemes()
         const bool active = vibe_theme::activeName() == theme.name;
         lv_obj_t *button = touchButton(theme_rows_, 8, y, 264, 40,
             nullptr, themeSelectCallback, this, active ? VT(accent) : VT(bg_row));
-        // 行对象 user_data 保存主题名（堆上拷贝，行重建时释放）。
         lv_obj_set_user_data(button, strdup(theme.name.c_str()));
         lv_obj_add_event_cb(button, [](lv_event_t *event) {
-            // 行删除时释放 user_data 字符串。
             if (lv_event_get_code(event) == LV_EVENT_DELETE) {
                 auto *name = static_cast<char *>(lv_obj_get_user_data(lv_event_get_target(event)));
                 if (name != nullptr) free(name);
@@ -1722,7 +1789,6 @@ void VibeCoding::renderThemes()
         lv_obj_remove_flag(name, LV_OBJ_FLAG_CLICKABLE);
         ++row;
     }
-    if (sync.state == vibe_theme::SyncState::Running) theme_rows_signature_ = "";  // 同步完成后重建
 }
 
 void VibeCoding::accessOpenCallback(lv_event_t *event)

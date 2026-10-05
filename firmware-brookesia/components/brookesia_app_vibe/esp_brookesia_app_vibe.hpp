@@ -11,6 +11,7 @@
 #include "esp_http_client.h"
 #include "provider_catalog.hpp"
 #include "vibe_wifi.hpp"
+#include "vibe_theme.hpp"
 #include "systems/phone/esp_brookesia_phone_app.hpp"
 
 namespace vibe_pairing { struct Snapshot; }
@@ -296,7 +297,10 @@ private:
     lv_obj_t *theme_rows_ = nullptr;
     lv_obj_t *theme_status_label_ = nullptr;
     std::string theme_rows_signature_; // LVGL task only.
-    std::string theme_pending_name_;   // 已应用待重启的主题。
+    std::vector<vibe_theme::ThemeInfo> theme_live_list_; // 桥接器实时列表（model_mutex_ 保护）。
+    std::atomic<bool> theme_list_loading_{false};
+    std::atomic<bool> theme_reboot_pending_{false};
+    std::atomic<bool> theme_reboot_started_{false};
     lv_obj_t *power_panel_ = nullptr;
     lv_obj_t *power_timeout_button_ = nullptr;
     lv_obj_t *power_timeout_label_ = nullptr;
