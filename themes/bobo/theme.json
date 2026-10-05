@@ -1,0 +1,24 @@
+{
+  "title": "啵啵",
+  "colors": {
+    "accent": "E08BB8",
+    "btn_normal": "585A85",
+    "btn_cancel": "6E6F95",
+    "border": "C0B4E8",
+    "text_primary": "FFF5FA",
+    "text_secondary": "DDD4EE",
+    "text_hint": "AFA6CC",
+    "text_accent": "FFC0D8",
+    "title": "F8F0FF",
+    "bg_page": "3E3F60",
+    "bg_panel": "4A4B70",
+    "bg_row": "565779",
+    "danger": "C05870",
+    "lock_bg": "C9CDE8"
+  },
+  "sound": { "file": "chime.wav" },
+  "lock": {
+    "icon": "icon.bin", "icon_w": 112, "icon_h": 112,
+    "bg": "bg.bin", "bg_w": 240, "bg_h": 320
+  }
+}
