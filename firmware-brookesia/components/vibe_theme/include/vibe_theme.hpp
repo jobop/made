@@ -49,6 +49,8 @@ struct ThemeInfo {
 esp_err_t init();
 const Palette &palette();
 const LockAsset &lockAsset();
+// 主题提示音 WAV 路径；空串 = 使用内置提示音。
+std::string soundPath();
 std::string activeName();  // "" = 默认主题
 
 // 实时主题列表（base_url 为空 = 走 USB 串口帧传输；否则走 HTTP）。

@@ -118,50 +118,79 @@ lv_obj_t *create(lv_obj_t *parent, lv_event_cb_t swipe_callback, void *user_data
         lv_obj_add_event_cb(root, swipe_callback, LV_EVENT_PRESS_LOST, user_data);
     }
 
+    // 主题覆盖：背景图全屏铺底（跳过内置舞台）；图标替换吉祥物。
     const bool theme_icon = vibe_theme::lockAsset().has_icon;
-    // A soft stage and a small brand mark leave the character the main focus.
-    auto *halo = shape(root, 81, 48, 198, 198, 0x12282B);
-    lv_obj_set_style_bg_grad_color(halo, lv_color_hex(vibe_theme::palette().lock_bg), 0);
-    lv_obj_set_style_bg_grad_dir(halo, LV_GRAD_DIR_VER, 0);
-    parts->brand = label(root, "made", 125, 27, 110, &lv_font_montserrat_16, kLime);
-    lv_obj_set_style_text_letter_space(parts->brand, 3, 0);
-    if (!theme_icon) {
+    const bool theme_bg = vibe_theme::lockAsset().has_bg;
+    static lv_image_dsc_t theme_icon_dsc = {};
+    static lv_image_dsc_t theme_bg_dsc = {};
+    if (theme_bg) {
+        theme_bg_dsc.header.cf = LV_COLOR_FORMAT_RGB565;
+        theme_bg_dsc.header.w = vibe_theme::lockAsset().bg_w;
+        theme_bg_dsc.header.h = vibe_theme::lockAsset().bg_h;
+        theme_bg_dsc.data = vibe_theme::lockAsset().bg_data;
+        theme_bg_dsc.data_size = static_cast<uint32_t>(vibe_theme::lockAsset().bg_w) *
+                                 vibe_theme::lockAsset().bg_h * 2;
+        auto *bg_image = lv_image_create(root);
+        passive(bg_image);
+        lv_image_set_src(bg_image, &theme_bg_dsc);
+        lv_obj_set_pos(bg_image, made_s(0), made_s(0));
+    }
+    if (!theme_bg) {
+        // A soft stage and a small brand mark leave the character the main focus.
+        auto *halo = shape(root, 81, 48, 198, 198, 0x12282B);
+        lv_obj_set_style_bg_grad_color(halo, lv_color_hex(vibe_theme::palette().lock_bg), 0);
+        lv_obj_set_style_bg_grad_dir(halo, LV_GRAD_DIR_VER, 0);
+        parts->brand = label(root, "made", 125, 27, 110, &lv_font_montserrat_16, kLime);
+        lv_obj_set_style_text_letter_space(parts->brand, 3, 0);
         parts->shadow = shape(root, 139, 214, 82, 9, 0x5B846D, 55);
         parts->left_arm = line(root, 0xABD885, 6);
         parts->right_arm = line(root, 0xABD885, 6);
         parts->left_foot = shape(root, 150, 196, 18, 8, kLime);
         parts->right_foot = shape(root, 194, 196, 18, 8, kLime);
-    }
 
-    // Crop the approved icon's frame away with an LVGL circular clip. The
-    // original bean/face pixels remain intact; the limbs supply a dancing pose.
-    parts->body = shape(root, 112, 64, 136, 136, 0x102629);
-    // Keep the circle in design pixels so the 112 px artwork is cropped the
-    // same way as on the round screen, then scale the finished circle.
-    lv_obj_set_size(parts->body, 136, 136);
-    lv_obj_set_style_transform_pivot_x(parts->body, 0, 0);
-    lv_obj_set_style_transform_pivot_y(parts->body, 0, 0);
-    lv_obj_set_style_transform_scale_x(parts->body, made_lv_scale(), 0);
-    lv_obj_set_style_transform_scale_y(parts->body, made_lv_scale(), 0);
-    lv_obj_set_style_clip_corner(parts->body, true, 0);
-    parts->image = lv_image_create(parts->body);
-    passive(parts->image);
-    if (theme_icon) {
-        const auto &asset = vibe_theme::lockAsset();
-        static lv_image_dsc_t theme_icon_dsc = {};
+        // Crop the approved icon's frame away with an LVGL circular clip. The
+        // original bean/face pixels remain intact; the limbs supply a dancing pose.
+        parts->body = shape(root, 112, 64, 136, 136, 0x102629);
+        // Keep the circle in design pixels so the 112 px artwork is cropped the
+        // same way as on the round screen, then scale the finished circle.
+        lv_obj_set_size(parts->body, 136, 136);
+        lv_obj_set_style_transform_pivot_x(parts->body, 0, 0);
+        lv_obj_set_style_transform_pivot_y(parts->body, 0, 0);
+        lv_obj_set_style_transform_scale_x(parts->body, made_lv_scale(), 0);
+        lv_obj_set_style_transform_scale_y(parts->body, made_lv_scale(), 0);
+        lv_obj_set_style_clip_corner(parts->body, true, 0);
+        parts->image = lv_image_create(parts->body);
+        passive(parts->image);
+        if (theme_icon) {
+            theme_icon_dsc.header.cf = LV_COLOR_FORMAT_RGB565;
+            theme_icon_dsc.header.w = vibe_theme::lockAsset().icon_w;
+            theme_icon_dsc.header.h = vibe_theme::lockAsset().icon_h;
+            theme_icon_dsc.data = vibe_theme::lockAsset().icon_data;
+            theme_icon_dsc.data_size = static_cast<uint32_t>(vibe_theme::lockAsset().icon_w) *
+                                       vibe_theme::lockAsset().icon_h * 2;
+            lv_image_set_src(parts->image, &theme_icon_dsc);
+        } else {
+            lv_image_set_src(parts->image, &img_app_vibe);
+        }
+        lv_obj_set_pos(parts->image, 12, 12);
+        lv_image_set_pivot(parts->image, 56, 56);
+        lv_image_set_scale(parts->image, 368);
+        lv_image_set_antialias(parts->image, true);
+    } else if (theme_icon) {
+        // 主题背景 + 主题图标：图标居中放在背景上。
         theme_icon_dsc.header.cf = LV_COLOR_FORMAT_RGB565;
-        theme_icon_dsc.header.w = asset.icon_w;
-        theme_icon_dsc.header.h = asset.icon_h;
-        theme_icon_dsc.data = asset.icon_data;
-        theme_icon_dsc.data_size = static_cast<uint32_t>(asset.icon_w) * asset.icon_h * 2;
+        theme_icon_dsc.header.w = vibe_theme::lockAsset().icon_w;
+        theme_icon_dsc.header.h = vibe_theme::lockAsset().icon_h;
+        theme_icon_dsc.data = vibe_theme::lockAsset().icon_data;
+        theme_icon_dsc.data_size = static_cast<uint32_t>(vibe_theme::lockAsset().icon_w) *
+                                   vibe_theme::lockAsset().icon_h * 2;
+        parts->image = lv_image_create(root);
+        passive(parts->image);
         lv_image_set_src(parts->image, &theme_icon_dsc);
+        lv_obj_center(parts->image);
     } else {
-        lv_image_set_src(parts->image, &img_app_vibe);
+        parts->image = nullptr;
     }
-    lv_obj_set_pos(parts->image, 12, 12);
-    lv_image_set_pivot(parts->image, 56, 56);
-    lv_image_set_scale(parts->image, 368);
-    lv_image_set_antialias(parts->image, true);
 
     // Tiny musical notes use native shapes, avoiding unsupported font glyphs.
     for (int i = 0; i < 2; ++i) {
@@ -196,6 +225,7 @@ void update(lv_obj_t *root, uint32_t elapsed_ms, bool english) {
     const int sway = wave(elapsed_ms, 1800, 7);
     const int bounce = (wave(elapsed_ms, 900, 8, 270) + 8) / 2;
     const int step = wave(elapsed_ms, 1800, 4);
+    if (parts->body == nullptr) return;  // 主题背景模式：静态艺术画，无舞台动画
     lv_obj_set_pos(parts->body, made_x(112 + sway), made_y(64 - bounce));
     // Five degrees of rocking, never a spinning square.
     const int angle = wave(elapsed_ms, 1800, 45);

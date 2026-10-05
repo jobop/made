@@ -29,6 +29,8 @@ constexpr const char *kTag = "vibe_theme";
 constexpr const char *kNvsNamespace = "vibe_theme";
 constexpr const char *kIconPath = "/spiffs/theme_icon.bin";
 constexpr const char *kBgPath = "/spiffs/theme_bg.bin";
+constexpr const char *kSoundPath = "/spiffs/theme_chime.wav";
+constexpr size_t kMaxSoundBytes = 256 * 1024;  // USB 帧转发单响应上限
 constexpr size_t kUsbResponseLimit = 256 * 1024;  // 与 vibe_usb kMaxResponse 对齐
 
 Palette defaults() {
@@ -158,6 +160,8 @@ void loadFlatAsset(const char *path, const char *w_key, const char *h_key,
     ESP_LOGI(kTag, "Lock asset %s: %ux%u", path, width, height);
 }
 
+bool soundEnabledNvs() { return loadDimsNvs("has_sound") == 1; }
+
 void loadLockAssets() {
     freeLockAsset();
     loadFlatAsset(kIconPath, "icon_w", "icon_h", g_lock.has_icon, g_lock.icon_data,
@@ -251,6 +255,7 @@ esp_err_t init() {
 
 const Palette &palette() { return g_palette; }
 const LockAsset &lockAsset() { return g_lock; }
+std::string soundPath() { return soundEnabledNvs() ? std::string(kSoundPath) : std::string(); }
 std::string activeName() { return g_active; }
 
 esp_err_t fetchThemeList(const std::string &base_url, std::vector<ThemeInfo> &out) {
@@ -319,6 +324,8 @@ esp_err_t applyFromBridge(const std::string &name, const std::string &base_url) 
         saveDimsNvs("icon_h", 0);
         saveDimsNvs("bg_w", 0);
         saveDimsNvs("bg_h", 0);
+        unlink(kSoundPath);
+        saveDimsNvs("has_sound", 0);
         if (!saveActiveNvs("")) {
             finish(SyncState::Failed, "写入缓存失败");
             return ESP_FAIL;
@@ -357,7 +364,27 @@ esp_err_t applyFromBridge(const std::string &name, const std::string &base_url) 
         next.lock_bg = colorFromJson(colors, "lock_bg", next.lock_bg);
     }
 
-    // 2) 先全部拉进内存（PSRAM），全部成功才落盘，避免半套缓存。
+    // 2) 提示音（WAV）：拉进内存，成功才落盘。
+    std::vector<uint8_t> sound_data;
+    const cJSON *sound = cJSON_GetObjectItemCaseSensitive(root, "sound");
+    if (cJSON_IsObject(sound)) {
+        const cJSON *file_item = cJSON_GetObjectItemCaseSensitive(sound, "file");
+        if (cJSON_IsString(file_item) && file_item->valuestring != nullptr) {
+            std::lock_guard<std::mutex> progress_lock(g_sync_mutex);
+            g_sync.message = "下载 提示音…";
+            std::string content;
+            if (!fetchPath(base_url, "/api/themes/" + name + "/files/" + file_item->valuestring,
+                           content) ||
+                content.empty() || content.size() > kMaxSoundBytes) {
+                cJSON_Delete(root);
+                finish(SyncState::Failed, "提示音下载失败（≤256KB）");
+                return ESP_FAIL;
+            }
+            sound_data.assign(content.begin(), content.end());
+        }
+    }
+
+    // 3) 先全部拉进内存（PSRAM），全部成功才落盘，避免半套缓存。
     struct AssetBlob {
         std::vector<uint8_t> data;
         uint16_t w = 0, h = 0;
@@ -414,6 +441,19 @@ esp_err_t applyFromBridge(const std::string &name, const std::string &base_url) 
         fclose(file);
         saveDimsNvs(asset.nvs_w, asset.w);
         saveDimsNvs(asset.nvs_h, asset.h);
+    }
+    if (sound_data.empty()) {
+        unlink(kSoundPath);
+        saveDimsNvs("has_sound", 0);
+    } else {
+        FILE *sound_file = fopen(kSoundPath, "wb");
+        if (sound_file == nullptr) {
+            finish(SyncState::Failed, "写入缓存失败");
+            return ESP_FAIL;
+        }
+        fwrite(sound_data.data(), 1, sound_data.size(), sound_file);
+        fclose(sound_file);
+        saveDimsNvs("has_sound", 1);
     }
     if (!savePaletteNvs(next) || !saveActiveNvs(name)) {
         finish(SyncState::Failed, "写入缓存失败");
