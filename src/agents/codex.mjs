@@ -1,6 +1,24 @@
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { builtinAgentIcons } from '../agent-icons.mjs';
 import { probeCli, runCli, gitState } from './shared.mjs';
 import { jsonLineEvents, toolActivity } from './events.mjs';
+
+// `codex login status` 只认 ChatGPT/OAuth 登录。当用户在 ~/.codex/config.toml 里配置了
+// 自定义 model_provider（experimental_bearer_token 或 env_key 指向的环境变量）时，
+// CLI 实际可用但登录状态仍显示未登录。这里补充识别这类鉴权方式，避免误报“请先登录”。
+function hasCustomProviderAuth() {
+  try {
+    const config = fs.readFileSync(path.join(os.homedir(), '.codex', 'config.toml'), 'utf8');
+    const bearer = config.match(/experimental_bearer_token\s*=\s*"([^"]+)"/);
+    if (bearer?.[1]) return true;
+    const envKey = config.match(/env_key\s*=\s*"([^"]+)"/);
+    return Boolean(envKey?.[1] && process.env[envKey[1]]);
+  } catch {
+    return false;
+  }
+}
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -61,7 +79,11 @@ export default {
   capabilities: { session: 'native', model: true, cancel: true, progress: true },
   model: { default: 'gpt-6-astra', required: true },
   sessionIdPattern: UUID,
-  probe: () => probeCli('codex', ['login', 'status']),
+  probe: () => {
+    const state = probeCli('codex', ['login', 'status']);
+    if (state.available || !hasCustomProviderAuth()) return state;
+    return { available: true, mode: 'local_cli', reason: '' };
+  },
   run: (context) => runCli(context, adapter),
   createEvents,
   syncJobState(job) {
