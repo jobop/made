@@ -12,6 +12,7 @@
 
 #include "cJSON.h"
 #include "esp_heap_caps.h"
+#include "esp_crt_bundle.h"
 #include "esp_http_client.h"
 #include "esp_log.h"
 #include "nvs.h"
@@ -329,9 +330,11 @@ int installThemes(const Fetcher &fetch) {
 }
 
 bool httpFetch(const std::string &base, const std::string &path, std::string &out) {
+    const std::string url = base + path;
     esp_http_client_config_t config = {};
-    config.url = (base + path).c_str();
+    config.url = url.c_str();
     config.timeout_ms = 15000;
+    if (url.rfind("https://", 0) == 0) config.crt_bundle_attach = esp_crt_bundle_attach;
     esp_http_client_handle_t client = esp_http_client_init(&config);
     if (client == nullptr) return false;
     bool ok = false;

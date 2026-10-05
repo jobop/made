@@ -1620,6 +1620,13 @@ void VibeCoding::themeSyncCallback(lv_event_t *event)
         if (self->theme_status_label_) lv_label_set_text(self->theme_status_label_, T("尚未连接电脑，无法同步"));
         return;
     }
+    if (!usb_mode && base.rfind("https://", 0) == 0 && !vibe_pairing::tls_time_ready()) {
+        if (self->theme_status_label_)
+            lv_label_set_text(self->theme_status_label_,
+                vibe_pairing::tls_time_failed() ? T("设备时间同步失败，无法校验 HTTPS 证书")
+                                                : T("正在同步设备时间，以校验 HTTPS 证书"));
+        return;
+    }
     // USB 直连走串口帧转发（无需局域网）；Wi-Fi/接收器模式走 HTTP。
     struct SyncArgs {
         bool via_usb;
