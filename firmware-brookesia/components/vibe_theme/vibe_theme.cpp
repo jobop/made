@@ -12,6 +12,8 @@
 
 #include "cJSON.h"
 #include "esp_crt_bundle.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 #include "esp_heap_caps.h"
 #include "esp_http_client.h"
 #include "esp_log.h"
@@ -189,6 +191,21 @@ uint32_t colorFromJson(const cJSON *colors, const char *key, uint32_t fallback) 
 
 // ---- 传输：base_url 为空 = USB 串口帧；否则 HTTP ----
 
+bool fetchPath(const std::string &base_url, const std::string &path, std::string &out);
+
+bool fetchPathRetry(const std::string &base_url, const std::string &path, std::string &out) {
+    // 接收器中继一次只转一个请求，与设备自身的心跳/轮询竞争；失败重试 3 次。
+    for (int attempt = 0; attempt < 3; ++attempt) {
+        if (attempt > 0) vTaskDelay(pdMS_TO_TICKS(400));
+        std::string result;
+        if (fetchPath(base_url, path, result)) {
+            out = std::move(result);
+            return true;
+        }
+    }
+    return false;
+}
+
 bool fetchPath(const std::string &base_url, const std::string &path, std::string &out) {
     if (base_url.empty()) {
         const auto pairing = vibe_pairing::snapshot();
@@ -207,6 +224,7 @@ bool fetchPath(const std::string &base_url, const std::string &path, std::string
     if (url.rfind("https://", 0) == 0) config.crt_bundle_attach = esp_crt_bundle_attach;
     esp_http_client_handle_t client = esp_http_client_init(&config);
     if (client == nullptr) return false;
+    esp_http_client_set_header(client, "Connection", "close");
     bool ok = false;
     if (esp_http_client_open(client, 0) == ESP_OK) {
         esp_http_client_fetch_headers(client);
@@ -241,7 +259,7 @@ esp_err_t fetchThemeList(const std::string &base_url, std::vector<ThemeInfo> &ou
         g_sync = {SyncState::Running, base_url.empty() ? "经 USB 获取列表…" : "经网络获取列表…"};
     }
     std::string body;
-    const esp_err_t fetch_result = fetchPath(base_url, "/api/themes", body) ? ESP_OK : ESP_FAIL;
+    const esp_err_t fetch_result = fetchPathRetry(base_url, "/api/themes", body) ? ESP_OK : ESP_FAIL;
     if (fetch_result != ESP_OK) {
         std::lock_guard<std::mutex> lock(g_sync_mutex);
         g_sync = {SyncState::Failed, base_url.empty()
@@ -311,7 +329,7 @@ esp_err_t applyFromBridge(const std::string &name, const std::string &base_url) 
 
     // 1) 拉取 theme.json。
     std::string json;
-    if (!fetchPath(base_url, "/api/themes/" + name + "/files/theme.json", json)) {
+    if (!fetchPathRetry(base_url, "/api/themes/" + name + "/files/theme.json", json)) {
         finish(SyncState::Failed, "无法获取主题数据");
         return ESP_FAIL;
     }
@@ -367,7 +385,7 @@ esp_err_t applyFromBridge(const std::string &name, const std::string &base_url) 
             std::lock_guard<std::mutex> progress_lock(g_sync_mutex);
             g_sync.message = std::string("下载 ") + asset.file_key + "…";
             std::string content;
-            if (!fetchPath(base_url, "/api/themes/" + name + "/files/" + file_item->valuestring,
+            if (!fetchPathRetry(base_url, "/api/themes/" + name + "/files/" + file_item->valuestring,
                            content) ||
                 content.size() != static_cast<size_t>(asset.w) * asset.h * 2) {
                 cJSON_Delete(root);
