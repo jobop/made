@@ -147,7 +147,11 @@ test('language API requires local authorization, persists, reaches device config
   // optional query. No protocol version or payload translation is required.
   const usbFrames = [];
   const usb = new UsbReceiverProtocol({ locale: () => config.locale,
-    sendLine: async line => usbFrames.push(JSON.parse(line)),
+    sendLine: async line => {
+      const parsed = JSON.parse(line);
+      usbFrames.push(parsed);
+      if (parsed.type === 'data') usb.feed(Buffer.from(`${JSON.stringify({ type: 'ack', id: parsed.id })}\n`));
+    },
     forward: (request, signal) => forwardUsbRequest(request, {
       devicePort: config.devicePort, authority: `127.0.0.1:${config.devicePort}`, forwardSecret: 'isolated-test', signal,
     }),
@@ -254,7 +258,11 @@ test('USB bridge-owned errors use current locale while forwarded response bytes 
   const sent = [];
   let forwardedPath;
   const protocol = new UsbReceiverProtocol({ locale: () => locale,
-    sendLine: async line => sent.push(JSON.parse(line)),
+    sendLine: async line => {
+      const parsed = JSON.parse(line);
+      sent.push(parsed);
+      if (parsed.type === 'data') protocol.feed(Buffer.from(`${JSON.stringify({ type: 'ack', id: parsed.id })}\n`));
+    },
     forward: async request => { forwardedPath = request.path; return { status: 200, contentType: 'application/json', body: Buffer.from('{"result":"任务不存在"}') }; },
   });
   const feed = frame => protocol.feed(Buffer.from(`${JSON.stringify(frame)}\n`));

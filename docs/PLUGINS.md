@@ -4,7 +4,7 @@
 
 ## 安装本地插件
 
-在 `config.local.json` 中加入这些字段，保留已有 projects 等设置：
+在 `bridge/config.local.json` 中加入这些字段，保留已有 projects 等设置。下面的路径相对该配置文件，仍指向桥接器里的示例：
 
 ```json
 {
@@ -22,7 +22,7 @@
 
 ## 编程助手
 
-完整接口见 `src/plugins/contracts.d.ts`，内置实现在 `src/agents/`。
+完整接口见 `bridge/src/plugins/contracts.d.ts`，内置实现在 `bridge/src/agents/`。已安装的外部插件留在 `bridge/plugins/`，由桥接器加载；插件市场只负责发包，不代替这个运行目录。
 
 必填元数据：`apiVersion: 1`、`kind: 'coding-agent'`、唯一 `id`、`label`、`capabilities`。ID 为 1–40 个小写字母、数字、下划线、连字符（首字符字母或数字）。名称至多 64 UTF-8 字节。所有插件共享 ID 命名空间。
 
@@ -75,10 +75,10 @@ export default { /* 其他插件字段 */ icon };
 
 ```sh
 python3 -m pip install Pillow
-python3 tools/convert-agent-icon.py avatar.png my-icon.json
+python3 bridge/tools/convert-agent-icon.py avatar.png my-icon.json
 ```
 
-工具保留宽高比例和透明背景，缩放为 48×48 并量化到最多 16 色。`examples/plugins/echo-agent.mjs` 与 `echo-icon.json` 是使用独立图案的完整示例。
+工具保留宽高比例和透明背景，缩放为 48×48 并量化到最多 16 色。`bridge/examples/plugins/echo-agent.mjs` 与 `echo-icon.json` 是使用独立图案的完整示例。
 
 图像协议 `indexed4`：`width`、`height` 各为 1–48；`palette` 是 1–16 个 `RRGGBBAA` 八位十六进制字符串（无 `#`，含透明度）；`data` 是标准 Base64。像素按从左到右、从上到下线性排列，一字节存两个调色板索引，高四位在前，行间没有补齐；总像素数为奇数时最后低四位必须为零。`background`、`accent` 为 `#RRGGBB`，用于头像底色和强调色。最大图像数据为 1152 字节，Base64 后为 1536 字符。
 

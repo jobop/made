@@ -434,8 +434,12 @@ esp_err_t applyFromBridge(const std::string &name, const std::string &base_url) 
     if (cJSON_IsObject(sound)) {
         const cJSON *file_item = cJSON_GetObjectItemCaseSensitive(sound, "file");
         if (cJSON_IsString(file_item) && file_item->valuestring != nullptr) {
-            std::lock_guard<std::mutex> progress_lock(g_sync_mutex);
-            g_sync.message = "下载 提示音…";
+            // 只在改状态时拿锁。下载期间握着锁会挡住界面刷新；失败分支再调
+            // finish() 会再次加锁，这把锁不能重入，界面就停在上一句文案。
+            {
+                std::lock_guard<std::mutex> progress_lock(g_sync_mutex);
+                g_sync.message = "下载 提示音…";
+            }
             std::string content;
             if (!fetchPath(base_url, "/api/themes/" + name + "/files/" + file_item->valuestring,
                            content, "提示音") ||
@@ -473,8 +477,10 @@ esp_err_t applyFromBridge(const std::string &name, const std::string &base_url) 
                 asset.w = asset.h = 0;
                 continue;
             }
-            std::lock_guard<std::mutex> progress_lock(g_sync_mutex);
-            g_sync.message = std::string("下载 ") + asset.file_key + "…";
+            {
+                std::lock_guard<std::mutex> progress_lock(g_sync_mutex);
+                g_sync.message = std::string("下载 ") + asset.file_key + "…";
+            }
             std::string content;
             if (!fetchPathRetry(base_url, "/api/themes/" + name + "/files/" + file_item->valuestring,
                            content) ||

@@ -2,8 +2,8 @@
 生成方式：内置 imagegen 工具（非 CLI）
 
 原始素材：bean-source.png
-网页与112px预览：../../public/bean-icon.png
-固件资源：../../firmware-brookesia/components/brookesia_app_vibe/assets/img_app_vibe.c
+网页与112px预览：../../bridge/public/bean-icon.png
+固件资源：../../made/components/brookesia_app_vibe/assets/img_app_vibe.c
 通过 tools/build-app-icon.py 缩放与编码；保留透明 alpha。
 
 生成提示词（完整原文）：

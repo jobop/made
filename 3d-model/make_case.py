@@ -227,7 +227,7 @@ def plunger(name, x, y):
 boot_btn = plunger("boot_button", 0, 0)
 reset_btn = plunger("reset_button", 12, 0)
 
-out_dir = "/Users/myidd007/My project/made/case"
+out_dir = "/Users/myidd007/My project/made/3d-model"
 
 
 def export_stl(objects, filename):

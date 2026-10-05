@@ -19,7 +19,11 @@ function fixture(forward = async () => ({ status: 200, contentType: 'application
   const receivedHello = [];
   let calls = 0;
   const protocol = new UsbReceiverProtocol({
-    sendLine: async (line) => { sent.push(JSON.parse(line)); },
+    sendLine: async (line) => {
+      const parsed = JSON.parse(line);
+      sent.push(parsed);
+      if (parsed.type === 'data') protocol.feed(frame({ type: 'ack', id: parsed.id }));
+    },
     forward: async (...args) => { calls += 1; return forward(...args); },
     onHello: (value) => receivedHello.push(value),
   });
@@ -181,7 +185,11 @@ test('已认证 USB 语音请求在长时间转写期间维持在线，结束后
   let refreshes = 0;
   let finishForward;
   const protocol = new UsbReceiverProtocol({
-    sendLine: async (line) => { sent.push(JSON.parse(line)); },
+    sendLine: async (line) => {
+      const parsed = JSON.parse(line);
+      sent.push(parsed);
+      if (parsed.type === 'data') protocol.feed(frame({ type: 'ack', id: parsed.id }));
+    },
     forward: () => new Promise((resolve) => { finishForward = resolve; }),
     refreshAuthenticatedVoice: (authorization) => {
       assert.equal(authorization, 'Bearer valid-token');
@@ -296,6 +304,30 @@ test('圆屏退出接收端热点时取消语音请求，立即停止刷新设�
   assert.equal(protocol.current, null);
   assert.equal(protocol.responding, false);
   assert.equal(sent.filter((item) => item.type !== 'ready').length, 0);
+  protocol.dispose();
+});
+
+test('USB 响应最多超前 8 块确认', async () => {
+  const sent = [];
+  const protocol = new UsbReceiverProtocol({
+    sendLine: async (line) => { sent.push(JSON.parse(line)); },
+    forward: async () => ({ status: 200, contentType: 'application/octet-stream',
+      body: Buffer.alloc(9 * 1024, 7) }),
+  });
+  protocol.feed(frame(HELLO));
+  protocol.feed(frame({ type: 'request', id: 9, method: 'GET', path: '/api/themes/bobo/files/chime.wav',
+    authorization: '', contentType: '', length: 0 }));
+  protocol.feed(frame({ type: 'end', id: 9 }));
+  await until(() => sent.filter((item) => item.type === 'data').length >= 8);
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  assert.equal(sent.filter((item) => item.type === 'data').length, 8);
+  protocol.feed(frame({ type: 'ack', id: 9 }));
+  await until(() => sent.filter((item) => item.type === 'data').length === 9);
+  for (let count = 0; count < 8; count += 1) protocol.feed(frame({ type: 'ack', id: 9 }));
+  await until(() => sent.at(-1)?.type === 'end');
+  const body = Buffer.concat(sent.filter((item) => item.type === 'data')
+    .map((item) => Buffer.from(item.chunk, 'base64')));
+  assert.equal(body.length, 9 * 1024);
   protocol.dispose();
 });
 

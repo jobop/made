@@ -17,13 +17,13 @@ While locked, made does not connect to the bridge or send heartbeats. Single, do
 Requires Node.js 22 or later. No npm dependencies are needed to run the bridge.
 
 ```sh
-cp config.example.json config.local.json
+cp bridge/config.example.json bridge/config.local.json
 npm start
 ```
 
 Open [the dashboard](http://127.0.0.1:8787/). The three pages are **Dashboard**, **Assistants**, and **Tasks**. The English dashboard caption is **Made,when you want to make**; Tasks keeps **One task. An ongoing conversation.** Use the language selector in the header to switch between **简体中文** and **English**. The bridge saves your preference. The desktop launcher label remains **码得** (made) in both languages. On the device, Settings contains **Connection** and **Language**. Open **Language** to choose **中文 / English / Follow PC**. You can select a language before connecting; a manual selection is remembered and is not overwritten by the computer. Follow PC follows the bridge during configuration refresh and remembers the last language for offline use.
 
-Set `projects` in `config.local.json` to the Git repositories you want to use. The included `demo-project` is available for trying the workflow. The bridge accepts existing uncommitted changes when starting a new task or continuing a session; review changes in your editor as needed. Existing project labels are user data, so the language switch preserves them; you can edit those labels in the configuration file.
+Set `projects` in `bridge/config.local.json` to the Git repositories you want to use. The included `bridge/demo-project` is available for trying the workflow. The bridge accepts existing uncommitted changes when starting a new task or continuing a session; review changes in your editor as needed. Existing project labels are user data, so the language switch preserves them; you can edit those labels in the configuration file.
 
 Choose a model supported by each coding agent's account on the Assistants page. Install and sign in to the selected agent on your computer. The bridge lists installed **plugins**, with availability shown separately; it does not scan every application on your computer.
 
@@ -59,7 +59,7 @@ The dashboard supports Cloudflare Tunnel, Tailscale Funnel, ngrok, and an existi
 
 A second ESP32-S3 with native USB, or the supported ESP32-C3 with WCH USB-to-UART, can provide a dedicated Wi-Fi hotspot and forward device traffic over USB. The dashboard displays its SSID and password. In made, open **Settings → Connection → Receiver**, scan and select the hotspot, then enter the eight-digit password shown on the PC. The receiver remembers its password across restarts. Manual entry remains available.
 
-The receiver is optional, and the computer bridge is still required. Inserting a receiver does not automatically run programs on the computer. Physical testing with two boards is pending; see the [receiver documentation](receiver-firmware/README.md) before flashing.
+The receiver is optional, and the computer bridge is still required. Inserting a receiver does not automatically run programs on the computer. Physical testing with two boards is pending; see the [receiver documentation](receiver/README.md) before flashing.
 
 ## Device controls
 
@@ -79,7 +79,7 @@ The device connects and sends heartbeats only while made is in the foreground an
 
 - [Plugin development](docs/PLUGINS.md): assistant metadata, capabilities, icons, sessions, progress, and cancellation.
 - [Localization](docs/I18N.md): language ownership, translation boundaries, and adding strings.
-- [Device firmware](firmware-brookesia/README.md) and [flashing instructions](firmware-brookesia/release/FLASH.md).
+- [Device firmware](made/README.md) and [flashing instructions](made/release/FLASH.md).
 
 Assistant plugins run on the computer. Their names and icon pixels are sent to made, so adding a compatible plugin does not require another firmware update. Speech recognition uses the shared transcription interface rather than per-provider plugins.
 

@@ -13,7 +13,7 @@
 在 ESP-IDF 5.5 环境构建 S3：
 
 ```sh
-cd receiver-firmware
+cd receiver
 idf.py set-target esp32s3
 idf.py build
 idf.py -p /dev/cu.usbmodemXXXX flash
@@ -22,7 +22,7 @@ idf.py -p /dev/cu.usbmodemXXXX flash
 构建 C3 UART 版本，使用独立构建目录和配置文件，保留已有 S3 配置：
 
 ```sh
-cd receiver-firmware
+cd receiver
 idf.py -B build-c3 -D SDKCONFIG=sdkconfig.c3 \
   -D SDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.defaults.esp32c3" \
   -D IDF_TARGET=esp32c3 build

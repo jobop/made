@@ -20,29 +20,32 @@
 
 ## 插件扩展（开源接口 v1）
 
-编程助手通过电脑侧插件扩展，码得助手名单、名称、能力与图标像素全部由桥接器下发。未连接时只显示连接与配对状态，没有默认助手占位；固件也不内置动物绘图模板。自定义图片可用 `tools/convert-agent-icon.py` 转成 48×48、最多 16 色的小图放在插件中。语音识别不做插件化，只填 URL、API Key、模型名，兼容服务和模型共用内置转写客户端。开发说明和示例见 [插件开发指南](docs/PLUGINS.md)。安装插件或更换图片并重启桥接器后，码得自动刷新，不需反复刷固件。首次迁移到动态图像协议需要更新本版本固件。
+编程助手通过电脑侧插件扩展，码得助手名单、名称、能力与图标像素全部由桥接器下发。未连接时只显示连接与配对状态，没有默认助手占位；固件也不内置动物绘图模板。自定义图片可用 `bridge/tools/convert-agent-icon.py` 转成 48×48、最多 16 色的小图放在插件中。语音识别不做插件化，只填 URL、API Key、模型名，兼容服务和模型共用内置转写客户端。开发说明和示例见 [插件开发指南](docs/PLUGINS.md)。安装插件或更换图片并重启桥接器后，码得自动刷新，不需反复刷固件。首次迁移到动态图像协议需要更新本版本固件。
 
-## 当前实现
+## 仓库模块
 
-- `src/`：可运行的电脑侧客户端。包含独立语音识别入口、任务会话与内部对话记录、Codex/Cursor/Qoder 命令行适配器、WorkBuddy Open API 转交适配器、状态持久化、确认与取消接口。
-- `public/`：电脑工作台只有“大盘、助手、任务”三个入口。大盘展示码得预览、语音设置、设备配对与连接状态；助手页展示各编程工具状态和模型设置；任务页负责新建、命名、选择任务，并显示当前对话、进度、确认和取消。实体板使用固件中的界面。
-- `firmware-brookesia/`：**码得固件工程**。从微雪 1.85B 官方 Brookesia 示例出发，保留本板 360×360 桌面与 BSP；桌面仅注册小智、码得与 Settings（设置）。SquareLine Demo、准星、重力球、天气、相册、画画和计算器均不在当前桌面中；部分组件源码仍保留。`firmware-brookesia/release/` 提供烧录文件；移植范围和限制见子目录的 `PORTING.md`。
-- `receiver-firmware/`：**可选的第二块 ESP32-S3 / ESP32-C3 接收端**。它建立独立热点，让码得绕开公司 Wi-Fi；接收端经 USB 将码得的配对、语音和任务请求转给电脑桥接器。`receiver-firmware/release/` 对应 S3 原生 USB，`receiver-firmware/release-esp32c3/` 对应 C3 板载 WCH 转 UART0。
-- `demo-project/`：可以安全试用的演示 Git 仓库。
+五个功能模块用英文目录名。市场只做包管理，与码得和桥接器解耦；包安装进桥接器之后才生效。技能广场不在本仓库自建。
+
+- `made/`：**码得固件**。从微雪 1.85B 官方 Brookesia 示例出发，保留本板 360×360 桌面与 BSP；桌面仅注册小智、码得与 Settings（设置）。SquareLine Demo、准星、重力球、天气、相册、画画和计算器均不在当前桌面中；部分组件源码仍保留。`made/release/` 提供烧录文件；移植范围和限制见子目录的 `PORTING.md`。
+- `receiver/`：**可选的第二块 ESP32-S3 / ESP32-C3 接收端**。它建立独立热点，让码得绕开公司 Wi-Fi；接收端经 USB 将码得的配对、语音和任务请求转给电脑桥接器。`receiver/release/` 对应 S3 原生 USB，`receiver/release-esp32c3/` 对应 C3 板载 WCH 转 UART0。
+- `bridge/`：**电脑桥接器**。`src/` 是可运行的客户端，包含独立语音识别入口、任务会话与内部对话记录、Codex/Cursor/Qoder 命令行适配器、WorkBuddy Open API 转交适配器、状态持久化、确认与取消接口。`public/` 是电脑工作台，只有“大盘、助手、任务”三个入口。`plugins/`、`themes/`、`examples/` 仍留在桥接器里，由桥接器加载，不拆进市场。`demo-project/` 是可以安全试用的演示 Git 仓库。
+- `plugin-market/`：插件包管理。登记和分发主题、管控、agent 运行时三类包，本身不执行。
+- `expert-market/`：专家包管理。登记和分发注入到 agent 的人格，本身不执行。
+- `3d-model/`：码得外壳的 3D 打印模型。源文件、STL、3MF 和预览图都在这里。
 
 ## 先运行电脑端
 
 需要 Node.js 22 或更新版本。此项目本身无需安装 npm 依赖。
 
 ```sh
-cd /path/to/esp32-vibe-coding-agent
-cp config.example.json config.local.json
+cd /path/to/made
+cp bridge/config.example.json bridge/config.local.json
 npm start
 ```
 
 大盘文案为「码得，代码触手可得」，英文为「Made,when you want to make」；任务页保持「说出任务，看见进度」，英文为「One task. An ongoing conversation.」。
 
-浏览器打开大盘 `http://127.0.0.1:8787`；助手状态与模型在 `http://127.0.0.1:8787/assistants.html`，任务在 `http://127.0.0.1:8787/tasks.html`。先选助手和项目，再显式新建一个任务；第一句文字或语音会自动生成简短任务标题，也可在电脑任务页修改。以后选中同一任务继续说话，会沿用上下文，不会每说一句就新增任务。界面聚焦该任务的最新对话。`config.local.json` 中的 `demo` 项目可先用于验证回显与取消；真正让助手修改你的代码时，把 `projects` 中的路径改为本机 Git 仓库根目录。项目可以保留已有的未提交改动；新任务与后续对话均可继续使用这个工作目录。
+浏览器打开大盘 `http://127.0.0.1:8787`；助手状态与模型在 `http://127.0.0.1:8787/assistants.html`，任务在 `http://127.0.0.1:8787/tasks.html`。先选助手和项目，再显式新建一个任务；第一句文字或语音会自动生成简短任务标题，也可在电脑任务页修改。以后选中同一任务继续说话，会沿用上下文，不会每说一句就新增任务。界面聚焦该任务的最新对话。`bridge/config.local.json` 中的 `demo` 项目可先用于验证回显与取消；真正让助手修改你的代码时，把 `projects` 中的路径改为本机 Git 仓库根目录。项目可以保留已有的未提交改动；新任务与后续对话均可继续使用这个工作目录。
 
 ### 码得的独立语音输入
 
@@ -99,9 +102,9 @@ USB 串口由桥接器使用，烧录或使用串口监视器前应先停止桥�
 
 ### 可选 USB 接收端
 
-若公司 Wi-Fi 要求网页登录或设备准入，可以使用另一块 ESP32-S3 或 ESP32-C3 开发板作接收端。S3 默认使用原生 USB Serial/JTAG；当前 C3 配置使用板载 WCH USB 转串口（`1a86:55d3`）、UART0 TX21/RX20、921600 波特率，适配本次识别到的 4 MB Flash 开发板。C3 原生 USB 的配置方式见[接收端说明](receiver-firmware/README.md)。接收端建立独立的 WPA2 热点；设备只在「码得」应用位于前台且已解锁时临时连接这个热点，接收端把 HTTP 请求通过 USB 送到电脑。退出「码得」应用后，设备恢复原来的 Wi-Fi 配置，小智仍用原网络；接收端热点本身没有互联网。现有同 Wi-Fi 自动发现和公网连接继续可选。
+若公司 Wi-Fi 要求网页登录或设备准入，可以使用另一块 ESP32-S3 或 ESP32-C3 开发板作接收端。S3 默认使用原生 USB Serial/JTAG；当前 C3 配置使用板载 WCH USB 转串口（`1a86:55d3`）、UART0 TX21/RX20、921600 波特率，适配本次识别到的 4 MB Flash 开发板。C3 原生 USB 的配置方式见[接收端说明](receiver/README.md)。接收端建立独立的 WPA2 热点；设备只在「码得」应用位于前台且已解锁时临时连接这个热点，接收端把 HTTP 请求通过 USB 送到电脑。退出「码得」应用后，设备恢复原来的 Wi-Fi 配置，小智仍用原网络；接收端热点本身没有互联网。现有同 Wi-Fi 自动发现和公网连接继续可选。
 
-1. 按型号选择 [S3 原生 USB 烧录说明](receiver-firmware/release/FLASH.md)或 [C3 UART 烧录说明](receiver-firmware/release-esp32c3/FLASH.md)，给**第二块板子**烧录对应三份镜像。不要混刷两个芯片的镜像，也不要刷到码得主机（微雪 1.85B）。
+1. 按型号选择 [S3 原生 USB 烧录说明](receiver/release/FLASH.md)或 [C3 UART 烧录说明](receiver/release-esp32c3/FLASH.md)，给**第二块板子**烧录对应三份镜像。不要混刷两个芯片的镜像，也不要刷到码得主机（微雪 1.85B）。
 2. 保持电脑桥接器运行，在本机大盘的“USB 连接”查看连接状态、热点名称和密码。macOS/Linux 自动发现限定 Espressif 原生 USB `303a:1001` 和已确认的 WCH `1a86:55d3`；收到有效协议 hello 后才开始通信。若需指定接收端端口，可用 `VIBE_USB_PORT=/dev/cu.usbmodemXXXX npm start`。码得主机若也连着 USB，请先退出它的 USB 直连模式，再连接接收端。
 3. 在设备上打开「码得」 → 齿轮 → 接入设置 →“接收端”，自动扫描并点选接收端热点，输入电脑大盘显示的 8 位数字密码并保存（WPA2 最少 8 位）。无需退出码得到桌面设置；也保留手动填写入口。码得连接后使用固定地址 `http://192.168.4.1:8788`；不需填写电脑 IP 或开公网穿透。
 4. 若这台电脑尚未配对，在电脑大盘点“添加码得”，核对两端六位码并确认。连接同一台电脑时，两种传输方式复用经验证的配对，并同步令牌更新与撤销；不同电脑各自保存身份。下一次进入「码得」并解锁后会验证并恢复对应配对。
@@ -159,7 +162,7 @@ USB 串口由桥接器使用，烧录或使用串口监视器前应先停止桥�
 
 小智与码得是桌面里的两个独立应用，录音时通过音频会话锁互斥使用麦克风。上一版应用镜像已在实体 1.85B 上刷入并通过 esptool 哈希校验，用户确认过配对、录音、双击执行、三击取消、长按退出、轻声输入及答复滚动。当前支持完整动态助手目录和图标，并保留 USB 直连与可选接收端模式的应用镜像已用 ESP-IDF 5.5.5 构建，为 5,803,328 字节，factory 分区余量 1,086,144 字节；**当前中文桌面名版本已刷入现有 1.85B，并通过 esptool 写入哈希校验；此前版本的 USB 直连已在实板恢复原配对并收到心跳，实际语音上传曾生成待确认交互；本轮为中英文界面与设备独立语言选择更新，未重新提交语音任务；独立接收端已取得 C3 板子，仍待完整链路联调**。`release/` 中的预构建镜像无需写入电脑地址或令牌；在「码得」接入设置中选择 Wi-Fi、手动地址、接收端或 USB 即可。已在本机备份刷写前的应用分区，建议保留原厂整片 Flash 备份，以便恢复原来的桌面与设置。
 
-刷写前应按 [Espressif 文档](https://docs.espressif.com/projects/esptool/en/latest/esp32s3/esptool/basic-commands.html)备份整片 Flash；微雪提供[出厂恢复镜像与步骤](https://docs.waveshare.com/ESP32-S3-Touch-LCD-1.85B/Firmware-Flashing)。码得和接收端各有独立的 ESP-IDF 5.5 固件工程；后续构建和移植细节分别见 `firmware-brookesia/` 与 `receiver-firmware/`。
+刷写前应按 [Espressif 文档](https://docs.espressif.com/projects/esptool/en/latest/esp32s3/esptool/basic-commands.html)备份整片 Flash；微雪提供[出厂恢复镜像与步骤](https://docs.waveshare.com/ESP32-S3-Touch-LCD-1.85B/Firmware-Flashing)。码得和接收端各有独立的 ESP-IDF 5.5 固件工程；后续构建和移植细节分别见 `made/` 与 `receiver/`。
 
 本版也修复了旧任务显示后界面停止响应的问题：LVGL 改为同步绘图，恢复空白区域滑动，并关闭「码得」的系统边缘导航手势。实板已确认左右切助手、齿轮及长按 BOOT 退出恢复；退出后 USB 回到待机，心跳停止。
 

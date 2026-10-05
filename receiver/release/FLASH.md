@@ -1,6 +1,6 @@
 # 码得 USB 接收端烧录文件
 
-这三个文件由 ESP-IDF 5.5.5 为通用原生 USB ESP32-S3 编译。本目录的 S3 版本已重新编译校验，尚未在独立 S3 接收端实测。ESP32-C3 UART 版本另见 `../release-esp32c3/`。不要把这些文件烧录到现有的码得主机（微雪 ESP32-S3-Touch-LCD-1.85B）；码得主机使用 `firmware-brookesia/release/` 中的镜像。
+这三个文件由 ESP-IDF 5.5.5 为通用原生 USB ESP32-S3 编译。本目录的 S3 版本已重新编译校验，尚未在独立 S3 接收端实测。ESP32-C3 UART 版本另见 `../release-esp32c3/`。不要把这些文件烧录到现有的码得主机（微雪 ESP32-S3-Touch-LCD-1.85B）；码得主机使用 `made/release/` 中的镜像。
 
 首次刷写接收端时，在本目录执行（将端口替换成该开发板的原生 USB 串口）：
 

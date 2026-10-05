@@ -12,6 +12,9 @@ export const USB_DIRECT_AUTHORITY = 'usb.vibe.local:8788';
 
 const MAX_LINE = 2048;
 const MAX_CHUNK = 1024;
+// 8×1KB 的 base64 行大约 11KB，小于接收器 16KB 接收环。窗口内不等确认，
+// 避免 224KB 提示音被逐块往返拖过接收器 30 秒转发上限。
+const ACK_WINDOW = 8;
 const MAX_REQUEST = 1_100_000;
 const MAX_RESPONSE = 262_144;
 const REQUEST_TIMEOUT_MS = 30_000;
@@ -174,8 +177,10 @@ export class UsbReceiverProtocol {
     this.responding = false;
     this.closed = false;
     this.pendingWork = Promise.resolve();
-    // 响应分块的逐块 ACK：接收端消化一块才发下一块，防止 UART 环形缓冲溢出。
+    // 响应分块的确认计数。接收器仍逐块回 ack；这里最多超前 ACK_WINDOW 块，
+    // 既保住 UART 接收环，又不必每一千字节停一次。
     this.ackWaiters = new Map();
+    this.ackCredits = new Map();
   }
 
   feed(chunk) {
@@ -245,11 +250,11 @@ export class UsbReceiverProtocol {
     }
     if (!this.helloReceived) return;
     if (frame.type === 'ack' && validId(frame.id)) {
-      const waiter = this.ackWaiters.get(frame.id);
-      if (waiter) {
-        this.ackWaiters.delete(frame.id);
-        waiter();
+      if (this.ackCredits.has(frame.id)) {
+        this.ackCredits.set(frame.id, this.ackCredits.get(frame.id) + 1);
       }
+      const waiter = this.ackWaiters.get(frame.id);
+      if (waiter) waiter();
       return;
     }
     if (frame.type === 'bye' && this.peer.mode === 'direct' &&
@@ -387,20 +392,32 @@ export class UsbReceiverProtocol {
       await this.writeResponse(id, 502, 'application/json; charset=utf-8', this.errorBody('设备接口响应过大'));
       return;
     }
-    await this.sendLine(JSON.stringify({ type: 'response', id, status,
-      contentType: limitedText(contentType, 128) ? contentType : 'application/octet-stream',
-      length: bytes.length }));
-    for (let offset = 0; offset < bytes.length; offset += MAX_CHUNK) {
-      await this.sendLine(JSON.stringify({ type: 'data', id,
-        chunk: bytes.subarray(offset, offset + MAX_CHUNK).toString('base64') }));
-      await this.waitForAck(id);
+    this.ackCredits.set(id, 0);
+    try {
+      await this.sendLine(JSON.stringify({ type: 'response', id, status,
+        contentType: limitedText(contentType, 128) ? contentType : 'application/octet-stream',
+        length: bytes.length }));
+      let sentChunks = 0;
+      for (let offset = 0; offset < bytes.length; offset += MAX_CHUNK) {
+        while (sentChunks - (this.ackCredits.get(id) || 0) >= ACK_WINDOW) {
+          await this.waitForCredits(id, sentChunks - ACK_WINDOW + 1);
+        }
+        await this.sendLine(JSON.stringify({ type: 'data', id,
+          chunk: bytes.subarray(offset, offset + MAX_CHUNK).toString('base64') }));
+        sentChunks += 1;
+      }
+      if (sentChunks > (this.ackCredits.get(id) || 0)) await this.waitForCredits(id, sentChunks);
+      await this.sendLine(JSON.stringify({ type: 'end', id }));
+      console.error(`[usb-link] response done id=${id} bytes=${bytes.length} ${new Date().toISOString()}`);
+      this.onActivity();
+    } finally {
+      this.ackCredits.delete(id);
+      this.ackWaiters.delete(id);
     }
-    await this.sendLine(JSON.stringify({ type: 'end', id }));
-    console.error(`[usb-link] response done id=${id} bytes=${bytes.length} ${new Date().toISOString()}`);
-    this.onActivity();
   }
 
-  waitForAck(id) {
+  waitForCredits(id, target) {
+    if ((this.ackCredits.get(id) || 0) >= target) return Promise.resolve();
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         console.error(`[usb-link] ack TIMEOUT id=${id} ${new Date().toISOString()}`);
@@ -408,10 +425,14 @@ export class UsbReceiverProtocol {
         reject(new Error('USB ACK 超时'));
       }, 15_000);
       timer.unref?.();
-      this.ackWaiters.set(id, () => {
+      const check = () => {
+        if ((this.ackCredits.get(id) || 0) < target) return;
         clearTimeout(timer);
+        this.ackWaiters.delete(id);
         resolve();
-      });
+      };
+      this.ackWaiters.set(id, check);
+      check();
     });
   }
 
@@ -429,6 +450,7 @@ export class UsbReceiverProtocol {
     this.closed = true;
     this.cancelCurrent();
     this.ackWaiters.clear();
+    this.ackCredits.clear();
     this.line = Buffer.alloc(0);
   }
 

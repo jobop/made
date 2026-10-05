@@ -2,8 +2,8 @@
 生成方式：内置 imagegen 工具；编辑此前图标。
 
 源图：made-source.png
-网页资源：../../public/made-icon.png
-固件资源：../../firmware-brookesia/components/brookesia_app_vibe/assets/img_app_vibe.c
+网页资源：../../bridge/public/made-icon.png
+固件资源：../../made/components/brookesia_app_vibe/assets/img_app_vibe.c
 使用 tools/build-app-icon.py 缩放为112×112并编码，保留透明alpha。
 英文品牌在所有界面中保持小写 made。
 

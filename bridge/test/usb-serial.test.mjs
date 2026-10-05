@@ -44,8 +44,12 @@ async function openTerminal(t) {
         serial += Buffer.from(item.data, 'base64').toString('utf8');
         let newline;
         while ((newline = serial.indexOf('\n')) >= 0) {
-          terminal.frames.push(JSON.parse(serial.slice(0, newline)));
+          const parsed = JSON.parse(serial.slice(0, newline));
+          terminal.frames.push(parsed);
           serial = serial.slice(newline + 1);
+          if (parsed.type === 'data' && Number.isInteger(parsed.id)) {
+            void terminal.write(frame({ type: 'ack', id: parsed.id }));
+          }
         }
       }
     }
