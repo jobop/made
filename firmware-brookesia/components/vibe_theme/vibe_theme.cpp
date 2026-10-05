@@ -3,6 +3,7 @@
 #include <dirent.h>
 #include <sys/stat.h>
 #include <cstdlib>
+#include <algorithm>
 #include <functional>
 #include <unistd.h>
 #include <atomic>
@@ -161,13 +162,36 @@ const LockAsset &lockAsset() { return g_lock; }
 std::string activeName() { return g_active; }
 
 std::vector<ThemeInfo> list() {
+    // SPIFFS 是扁平文件系统：对象名形如 "themes/<名字>/theme.json"，
+    // readdir 返回的永远是文件（DT_REG），没有真目录可枚举。
+    // 从两条路径收集主题名：优先列主题根目录的相对名，失败则扫挂载根。
+    std::vector<std::string> names;
+    auto collect = [&names](const std::string &base, const std::string &prefix) {
+        DIR *dir = opendir(base.c_str());
+        if (dir == nullptr) return;
+        struct dirent *entry = nullptr;
+        while ((entry = readdir(dir)) != nullptr) {
+            const std::string entry_name = entry->d_name;
+            if (entry_name[0] == '.') continue;
+            std::string relative = entry_name;
+            if (!prefix.empty()) {
+                if (relative.rfind(prefix, 0) != 0) continue;
+                relative = relative.substr(prefix.size());
+            }
+            const size_t slash = relative.find('/');
+            if (slash == std::string::npos || slash == 0) continue;
+            const std::string name = relative.substr(0, slash);
+            if (name.find("..") != std::string::npos) continue;
+            if (std::find(names.begin(), names.end(), name) == names.end())
+                names.push_back(name);
+        }
+        closedir(dir);
+    };
+    collect(std::string(kRoot), "");
+    if (names.empty()) collect("/spiffs", "themes/");
+
     std::vector<ThemeInfo> out;
-    DIR *dir = opendir(kRoot);
-    if (dir == nullptr) return out;
-    struct dirent *entry = nullptr;
-    while ((entry = readdir(dir)) != nullptr) {
-        if (entry->d_type != DT_DIR || entry->d_name[0] == '.') continue;
-        const std::string name = entry->d_name;
+    for (const auto &name : names) {
         std::string json;
         if (!readTextFile(themeDir(name) + "/theme.json", json)) continue;
         ThemeInfo info{name, name};
@@ -180,7 +204,6 @@ std::vector<ThemeInfo> list() {
         }
         out.push_back(std::move(info));
     }
-    closedir(dir);
     return out;
 }
 
@@ -243,17 +266,34 @@ esp_err_t remove(const std::string &name) {
     if (name.empty() || name.find("..") != std::string::npos || name.find('/') != std::string::npos)
         return ESP_ERR_INVALID_ARG;
     const std::string dir = themeDir(name);
-    DIR *handle = opendir(dir.c_str());
-    if (handle == nullptr) return ESP_ERR_NOT_FOUND;
-    struct dirent *entry = nullptr;
-    while ((entry = readdir(handle)) != nullptr) {
-        const std::string file = dir + "/" + entry->d_name;
-        if (unlink(file.c_str()) != 0) ESP_LOGW(kTag, "unlink %s failed", file.c_str());
+    const std::string prefix = std::string("themes/") + name + "/";
+    std::vector<std::string> files;
+    if (DIR *handle = opendir(dir.c_str())) {
+        struct dirent *entry = nullptr;
+        while ((entry = readdir(handle)) != nullptr) {
+            const std::string entry_name = entry->d_name;
+            if (entry_name[0] == '.') continue;
+            files.push_back(entry_name.find('/') == std::string::npos
+                                ? dir + "/" + entry_name
+                                : "/spiffs/" + prefix + entry_name);
+        }
+        closedir(handle);
     }
-    closedir(handle);
-    unlink(dir.c_str());  // SPIFFS VFS 以空目录文件模拟目录
+    if (files.empty()) {
+        DIR *handle = opendir("/spiffs");
+        if (handle != nullptr) {
+            struct dirent *entry = nullptr;
+            while ((entry = readdir(handle)) != nullptr) {
+                const std::string entry_name = entry->d_name;
+                if (entry_name.rfind(prefix, 0) == 0) files.push_back("/spiffs/" + entry_name);
+            }
+            closedir(handle);
+        }
+    }
+    for (const auto &file : files)
+        if (unlink(file.c_str()) != 0) ESP_LOGW(kTag, "unlink %s failed", file.c_str());
     if (g_active == name) (void)apply("");
-    return ESP_OK;
+    return files.empty() ? ESP_ERR_NOT_FOUND : ESP_OK;
 }
 
 esp_err_t saveFile(const std::string &theme, const std::string &filename,
