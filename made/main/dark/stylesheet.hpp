@@ -18,7 +18,7 @@ namespace esp_brookesia::systems::phone {
 constexpr Display::Data STYLESHEET_360_360_DARK_DISPLAY_DATA = {
     .status_bar = {
         .data = STYLESHEET_360_360_DARK_STATUS_BAR_DATA,
-        .visual_mode = StatusBar::VisualMode::SHOW_FIXED,
+        .visual_mode = StatusBar::VisualMode::HIDE,
     },
     .navigation_bar = {
         .data = STYLESHEET_360_360_DARK_NAVIGATION_BAR_DATA,
@@ -34,7 +34,7 @@ constexpr Display::Data STYLESHEET_360_360_DARK_DISPLAY_DATA = {
         .navigation_bar_visual_mode = NavigationBar::VisualMode::SHOW_FLEX,
     },
     .flags = {
-        .enable_status_bar = 1,
+        .enable_status_bar = 0,
         .enable_navigation_bar = 1,
         .enable_app_launcher_flex_size = 1,
         .enable_recents_screen = 1,

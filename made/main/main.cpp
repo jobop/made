@@ -16,9 +16,6 @@
 #define ESP_UTILS_LOG_TAG "Main"
 #include "esp_lib_utils.h"
 #include "./dark/stylesheet.hpp"
-#include "Settings.hpp"
-#include "system_status.hpp"
-#include "XiaozhiApp.hpp"
 #include "esp_brookesia_app_vibe.hpp"
 #include "vibe_wifi.hpp"
 #include "vibe_theme.hpp"
@@ -102,40 +99,12 @@ extern "C" void app_main(void)
 
         /* Begin the phone */
         ESP_UTILS_CHECK_FALSE_EXIT(phone->begin(), "Begin failed");
-        ESP_ERROR_CHECK(brookesia::system_status::start(phone->getDisplay().getStatusBar()));
 
-        ESP_UTILS_CHECK_FALSE_EXIT(
-            phone->installApp(Settings::requestInstance()) >= 1,
-            "Install Settings failed"
-        );
-        ESP_UTILS_CHECK_FALSE_EXIT(
-            phone->installApp(XiaozhiApp::requestInstance()) >= 1,
-            "Install XiaoZhi failed"
-        );
         const int made_app_id = phone->installApp(VibeCoding::requestInstance());
         ESP_UTILS_CHECK_FALSE_EXIT(made_app_id >= 1, "Install Made failed");
 
-        /* Create a timer to update the clock */
-        lv_timer_create([](lv_timer_t *t) {
-            time_t now;
-            struct tm timeinfo;
-            Phone *phone = (Phone *)t->user_data;
-
-
-            ESP_UTILS_CHECK_NULL_EXIT(phone, "Invalid phone");
-
-            time(&now);
-            localtime_r(&now, &timeinfo);
-
-            ESP_UTILS_CHECK_FALSE_EXIT(
-                phone->getDisplay().getStatusBar()->setClock(timeinfo.tm_hour, timeinfo.tm_min),
-                "Refresh status bar failed"
-            );
-            
-        }, 1000, phone);
-
         // Use the managed launcher lifecycle on the LVGL task (20 KB stack),
-        // not app_main's small stack. No network connection starts until unlock.
+        // not app_main's small stack. Made connects as soon as its screen is up.
         lv_timer_t *boot_made = lv_timer_create([](lv_timer_t *timer) {
             auto *phone = static_cast<Phone *>(lv_timer_get_user_data(timer));
             const systems::base::Context::AppEventData start_made = {

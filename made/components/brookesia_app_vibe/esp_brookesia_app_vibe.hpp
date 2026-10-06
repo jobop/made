@@ -76,6 +76,7 @@ private:
     static void lockSwipeCallback(lv_event_t *event);
     void enterLockScreen();
     void unlockScreen();
+    void openForeground();
     bool canOperate() const { return active_.load() && !locked_.load() && !exit_requested_.load(); }
     static void displayDiagnostic(lv_event_t *event);
     static void providerSwipeCallback(lv_event_t *event);

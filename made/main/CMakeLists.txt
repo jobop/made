@@ -11,7 +11,7 @@ idf_component_register(
     SRCS ${MAIN_SRCS}
     INCLUDE_DIRS "."
     EMBED_TXTFILES ${EMBEDDED_FILES}
-    REQUIRES Settings system_status XiaozhiApp brookesia_app_vibe vibe_wifi
+    REQUIRES brookesia_app_vibe vibe_wifi
 )
 
 target_compile_options(${COMPONENT_LIB} PUBLIC -Wno-missing-field-initializers)
@@ -56,30 +56,36 @@ foreach(component IN LISTS build_components)
         break()
     endif()
 endforeach()
-if(NOT XIAOZHI_FONTS_DIR)
-    message(FATAL_ERROR "xiaozhi-fonts component was not resolved")
-endif()
-
-set(XIAOZHI_COMMON_FONT
-    "${XIAOZHI_FONTS_DIR}/cbin/font_puhui_common_30_4.bin")
-if(NOT EXISTS "${XIAOZHI_COMMON_FONT}")
-    message(FATAL_ERROR "xiaozhi-fonts is missing font_puhui_common_30_4.bin")
-endif()
-
 set(ASSETS_STAGING_DIR "${CMAKE_BINARY_DIR}/assets_spiffs")
 set(ASSETS_STAGING_STAMP "${CMAKE_BINARY_DIR}/assets_spiffs.stamp")
-add_custom_command(
-    OUTPUT "${ASSETS_STAGING_STAMP}"
-    COMMAND "${CMAKE_COMMAND}" -E make_directory
-        "${ASSETS_STAGING_DIR}/xiaozhi"
-    COMMAND "${CMAKE_COMMAND}" -E copy_if_different
-        "${XIAOZHI_COMMON_FONT}"
-        "${ASSETS_STAGING_DIR}/xiaozhi/font.bin"
-    COMMAND "${CMAKE_COMMAND}" -E touch "${ASSETS_STAGING_STAMP}"
-    DEPENDS "${XIAOZHI_COMMON_FONT}"
-    COMMENT "Staging XiaoZhi Chinese font for SPIFFS"
-    VERBATIM
-)
+if(XIAOZHI_FONTS_DIR)
+    set(XIAOZHI_COMMON_FONT
+        "${XIAOZHI_FONTS_DIR}/cbin/font_puhui_common_30_4.bin")
+    if(NOT EXISTS "${XIAOZHI_COMMON_FONT}")
+        message(FATAL_ERROR "xiaozhi-fonts is missing font_puhui_common_30_4.bin")
+    endif()
+    add_custom_command(
+        OUTPUT "${ASSETS_STAGING_STAMP}"
+        COMMAND "${CMAKE_COMMAND}" -E make_directory
+            "${ASSETS_STAGING_DIR}/xiaozhi"
+        COMMAND "${CMAKE_COMMAND}" -E copy_if_different
+            "${XIAOZHI_COMMON_FONT}"
+            "${ASSETS_STAGING_DIR}/xiaozhi/font.bin"
+        COMMAND "${CMAKE_COMMAND}" -E touch "${ASSETS_STAGING_STAMP}"
+        DEPENDS "${XIAOZHI_COMMON_FONT}"
+        COMMENT "Staging XiaoZhi Chinese font for SPIFFS"
+        VERBATIM
+    )
+else()
+    add_custom_command(
+        OUTPUT "${ASSETS_STAGING_STAMP}"
+        COMMAND "${CMAKE_COMMAND}" -E make_directory "${ASSETS_STAGING_DIR}"
+        COMMAND "${CMAKE_COMMAND}" -E touch "${ASSETS_STAGING_DIR}/.keep"
+        COMMAND "${CMAKE_COMMAND}" -E touch "${ASSETS_STAGING_STAMP}"
+        COMMENT "Staging empty SPIFFS assets"
+        VERBATIM
+    )
+endif()
 add_custom_target(assets_spiffs_stage DEPENDS "${ASSETS_STAGING_STAMP}")
 spiffs_create_partition_image(
     assets "${ASSETS_STAGING_DIR}"

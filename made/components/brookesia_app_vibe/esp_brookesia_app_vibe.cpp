@@ -268,11 +268,10 @@ bool VibeCoding::run()
         display_diag_registered_ = true;
     }
     vibe_i18n::initialize();
-    enterLockScreen();
-    invalidateCatalog(true);
-    button_epoch_.fetch_add(1);
     active_ = true;
     exit_requested_ = false;
+    invalidateCatalog(true);
+    button_epoch_.fetch_add(1);
     rendered_session_id_.clear();
     last_provider_swipe_ms_ = 0;
     last_session_swipe_ms_ = 0;
@@ -834,21 +833,15 @@ bool VibeCoding::run()
     touchButton(delete_dialog_, 190, 230, 105, 50, T("删除"), deleteSessionConfirmCallback, this, VT(danger));
     lv_obj_add_flag(delete_dialog_, LV_OBJ_FLAG_HIDDEN);
 
-    lock_screen_ = made_lock_screen::create(screen, lockSwipeCallback, this);
-    if (!lock_screen_) {
-        active_ = false;
-        ESP_LOGE(BUTTON_TAG, "Cannot create Made lock screen");
-        return false;
-    }
+    openForeground();
     // Brookesia records timers created during run() and removes them on close.
-    // The same timer animates the lock screen and refreshes the unlocked UI.
     if (!lv_timer_create(timerCallback, 50, this)) {
         active_ = false;
         ESP_LOGE(BUTTON_TAG, "Cannot start Made UI timer");
         return false;
     }
     render();
-    ESP_LOGI(BUTTON_TAG, "Made lock screen ready; swipe up to connect");
+    ESP_LOGI(BUTTON_TAG, "Made ready");
 
     ensureWorkerStarted();
     bool expected = false;
@@ -912,7 +905,8 @@ bool VibeCoding::pause()
 bool VibeCoding::resume()
 {
     vibe_i18n::initialize();
-    enterLockScreen();
+    active_ = true;
+    openForeground();
     invalidateCatalog(true);
     button_epoch_.fetch_add(1);
     active_ = true;
@@ -1193,6 +1187,15 @@ void VibeCoding::timerCallback(lv_timer_t *timer)
         self->render();
     }
     self->ui_stage_.store(100);
+}
+
+void VibeCoding::openForeground()
+{
+    vibe_pairing::begin_foreground_connection();
+    foreground_network_pending_.store(true);
+    locked_.store(false);
+    lock_touch_tracking_ = false;
+    drawn_revision_ = UINT32_MAX;
 }
 
 void VibeCoding::enterLockScreen()
