@@ -94,6 +94,7 @@ inline const mbedtls_md_info_t* mbedtls_md_info_from_type(int) { static mbedtls_
 inline int mbedtls_md_hmac(const mbedtls_md_info_t*,const unsigned char *key,size_t kl,const unsigned char *data,size_t dl,unsigned char *out) { test_hmac(key,kl,data,dl,out); return 0; }
 namespace vibe_wifi { inline bool receiver=false; inline int reads=0; inline bool receiver_active() { ++reads; return receiver; } }
 namespace vibe_usb {
+inline constexpr const char* kReceiverUrl = "http://192.168.4.1:8788";
 inline bool enabled=true,online=true;
 inline uint32_t epoch=1,gate=UINT32_MAX;
 inline std::string gate_bearer;
@@ -105,6 +106,8 @@ inline void revoke_authorization() { gate=UINT32_MAX; gate_bearer.clear(); }
 inline std::string computer_token(64,'b'),computer_bridge="pc_b";
 inline bool approve=false;
 inline int verify_calls=0,pair_calls=0,status_calls=0;
+inline esp_err_t verify_transport=ESP_OK;
+inline int verify_http_status=200;
 inline std::string last_code;
 inline std::function<void()> during_request;
 inline std::string hmac(const std::string &input) {
@@ -113,20 +116,28 @@ inline std::string hmac(const std::string &input) {
  test_hmac(key,32,input.data(),input.size(),out);
  std::string result; char b[3]; for(uint8_t v:out) { std::snprintf(b,3,"%02x",v); result+=b; } return result;
 }
-inline esp_err_t request(const std::string &path,bool post,const std::string &authorization,const char*,const uint8_t *body,size_t length,std::string &response,int &status,size_t,int) {
+inline esp_err_t request_for(const std::string &path,bool post,const std::string &authorization,const char*,const uint8_t *body,size_t length,std::string &response,int &status,size_t,int,const char *authority) {
  assert(authorization.empty());
  if(during_request) { auto hook=std::move(during_request); during_request=nullptr; hook(); }
  if(path.rfind("/pair/verify?",0)==0) {
   ++verify_calls; assert(!post);
+  if(verify_transport!=ESP_OK){ status=0; response.clear(); return verify_transport; }
+  if(verify_http_status!=200){ status=verify_http_status; response="{\"error\":\"设备未配对\"}"; return ESP_OK; }
   auto start=path.find("deviceId=")+9,stop=path.find('&',start),ns=path.find("nonce=")+6;
-  std::string text="VIBE_BRIDGE_MANUAL_V2\n"+path.substr(start,stop-start)+"\n"+path.substr(ns)+"\n"+computer_bridge+"\nusb.vibe.local:8788";
-  response="{\"bridgeId\":\""+computer_bridge+"\",\"authority\":\"usb.vibe.local:8788\",\"mac\":\""+hmac(text)+"\"}"; status=200;
+  std::string text="VIBE_BRIDGE_MANUAL_V2\n"+path.substr(start,stop-start)+"\n"+path.substr(ns)+"\n"+computer_bridge+"\n"+authority;
+  response="{\"bridgeId\":\""+computer_bridge+"\",\"authority\":\""+std::string(authority)+"\",\"mac\":\""+hmac(text)+"\"}"; status=200;
  } else if(path=="/pair/request") {
   ++pair_calls; assert(post); auto *j=cJSON_Parse(std::string(reinterpret_cast<const char*>(body),length).c_str()); assert(j); last_code=cJSON_GetObjectItem(j,"code")->valuestring; cJSON_Delete(j); response="{}"; status=202;
  } else if(path.rfind("/pair/status?",0)==0) {
   ++status_calls; response=approve ? "{\"status\":\"approved\",\"bridgeId\":\""+computer_bridge+"\",\"token\":\""+computer_token+"\"}" : "{\"status\":\"pending\"}"; status=200;
  } else assert(false);
  return ESP_OK;
+}
+inline esp_err_t request(const std::string &path,bool post,const std::string &authorization,const char *content_type,const uint8_t *body,size_t length,std::string &response,int &status,size_t limit,int timeout) {
+ return request_for(path,post,authorization,content_type,body,length,response,status,limit,timeout,"usb.vibe.local:8788");
+}
+inline esp_err_t receiver_request(const std::string &path,bool post,const std::string &authorization,const char *content_type,const uint8_t *body,size_t length,std::string &response,int &status,size_t limit,int timeout) {
+ return request_for(path,post,authorization,content_type,body,length,response,status,limit,timeout,"192.168.4.1:8788");
 }
 }
 

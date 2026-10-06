@@ -154,13 +154,14 @@ bool cancel_submitted_task(const Parameters& parameters, const char* task_id) {
     if (!vibe_pairing::authorized_for_foreground() || pairing.url != parameters.url ||
         pairing.token != parameters.token) return false;
     const std::string path = vibe_i18n::request_path(std::string("/device/tasks/") + task_id + "/cancel");
-    if (vibe_usb::is_direct_url(parameters.url)) {
+    if (vibe_usb::is_direct_url(parameters.url) || vibe_usb::is_receiver_url(parameters.url)) {
         std::string response;
         int status_code = 0;
-        const esp_err_t result = vibe_usb::request(
-            path, true,
-            "Bearer " + parameters.token, "application/json", nullptr, 0,
-            response, status_code, kResponseCapacity - 1, 10000);
+        const esp_err_t result = vibe_usb::is_direct_url(parameters.url)
+            ? vibe_usb::request(path, true, "Bearer " + parameters.token, "application/json",
+                                nullptr, 0, response, status_code, kResponseCapacity - 1, 10000)
+            : vibe_usb::receiver_request(path, true, "Bearer " + parameters.token, "application/json",
+                                         nullptr, 0, response, status_code, kResponseCapacity - 1, 10000);
         return result == ESP_OK && status_code == 200;
     }
     if (parameters.url.rfind("https://", 0) == 0 && !vibe_pairing::tls_time_ready()) return false;
@@ -221,7 +222,7 @@ bool upload(const Parameters& parameters, const uint8_t* wav, size_t size,
     const std::string authorization = "Bearer " + parameters.token;
     esp_err_t result = ESP_FAIL;
     int status_code = 0;
-    if (vibe_usb::is_direct_url(parameters.url)) {
+    if (vibe_usb::is_direct_url(parameters.url) || vibe_usb::is_receiver_url(parameters.url)) {
         std::string usb_response;
         usb_upload_active.store(true);
         // cancel() can arrive while preparing the WAV or allocating response
@@ -231,9 +232,13 @@ bool upload(const Parameters& parameters, const uint8_t* wav, size_t size,
             set_status(Phase::Idle, "录音已取消");
             return false;
         }
-        result = vibe_usb::request(path, true, authorization, "audio/wav", wav, size,
-                                   usb_response, status_code, kResponseCapacity - 1, 160000,
-                                   &cancel_requested);
+        result = vibe_usb::is_direct_url(parameters.url)
+            ? vibe_usb::request(path, true, authorization, "audio/wav", wav, size,
+                                usb_response, status_code, kResponseCapacity - 1, 160000,
+                                &cancel_requested)
+            : vibe_usb::receiver_request(path, true, authorization, "audio/wav", wav, size,
+                                         usb_response, status_code, kResponseCapacity - 1, 160000,
+                                         &cancel_requested);
         usb_upload_active.store(false);
         response.used = usb_response.size();
         std::memcpy(response.data, usb_response.data(), response.used);
@@ -268,7 +273,8 @@ bool upload(const Parameters& parameters, const uint8_t* wav, size_t size,
     if (result != ESP_OK || status_code != 201) {
         ESP_LOGW(kTag, "Voice upload failed: %s, HTTP %d, %.180s",
                  esp_err_to_name(result), status_code, response.data);
-        if (cancel_requested.load() && vibe_usb::is_direct_url(parameters.url)) {
+        if (cancel_requested.load() &&
+            (vibe_usb::is_direct_url(parameters.url) || vibe_usb::is_receiver_url(parameters.url))) {
             set_status(Phase::Idle, "语音上传已取消");
             return false;
         }
@@ -467,7 +473,9 @@ void cancel() {
         }
     }
     portEXIT_CRITICAL(&state_lock);
-    if (usb_upload_active.load()) vibe_usb::cancel_current();
+    if (usb_upload_active.load() && vibe_usb::is_direct_url(vibe_pairing::snapshot().url)) {
+        vibe_usb::cancel_current();
+    }
 }
 
 Status status() {

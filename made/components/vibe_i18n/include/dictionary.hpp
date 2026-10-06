@@ -159,6 +159,7 @@ inline constexpr Entry dictionary[] = {
     {"无法读取设备编号", "Could not read device ID"},
     {"请在电脑工作台打开配对", "Enable pairing on your PC"},
     {"电脑连接待恢复", "Waiting to reconnect"},
+    {"电脑连接中断，正在重试验证", "Connection lost. Retrying verification"},
     {"在电脑工作台点击添加设备", "Click Add device on your PC"},
     {"电脑配对请求失败", "Pairing request failed"},
     {"已找到电脑，请核对配对码", "PC found. Match the pairing code"},

@@ -3340,6 +3340,12 @@ bool VibeCoding::request(const std::string &path, bool post, std::string &respon
                                   json_body.empty() ? nullptr : reinterpret_cast<const uint8_t *>(json_body.data()),
                                   json_body.size(),
                                   response, status, response_limit, timeout_ms);
+    } else if (pairing.access_mode == vibe_pairing::AccessMode::Receiver) {
+        error = vibe_usb::receiver_request(wire_path, post, authorization,
+                                            json_body.empty() ? "" : "application/json",
+                                            json_body.empty() ? nullptr : reinterpret_cast<const uint8_t *>(json_body.data()),
+                                            json_body.size(),
+                                            response, status, response_limit, timeout_ms);
     } else {
         HttpCapture capture{&response, response_limit};
         esp_http_client_config_t config = {};

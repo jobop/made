@@ -11,7 +11,10 @@ namespace vibe_usb {
 
 // A local transport selector. This hostname must never be resolved by DNS.
 inline constexpr const char* kBaseUrl = "http://usb.vibe.local:8788";
+// Receiver hotspot. The board speaks the same frames as USB direct; the receiver only moves bytes.
+inline constexpr const char* kReceiverUrl = "http://192.168.4.1:8788";
 bool is_direct_url(const std::string& url);
+bool is_receiver_url(const std::string& url);
 
 esp_err_t initialize();
 void set_active(bool enabled);
@@ -34,5 +37,13 @@ esp_err_t request(const std::string& path, bool post,
                   const uint8_t* body, size_t length, std::string& response,
                   int& status, size_t response_limit = 8192, int timeout_ms = 30000,
                   const std::atomic<bool>* cancellation_flag = nullptr);
+
+// Same frames as request(), over TCP to the receiver. Does not send a direct-mode hello:
+// the receiver already introduced this USB link to the computer.
+esp_err_t receiver_request(const std::string& path, bool post,
+                           const std::string& authorization, const char* content_type,
+                           const uint8_t* body, size_t length, std::string& response,
+                           int& status, size_t response_limit = 8192, int timeout_ms = 30000,
+                           const std::atomic<bool>* cancellation_flag = nullptr);
 
 }  // namespace vibe_usb

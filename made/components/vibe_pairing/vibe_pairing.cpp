@@ -670,6 +670,18 @@ bool http_json(const std::string &url, const char *post_body, int &status, std::
                                  post_body ? std::strlen(post_body) : 0,
                                  response, status, kResponseLimit, 4500) == ESP_OK && current_tick_valid();
     }
+    const std::string receiver_prefix = vibe_usb::kReceiverUrl;
+    if (url == receiver_prefix || url.rfind(receiver_prefix + "/", 0) == 0) {
+        if (tick_mode != AccessMode::Receiver || !current_tick_valid()) return false;
+        std::string path = url.substr(receiver_prefix.size());
+        if (path.empty()) path = "/";
+        return vibe_usb::receiver_request(path, post_body != nullptr, {},
+                                           post_body ? "application/json" : "",
+                                           reinterpret_cast<const uint8_t *>(post_body),
+                                           post_body ? std::strlen(post_body) : 0,
+                                           response, status, kResponseLimit, 4500) == ESP_OK &&
+               current_tick_valid();
+    }
     // A pending mode switch must never route the USB authority through DNS.
     if (tick_mode == AccessMode::UsbDirect || !current_tick_valid()) return false;
     if (secure_url(url) && !tls_time_ready()) return false;
@@ -700,12 +712,19 @@ std::string string_field(const cJSON *root, const char *key)
     return cJSON_IsString(value) && value->valuestring ? value->valuestring : "";
 }
 
-bool verify_saved_candidate_at(const std::string &url, const SavedPair &candidate)
+enum class VerifyResult { Recovered, Unavailable, Rejected };
+
+bool link_unavailable(int status)
+{
+    return status == 0 || status == 408 || status == 429 || status >= 500;
+}
+
+VerifyResult verify_saved_candidate_at(const std::string &url, const SavedPair &candidate)
 {
     if (candidate.token.size() != 64 || !valid_bridge_id(candidate.bridge) || device_id.size() != 12)
-        return false;
+        return VerifyResult::Rejected;
     std::array<uint8_t, 32> key = {};
-    if (!decode_hex(candidate.token, key.data(), key.size())) return false;
+    if (!decode_hex(candidate.token, key.data(), key.size())) return VerifyResult::Rejected;
     std::array<uint8_t, 16> random_bytes = {};
     esp_fill_random(random_bytes.data(), random_bytes.size());
     char challenge[33] = {};
@@ -714,27 +733,32 @@ bool verify_saved_candidate_at(const std::string &url, const SavedPair &candidat
     int status = 0;
     std::string response;
     if (!http_json(url + "/pair/verify?deviceId=" + device_id + "&nonce=" + challenge,
-                   nullptr, status, response) || status != 200) return false;
+                   nullptr, status, response)) {
+        return current_tick_valid() ? VerifyResult::Unavailable : VerifyResult::Rejected;
+    }
+    if (status == 404) return VerifyResult::Rejected;
+    if (status != 200) return VerifyResult::Unavailable;
     cJSON *root = cJSON_Parse(response.c_str());
-    if (!root) return false;
+    if (!root) return VerifyResult::Rejected;
     const std::string bridge = string_field(root, "bridgeId");
     const std::string mac = string_field(root, "mac");
     const std::string authority = string_field(root, "authority");
     cJSON_Delete(root);
-    if (bridge != candidate.bridge || authority != authority_for_url(url)) return false;
+    if (bridge != candidate.bridge || authority != authority_for_url(url)) return VerifyResult::Rejected;
     std::array<uint8_t, 32> received = {};
-    if (!decode_hex(mac, received.data(), received.size())) return false;
+    if (!decode_hex(mac, received.data(), received.size())) return VerifyResult::Rejected;
     const std::string signed_text = std::string(kManualVerification) + "\n" +
         device_id + "\n" + challenge + "\n" + bridge + "\n" + authority;
     const mbedtls_md_info_t *sha256 = mbedtls_md_info_from_type(MBEDTLS_MD_SHA256);
-    if (!sha256) return false;
+    if (!sha256) return VerifyResult::Rejected;
     std::array<uint8_t, 32> expected = {};
     if (mbedtls_md_hmac(sha256, key.data(), key.size(),
                         reinterpret_cast<const unsigned char *>(signed_text.data()),
-                        signed_text.size(), expected.data()) != 0) return false;
+                        signed_text.size(), expected.data()) != 0) return VerifyResult::Rejected;
     uint8_t difference = 0;
     for (size_t i = 0; i < expected.size(); ++i) difference |= expected[i] ^ received[i];
-    if (difference != 0 || !current_tick_valid() || !save(url, candidate.token, bridge)) return false;
+    if (difference != 0 || !current_tick_valid() || !save(url, candidate.token, bridge))
+        return VerifyResult::Rejected;
     saved_token = candidate.token;
     saved_bridge = bridge;
     {
@@ -745,16 +769,31 @@ bool verify_saved_candidate_at(const std::string &url, const SavedPair &candidat
     }
     publish(Phase::Paired, "已验证原电脑，配对已恢复");
     authorize_current_tick(candidate.token);
-    return true;
+    return VerifyResult::Recovered;
 }
 
-bool verify_saved_bridge_at(const std::string &url)
+VerifyResult verify_saved_bridge_at(const std::string &url)
 {
+    bool unavailable = false;
     for (const auto &candidate : saved_candidates) {
-        if (!current_tick_valid()) return false;
-        if (verify_saved_candidate_at(url, candidate)) return true;
+        if (!current_tick_valid()) return VerifyResult::Rejected;
+        const VerifyResult result = verify_saved_candidate_at(url, candidate);
+        if (result == VerifyResult::Recovered) return result;
+        if (result == VerifyResult::Unavailable) unavailable = true;
     }
-    return false;
+    return unavailable ? VerifyResult::Unavailable : VerifyResult::Rejected;
+}
+
+void start_pair(const Candidate &candidate);
+
+void continue_after_verify(VerifyResult result, const Candidate &candidate)
+{
+    if (!current_tick_valid() || result == VerifyResult::Recovered) return;
+    if (result == VerifyResult::Unavailable) {
+        publish(Phase::Discovering, "电脑连接中断，正在重试验证");
+        return;
+    }
+    start_pair(candidate);
 }
 
 void make_code_and_nonce(std::string &code)
@@ -809,6 +848,10 @@ void start_pair(const Candidate &candidate)
         if (snapshot().phase == Phase::Paired) {
             publish(Phase::Paired, status == 403 ? "请在电脑工作台打开配对" :
                     "电脑连接待恢复");
+            return;
+        }
+        if (!sent || link_unavailable(status)) {
+            publish(Phase::Discovering, "电脑连接中断，正在重试验证");
             return;
         }
         publish(Phase::Error, status == 403 ? "在电脑工作台点击添加设备" : "电脑配对请求失败");
@@ -1025,30 +1068,29 @@ void tick()
             return;
         }
         publish(Phase::Discovering, "正在连接指定桥接地址");
-        if (verify_saved_bridge_at(current.manual_url)) return;
-        start_pair({current.manual_url, {}});
+        continue_after_verify(verify_saved_bridge_at(current.manual_url), {current.manual_url, {}});
         return;
     }
     if (current.access_mode == AccessMode::Receiver) {
         publish(Phase::Discovering, "正在连接 USB 接收端");
-        if (verify_saved_bridge_at(kReceiverUrl)) return;
-        start_pair({kReceiverUrl, {}});
+        continue_after_verify(verify_saved_bridge_at(kReceiverUrl), {kReceiverUrl, {}});
         return;
     }
     if (current.access_mode == AccessMode::UsbDirect) {
         publish(Phase::Discovering, "正在连接 USB 直连电脑");
-        if (verify_saved_bridge_at(kUsbUrl)) return;
-        start_pair({kUsbUrl, {}});
+        continue_after_verify(verify_saved_bridge_at(kUsbUrl), {kUsbUrl, {}});
         return;
     }
     if (!selected_bridge.url.empty() && choice_epoch == tick_epoch) {
         publish(Phase::Discovering, "正在连接选中的电脑");
+        VerifyResult result = VerifyResult::Rejected;
         for (const auto &pair : saved_candidates) {
             if (!current_tick_valid()) return;
-            if (pair.bridge == selected_bridge.id &&
-                verify_saved_candidate_at(selected_bridge.url, pair)) return;
+            if (pair.bridge != selected_bridge.id) continue;
+            result = verify_saved_candidate_at(selected_bridge.url, pair);
+            if (result != VerifyResult::Rejected) break;
         }
-        start_pair({selected_bridge.url, selected_bridge.id});
+        continue_after_verify(result, {selected_bridge.url, selected_bridge.id});
         return;
     }
     if (!force_chooser) {

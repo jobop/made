@@ -44,6 +44,27 @@ int main() {
  vibe_usb::computer_bridge="pc_c"; vibe_usb::computer_token=D; ++vibe_usb::epoch; tick();
  assert(snapshot().phase==Phase::WaitingApproval&&!authorized_for_foreground()); assert(nvs["usb_token"]==C);
  std::cout<<"PASS: matching bridge ID with invalid HMAC cannot restore authorization\n";
+ const int pairs_before=vibe_usb::pair_calls;
+ vibe_usb::verify_transport=ESP_FAIL;
+ begin_foreground_connection(); tick();
+ assert(vibe_usb::pair_calls==pairs_before);
+ assert(snapshot().phase==Phase::Discovering);
+ assert(snapshot().message=="电脑连接中断，正在重试验证");
+ assert(!authorized_for_foreground());
+ vibe_usb::verify_transport=ESP_OK; vibe_usb::verify_http_status=504;
+ mock_clock+=6000000; tick();
+ assert(vibe_usb::pair_calls==pairs_before);
+ assert(snapshot().phase==Phase::Discovering);
+ vibe_usb::verify_http_status=200; vibe_usb::computer_bridge="pc_c"; vibe_usb::computer_token=C;
+ mock_clock+=6000000; tick();
+ assert(snapshot().phase==Phase::Paired&&authorized_for_foreground());
+ assert(vibe_usb::pair_calls==pairs_before);
+ std::cout<<"PASS: transport failure retries saved verification and does not request a new pair\n";
+ vibe_usb::verify_http_status=404; begin_foreground_connection(); tick();
+ assert(snapshot().phase==Phase::WaitingApproval);
+ assert(vibe_usb::pair_calls==pairs_before+1);
+ vibe_usb::verify_http_status=200;
+ std::cout<<"PASS: explicit unpaired response still requests a new pair\n";
  assert(network_http_calls==0&&vibe_wifi::reads==0);
- std::cout<<"7 security scenarios passed\n";
+ std::cout<<"9 security scenarios passed\n";
 }

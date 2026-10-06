@@ -247,6 +247,25 @@ bool fetchPath(const std::string &base_url, const std::string &path, std::string
                  (esp_timer_get_time() - started) / 1000000.0);
         return result == ESP_OK && status >= 200 && status < 300;
     }
+    if (vibe_usb::is_receiver_url(base_url)) {
+        const auto pairing = vibe_pairing::snapshot();
+        if (pairing.token.empty()) {
+            ESP_LOGW(kTag, "[fetch] 接收端无配对令牌 path=%s", path.c_str());
+            return false;
+        }
+        if (progress_label != nullptr) {
+            std::lock_guard<std::mutex> lock(g_sync_mutex);
+            g_sync.message = progress_label;
+        }
+        int status = 0;
+        const esp_err_t result = vibe_usb::receiver_request(
+            path, false, "Bearer " + pairing.token, "", nullptr, 0, out, status,
+            kUsbResponseLimit, 35000);
+        ESP_LOGI(kTag, "[fetch] 接收端 path=%s result=%s status=%d bytes=%zu %.1fs",
+                 path.c_str(), esp_err_to_name(result), status, out.size(),
+                 (esp_timer_get_time() - started) / 1000000.0);
+        return result == ESP_OK && status >= 200 && status < 300;
+    }
     std::string base = base_url;
     while (!base.empty() && base.back() == '/') base.pop_back();
     const std::string url = base + path;
