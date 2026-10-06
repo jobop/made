@@ -179,6 +179,9 @@ export function createBoardLink() {
     send(deviceId, command, audio) {
       return enqueue(deviceId, command, undefined, audio);
     },
+    deviceIds() {
+      return [...catalogs.keys()];
+    },
     connect(deviceId, runtime, config) {
       if (!runtime?.boardPlugins) return;
       for (const plugin of runtime.boardPlugins()) {

@@ -4,6 +4,8 @@ const $ = (id) => document.getElementById(id);
 let token = null;
 let toastTimer;
 let busy = false;
+let installedPlugins = [];
+let openKey = '';
 
 function showToast(message, error = false) {
   const toast = $('toast');
@@ -55,34 +57,113 @@ function meta(text) {
   return node;
 }
 
-function renderPlugins(plugins) {
-  const list = $('pluginList');
-  list.replaceChildren();
-  if (!plugins.length) {
-    list.append(meta(t('plug.011')));
+function pluginKey(plugin) {
+  return plugin.id || plugin.file;
+}
+
+function hashKey() {
+  const raw = location.hash.replace(/^#/, '');
+  if (!raw) return '';
+  try { return decodeURIComponent(raw); } catch { return ''; }
+}
+
+function pluginState(plugin) {
+  return plugin.error ? plugin.error : plugin.enabled ? (plugin.available ? t('plug.003') : t('plug.005')) : t('plug.004');
+}
+
+function pluginSummary(plugin) {
+  const details = [pluginState(plugin), plugin.file];
+  if (plugin.events?.length) details.push(`${t('plug.024')} ${plugin.events.join('、')}`);
+  if (plugin.commands?.length) details.push(`${t('plug.025')} ${plugin.commands.join('、')}`);
+  return details.join(' · ');
+}
+
+function pluginCard(plugin) {
+  const card = document.createElement('article');
+  card.className = 'plugin-tile';
+  if (!plugin.enabled || plugin.error) card.classList.add('is-off');
+  const open = document.createElement('button');
+  open.type = 'button';
+  open.className = 'plugin-tile-open';
+  const title = document.createElement('span');
+  title.className = 'catalog-title';
+  title.textContent = plugin.label || plugin.file;
+  const subtitle = document.createElement('span');
+  subtitle.className = 'catalog-meta';
+  subtitle.textContent = pluginState(plugin);
+  open.append(title, subtitle);
+  open.addEventListener('click', () => openPlugin(plugin));
+  card.append(open);
+  if (plugin.id) {
+    card.append(button(plugin.enabled ? t('plug.006') : t('plug.007'), 'small-button plugin-tile-toggle', () => changePlugin(plugin, !plugin.enabled)));
+  }
+  return card;
+}
+
+function openPlugin(plugin) {
+  const key = pluginKey(plugin);
+  openKey = key;
+  if (hashKey() !== key) history.pushState({ plugin: key }, '', `#${encodeURIComponent(key)}`);
+  syncView();
+  window.scrollTo(0, 0);
+}
+
+function syncView() {
+  const plugin = installedPlugins.find((item) => pluginKey(item) === openKey);
+  const groups = $('pluginGroups');
+  const detail = $('pluginDetail');
+  if (!plugin) {
+    if (openKey && location.hash) history.replaceState(null, '', location.pathname);
+    openKey = '';
+    groups.hidden = false;
+    detail.hidden = true;
     return;
   }
-  for (const plugin of plugins) {
-    const card = document.createElement('article');
-    card.className = 'catalog-card';
-    const title = document.createElement('h3');
-    title.textContent = plugin.label || plugin.file;
-    const kind = plugin.kind === 'board-plugin' ? t('plug.001') : plugin.kind === 'coding-agent' ? t('plug.002') : t('plug.023');
-    const state = plugin.error ? plugin.error : plugin.enabled ? (plugin.available ? t('plug.003') : t('plug.005')) : t('plug.004');
-    const details = [kind, state, plugin.file];
-    if (plugin.events?.length) details.push(`${t('plug.024')} ${plugin.events.join('、')}`);
-    if (plugin.commands?.length) details.push(`${t('plug.025')} ${plugin.commands.join('、')}`);
-    const actions = document.createElement('div');
-    actions.className = 'catalog-actions';
-    if (plugin.id) {
-      actions.append(button(plugin.enabled ? t('plug.006') : t('plug.007'), 'small-button', () => changePlugin(plugin, !plugin.enabled)));
-    }
-    actions.append(button(t('plug.008'), 'small-button', () => removeInstalledPlugin(plugin)));
-    card.append(title, meta(details.join(' · ')), actions);
-    if (plugin.settingsError) card.append(meta(plugin.settingsError));
-    if (plugin.settingsSpec?.length) card.append(settingsForm(plugin));
-    list.append(card);
+  groups.hidden = true;
+  detail.hidden = false;
+  renderDetail(plugin);
+}
+
+function renderDetail(plugin) {
+  $('pluginDetailTitle').textContent = plugin.label || plugin.file;
+  $('pluginDetailMeta').textContent = pluginSummary(plugin);
+  const actions = $('pluginDetailActions');
+  actions.replaceChildren();
+  if (plugin.id) {
+    actions.append(button(plugin.enabled ? t('plug.006') : t('plug.007'), 'small-button', () => changePlugin(plugin, !plugin.enabled)));
   }
+  actions.append(button(t('plug.008'), 'small-button', () => removeInstalledPlugin(plugin)));
+  const body = $('pluginDetailBody');
+  body.replaceChildren();
+  if (plugin.settingsError) body.append(meta(plugin.settingsError));
+  else if (plugin.settingsSpec?.length) body.append(settingsForm(plugin));
+  else body.append(meta(t('plug.032')));
+}
+
+function fillList(id, items, emptyKey) {
+  const list = $(id);
+  list.replaceChildren();
+  if (!items.length) {
+    list.append(meta(t(emptyKey)));
+    return;
+  }
+  for (const item of items) list.append(pluginCard(item));
+}
+
+function renderPlugins(plugins) {
+  const board = [];
+  const agents = [];
+  const broken = [];
+  for (const plugin of plugins) {
+    if (plugin.kind === 'board-plugin') board.push(plugin);
+    else if (plugin.kind === 'coding-agent') agents.push(plugin);
+    else broken.push(plugin);
+  }
+  fillList('boardPluginList', board, 'plug.029');
+  fillList('agentPluginList', agents, 'plug.030');
+  const brokenSection = $('brokenPlugins');
+  brokenSection.hidden = broken.length === 0;
+  if (broken.length) fillList('brokenPluginList', broken, 'plug.023');
 }
 
 function settingsForm(plugin) {
@@ -115,8 +196,7 @@ function settingsForm(plugin) {
     for (const [key, input] of inputs) settings[key] = input.value;
     try {
       const data = await post('/api/plugins/settings', { id: plugin.id, settings });
-      renderPlugins(data.plugins || []);
-      renderThemes(data.themes || []);
+      applyInstalled(data);
       showToast(t('plug.027'));
     } catch (error) {
       showToast(error.message, true);
@@ -150,13 +230,19 @@ function renderThemes(themes) {
   }
 }
 
+function applyInstalled(data) {
+  installedPlugins = Array.isArray(data.plugins) ? data.plugins : [];
+  renderPlugins(installedPlugins);
+  renderThemes(Array.isArray(data.themes) ? data.themes : []);
+  if (!openKey) openKey = hashKey();
+  syncView();
+}
+
 async function refresh() {
   if (busy) return;
   busy = true;
   try {
-    const data = await request('/api/installed');
-    renderPlugins(Array.isArray(data.plugins) ? data.plugins : []);
-    renderThemes(Array.isArray(data.themes) ? data.themes : []);
+    applyInstalled(await request('/api/installed'));
     const header = $('headerConnection');
     header.classList.add('online');
     header.querySelector('span:last-child').textContent = t('app.099');
@@ -174,8 +260,7 @@ async function refresh() {
 async function changePlugin(plugin, enabled) {
   try {
     const data = await post('/api/plugins/enabled', { id: plugin.id, enabled });
-    renderPlugins(data.plugins || []);
-    renderThemes(data.themes || []);
+    applyInstalled(data);
     showToast(t('plug.019'));
   } catch (error) {
     showToast(error.message, true);
@@ -187,8 +272,7 @@ async function removeInstalledPlugin(plugin) {
   if (!window.confirm(t('plug.016', { v0: name }))) return;
   try {
     const data = await post('/api/plugins/remove', plugin.id ? { id: plugin.id } : { file: plugin.file });
-    renderPlugins(data.plugins || []);
-    renderThemes(data.themes || []);
+    applyInstalled(data);
     showToast(t('plug.021'));
   } catch (error) {
     showToast(error.message, true);
@@ -215,6 +299,17 @@ async function deleteTheme(theme) {
   }
 }
 
+$('pluginBack').addEventListener('click', () => {
+  if (hashKey()) history.back();
+  else {
+    openKey = '';
+    syncView();
+  }
+});
+window.addEventListener('popstate', () => {
+  openKey = hashKey();
+  syncView();
+});
 $('refreshButton').addEventListener('click', refresh);
 $('languageSelect').addEventListener('change', async (event) => {
   const requested = event.target.value;
@@ -236,5 +331,5 @@ $('languageSelect').addEventListener('change', async (event) => {
 
 applyStaticTranslations();
 $('languageSelect').value = getLocale();
-$('pluginList').append(meta(t('plug.022')));
+for (const id of ['boardPluginList', 'agentPluginList', 'themeList']) $(id).append(meta(t('plug.022')));
 refresh();

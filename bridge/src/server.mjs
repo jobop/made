@@ -445,7 +445,9 @@ export function createApp(config, { run, transcribe, tunnel: providedTunnel, ena
           if (!payload || typeof payload !== 'object' || typeof payload.id !== 'string' || !payload.settings || typeof payload.settings !== 'object' || Array.isArray(payload.settings)) {
             throw new Error('插件配置无效');
           }
-          send(res, 200, await savePluginSettings(config, payload.id, payload.settings), false);
+          const saved = await savePluginSettings(config, payload.id, payload.settings);
+          for (const deviceId of boardLink.deviceIds()) boardLink.connect(deviceId, config.pluginsRuntime, config);
+          send(res, 200, saved, false);
           return;
         }
         if (url.pathname === '/api/plugins/remove') {

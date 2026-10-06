@@ -67,7 +67,7 @@ alarm-clock/
       "key": "demoSeconds",
       "label": "演示延迟（秒）",
       "type": "text",
-      "help": "连上电脑后多少秒响一次。留空则改用每天时间。",
+      "help": "每隔这么多秒响一次。留空则改用每天时间。保存后，已连上的码得会重新计时。",
       "pattern": "^(?:|[1-9]\\d{0,3})$"
     },
     {
@@ -82,7 +82,7 @@ alarm-clock/
 
 规范里每一项必须有 `key`、`label` 和 `"type": "text"`。`key` 是字母开头的标识，可以含数字和下划线。`required` 为 true 时不能留空。`default` 是缺省字符串。`help` 是给安装者看的说明。`pattern` 是不带 g/y 标志的正则，桥接器用它检查 `settings.json` 里的值。
 
-桥接器读取 `settings.json`，缺项补上 `default`，检查通过后放进 `config.pluginSettings[插件ID]`。插件只读这个对象，不自己打开配置文件。工作台「插件」页按 `plugin.json` 画出输入框，保存时写回该插件目录的 `settings.json`。码得下次连上电脑时用新值。
+桥接器读取 `settings.json`，缺项补上 `default`，检查通过后放进 `config.pluginSettings[插件ID]`。插件只读这个对象，不自己打开配置文件。在工作台「插件」页点进该插件后，按 `plugin.json` 画出输入框，保存时写回该插件目录的 `settings.json`。已经连上的码得会立刻按新值重新安排；还没连上的，等下次连上再用。
 
 没有 `plugin.json` 的单个 `.mjs` 文件仍可放进 `plugins/` 运行，但没有可发行的配置说明。`config.pluginSettings` 只作为这种旧文件的补充；目录里已有规范时，以插件目录为准。
 

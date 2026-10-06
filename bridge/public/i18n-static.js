@@ -581,12 +581,12 @@ export const staticMessages = {
     "en": "Plugins live in bridge/plugins and themes in bridge/themes. Plugin files stay out of git. Enabling or disabling takes effect immediately. Restart the bridge after you replace a plugin file."
   },
   "static.146": {
-    "zh-CN": "已安装插件",
-    "en": "Installed plugins"
+    "zh-CN": "接收码得事件，可以下发命令。停用后不再处理这些事件。",
+    "en": "These receive made events and can send commands. A disabled plugin stops handling those events."
   },
   "static.147": {
-    "zh-CN": "管控插件和助手插件。停用后不再处理码得事件，也不再出现在助手列表。",
-    "en": "Board plugins and assistant plugins. A disabled plugin stops handling made events and leaves the assistant list."
+    "zh-CN": "扩展一种助手的执行方式。停用后不再出现在助手列表。",
+    "en": "These add a way for an assistant to run. A disabled plugin leaves the assistant list."
   },
   "static.148": {
     "zh-CN": "已安装主题",

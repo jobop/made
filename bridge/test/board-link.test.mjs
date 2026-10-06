@@ -149,6 +149,7 @@ test('设备上线时插件可以预约命令，不必先有事件', async () =>
     })],
   };
   link.connect('device', runtime, {});
+  assert.deepEqual(link.deviceIds(), ['device']);
   const pending = link.pending('device');
   assert.deepEqual(pending.map((item) => item.name), ['caption.show', 'audio.play']);
   assert.equal(pending[1].audio, true);

@@ -27,11 +27,27 @@
       <section class="hero" aria-labelledby="hero-title">
         <div><span class="eyebrow"><span data-i18n="static.142">PLUGINS · THEMES</span></span><h1 id="hero-title"><span data-i18n="static.143">装在这台电脑上，</span><em><span data-i18n="static.144">由你开关。</span></em></h1><p class="hero-desc"><span data-i18n="static.145">插件放在 bridge/plugins，主题放在 bridge/themes。插件文件不进入 git。启用和停用会立即生效；替换插件文件内容后，请重启桥接器。</span></p></div>
       </section>
-      <div class="dashboard-layout">
-        <section class="panel info-panel" aria-labelledby="plugins-title">
-          <h2 id="plugins-title"><span data-i18n="static.146">已安装插件</span></h2>
-          <p class="panel-intro"><span data-i18n="static.147">管控插件和助手插件。停用后不再处理码得事件，也不再出现在助手列表。</span></p>
-          <div id="pluginList" class="catalog-list"></div>
+      <section id="pluginDetail" class="panel info-panel" hidden>
+        <button id="pluginBack" class="plugin-back" type="button" data-i18n="plug.031">返回</button>
+        <h2 id="pluginDetailTitle"></h2>
+        <p id="pluginDetailMeta" class="catalog-meta"></p>
+        <div id="pluginDetailActions" class="catalog-actions plugin-detail-actions"></div>
+        <div id="pluginDetailBody"></div>
+      </section>
+      <div id="pluginGroups" class="plugin-groups">
+        <section class="panel info-panel" aria-labelledby="board-plugins-title">
+          <h2 id="board-plugins-title"><span data-i18n="plug.001">管控插件</span></h2>
+          <p class="panel-intro"><span data-i18n="static.146">接收码得事件，可以下发命令。停用后不再处理这些事件。</span></p>
+          <div id="boardPluginList" class="plugin-tiles"></div>
+        </section>
+        <section class="panel info-panel" aria-labelledby="agent-plugins-title">
+          <h2 id="agent-plugins-title"><span data-i18n="plug.002">助手插件</span></h2>
+          <p class="panel-intro"><span data-i18n="static.147">扩展一种助手的执行方式。停用后不再出现在助手列表。</span></p>
+          <div id="agentPluginList" class="plugin-tiles"></div>
+        </section>
+        <section id="brokenPlugins" class="panel info-panel" aria-labelledby="broken-plugins-title" hidden>
+          <h2 id="broken-plugins-title"><span data-i18n="plug.023">无法加载</span></h2>
+          <div id="brokenPluginList" class="plugin-tiles"></div>
         </section>
         <section class="panel info-panel" aria-labelledby="themes-title">
           <h2 id="themes-title"><span data-i18n="static.148">已安装主题</span></h2>
