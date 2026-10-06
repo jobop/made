@@ -14,7 +14,7 @@
 }
 ```
 
-路径相对配置文件解析。支持 `.mjs`、`.js` 的 default export：单个插件对象或插件数组。不自动下载、安装依赖或扫描目录。插件是本机 JavaScript，拥有桥接器进程的权限，因此只加载你信任的代码。安装变更需重启电脑桥接器，不需再次配对。
+路径相对配置文件解析。支持 `.mjs`、`.js` 的 default export：单个插件对象或插件数组。`bridge/plugins/` 里的插件目录和单文件也会自动加载。不自动下载或安装依赖。插件是本机 JavaScript，拥有桥接器进程的权限，因此只加载你信任的代码。安装变更需重启电脑桥接器，不需再次配对。
 
 示例 `echo-example` 仅回显文字和上一句，用于验证新助手、持久上下文、进度和取消，不执行编程任务。
 
@@ -44,7 +44,47 @@
 
 转交型插件可返回 `status:'handed_off'` 与 `handoff:{cursor,readState,replyCount}`，并实现 `readUpdates({job,config})`，返回新的 `handoff` 和 `appendResult`。桥接器将定期获取后续回复。共享外部回复流的插件必须自行判断消息归属；无法确定时停止回读并标为 ambiguous，不得把其他对话当作本任务结果。
 
-自定义非敏感选项可置于 `config.pluginSettings[插件ID]`。插件若需密钥，请自行使用环境变量或系统密钥存储，不要把密钥写入可分发的项目配置。
+需要让别人配置的插件，把配置规范放在插件自己的目录里，不要写进桥接器的 `config.local.json`。密钥仍用环境变量或系统密钥存储，不要放进可分发的配置。
+
+## 插件配置规范
+
+一个可发行的插件是一个目录，桥接器从 `bridge/plugins/<名字>/` 加载：
+
+```
+alarm-clock/
+  plugin.mjs      插件程序
+  plugin.json     配置规范：有哪些项、名称、是否必填、默认值和格式
+  settings.json   当前配置值，由工作台按规范写入
+```
+
+`plugin.json` 只描述配置，不代替插件程序里的 `id`。若写了 `id`，必须和程序里的 `id` 一致。
+
+```json
+{
+  "id": "alarm-clock",
+  "settings": [
+    {
+      "key": "demoSeconds",
+      "label": "演示延迟（秒）",
+      "type": "text",
+      "help": "连上电脑后多少秒响一次。留空则改用每天时间。",
+      "pattern": "^(?:|[1-9]\\d{0,3})$"
+    },
+    {
+      "key": "label",
+      "label": "响铃文字",
+      "type": "text",
+      "default": "闹钟"
+    }
+  ]
+}
+```
+
+规范里每一项必须有 `key`、`label` 和 `"type": "text"`。`key` 是字母开头的标识，可以含数字和下划线。`required` 为 true 时不能留空。`default` 是缺省字符串。`help` 是给安装者看的说明。`pattern` 是不带 g/y 标志的正则，桥接器用它检查 `settings.json` 里的值。
+
+桥接器读取 `settings.json`，缺项补上 `default`，检查通过后放进 `config.pluginSettings[插件ID]`。插件只读这个对象，不自己打开配置文件。工作台「插件」页按 `plugin.json` 画出输入框，保存时写回该插件目录的 `settings.json`。码得下次连上电脑时用新值。
+
+没有 `plugin.json` 的单个 `.mjs` 文件仍可放进 `plugins/` 运行，但没有可发行的配置说明。`config.pluginSettings` 只作为这种旧文件的补充；目录里已有规范时，以插件目录为准。
 
 插件可读取 `config.locale`（`zh-CN` 或 `en`）为自己的可用性说明和进度文案选择语言；桥接器不会对第三方插件的名称、提示或原始答复做全文替换。稳定的 `id`、会话标识与图标协议均不受语言影响。界面本地化约定见 [国际化开发说明](I18N.md)。
 

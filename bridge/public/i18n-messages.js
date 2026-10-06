@@ -956,5 +956,8 @@ export const messages = {
   "plug.022": { "zh-CN": "正在读取插件和主题…", "en": "Reading plugins and themes…" },
   "plug.023": { "zh-CN": "无法加载", "en": "Could not load" },
   "plug.024": { "zh-CN": "事件", "en": "Events" },
-  "plug.025": { "zh-CN": "命令", "en": "Commands" }
+  "plug.025": { "zh-CN": "命令", "en": "Commands" },
+  "plug.026": { "zh-CN": "保存配置", "en": "Save settings" },
+  "plug.027": { "zh-CN": "配置已保存。码得下次连上电脑时使用新配置。", "en": "Settings saved. made uses them the next time it connects." },
+  "plug.028": { "zh-CN": "配置项来自插件目录里的 plugin.json，当前值写在同目录的 settings.json。", "en": "Fields come from plugin.json in the plugin folder. Current values are stored in settings.json beside it." }
 };

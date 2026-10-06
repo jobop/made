@@ -31,7 +31,8 @@ export interface PluginConfig {
   locale?: 'zh-CN' | 'en';
   stateDir: string;
   models?: Record<string, string>;
-  pluginSettings?: Record<string, Record<string, unknown>>;
+  /** Values for one plugin. A packaged plugin declares the keys in plugin.json; the bridge fills this from that package's settings.json. */
+  pluginSettings?: Record<string, Record<string, string>>;
   [key: string]: unknown;
 }
 export interface RunContext {

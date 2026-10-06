@@ -79,8 +79,50 @@ function renderPlugins(plugins) {
     }
     actions.append(button(t('plug.008'), 'small-button', () => removeInstalledPlugin(plugin)));
     card.append(title, meta(details.join(' · ')), actions);
+    if (plugin.settingsError) card.append(meta(plugin.settingsError));
+    if (plugin.settingsSpec?.length) card.append(settingsForm(plugin));
     list.append(card);
   }
+}
+
+function settingsForm(plugin) {
+  const form = document.createElement('form');
+  form.className = 'voice-settings-form';
+  form.append(meta(t('plug.028')));
+  const inputs = new Map();
+  for (const field of plugin.settingsSpec) {
+    const wrap = document.createElement('div');
+    const label = document.createElement('label');
+    label.className = 'field-label';
+    label.textContent = field.label;
+    const input = document.createElement('input');
+    input.className = 'secret-input';
+    input.type = 'text';
+    input.value = plugin.settings?.[field.key] ?? '';
+    input.spellcheck = false;
+    if (field.help) input.title = field.help;
+    wrap.append(label, input);
+    if (field.help) wrap.append(meta(field.help));
+    inputs.set(field.key, input);
+    form.append(wrap);
+  }
+  const save = button(t('plug.026'), 'small-button confirm', () => {});
+  save.type = 'submit';
+  form.append(save);
+  form.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const settings = {};
+    for (const [key, input] of inputs) settings[key] = input.value;
+    try {
+      const data = await post('/api/plugins/settings', { id: plugin.id, settings });
+      renderPlugins(data.plugins || []);
+      renderThemes(data.themes || []);
+      showToast(t('plug.027'));
+    } catch (error) {
+      showToast(error.message, true);
+    }
+  });
+  return form;
 }
 
 function renderThemes(themes) {

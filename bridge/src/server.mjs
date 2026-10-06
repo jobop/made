@@ -21,7 +21,7 @@ import { TunnelManager } from './tunnel.mjs';
 import { UsbReceiver, USB_DIRECT_AUTHORITY, USB_RECEIVER_AUTHORITY } from './usb-receiver.mjs';
 
 import { createPluginRegistry, loadConfiguredPlugins } from './plugins/registry.mjs';
-import { listInstalled, removePlugin, removeTheme, setPluginEnabled, themeExists } from './installed.mjs';
+import { listInstalled, removePlugin, removeTheme, savePluginSettings, setPluginEnabled, themeExists } from './installed.mjs';
 import { createBoardLink } from './board-link.mjs';
 import { initializeSpeechSettings, saveSpeechSettings } from './speech-settings.mjs';
 import { builtinSpeechRecognizers } from './speech/index.mjs';
@@ -438,6 +438,14 @@ export function createApp(config, { run, transcribe, tunnel: providedTunnel, ena
             throw new Error('插件设置无效');
           }
           send(res, 200, await setPluginEnabled(config, payload.id, payload.enabled), false);
+          return;
+        }
+        if (url.pathname === '/api/plugins/settings') {
+          const payload = await body(req);
+          if (!payload || typeof payload !== 'object' || typeof payload.id !== 'string' || !payload.settings || typeof payload.settings !== 'object' || Array.isArray(payload.settings)) {
+            throw new Error('插件配置无效');
+          }
+          send(res, 200, await savePluginSettings(config, payload.id, payload.settings), false);
           return;
         }
         if (url.pathname === '/api/plugins/remove') {

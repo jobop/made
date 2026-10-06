@@ -3,6 +3,7 @@ import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { pathToFileURL } from 'node:url';
 import { loadConfiguredPlugins, validatePlugin } from './plugins/registry.mjs';
+import { isPackageEntry, packageDirectories, readPackageSettings, writePackageSettings } from './plugin-package.mjs';
 
 const PLUGIN_ID = /^[a-z0-9][a-z0-9_-]{0,39}$/;
 const THEME_NAME = /^[A-Za-z0-9_-]{1,64}$/;
@@ -32,24 +33,43 @@ function contained(root, target) {
 function moduleFiles(config) {
   const directory = pluginsDir(config);
   if (!fs.existsSync(directory) || !fs.statSync(directory).isDirectory()) return [];
-  return fs.readdirSync(directory).sort().flatMap((name) => {
+  const packages = packageDirectories(directory).map((item) => item.entry).filter((filename) => contained(directory, filename));
+  const loose = fs.readdirSync(directory).sort().flatMap((name) => {
     if (!MODULE_NAME.test(name)) return [];
     const filename = path.join(directory, name);
     if (!fs.statSync(filename).isFile() || !contained(directory, filename)) return [];
     return [filename];
   });
+  return [...packages, ...loose];
+}
+
+function displayName(filename) {
+  return isPackageEntry(filename) ? path.basename(path.dirname(filename)) : path.basename(filename);
+}
+
+function packageInfo(filename, pluginId) {
+  if (!isPackageEntry(filename)) return { settingsSpec: [], settings: {}, settingsError: '' };
+  const pack = readPackageSettings(path.dirname(filename));
+  const mismatch = pack.id && pluginId && pack.id !== pluginId;
+  const error = mismatch ? '插件配置规范与插件 ID 不一致' : pack.error;
+  return {
+    settingsSpec: error ? [] : pack.fields,
+    settings: error ? {} : pack.values,
+    settingsError: error,
+  };
 }
 
 async function describeModule(filename, config) {
-  const file = path.basename(filename);
-  try {
+    const file = displayName(filename);
+    try {
     const exported = (await import(pathToFileURL(filename).href)).default;
     const bundle = Array.isArray(exported) ? exported : [exported];
-    return bundle.map((plugin) => {
+      return bundle.map((plugin) => {
       validatePlugin(plugin);
       if (plugin.kind !== 'coding-agent' && plugin.kind !== 'board-plugin') {
         throw new Error('外部插件仅支持助手或管控');
       }
+      const pack = packageInfo(filename, plugin.id);
       let available = false;
       try {
         const result = plugin.probe(config);
@@ -64,10 +84,11 @@ async function describeModule(filename, config) {
         enabled: !(config.disabledPlugins || []).includes(plugin.id),
         events: plugin.kind === 'board-plugin' ? [...plugin.events] : [],
         commands: plugin.kind === 'board-plugin' ? [...plugin.commands] : [],
+        ...pack,
       };
     });
   } catch {
-    return [{ file, id: '', label: file, kind: '', available: false, enabled: false, events: [], commands: [], error: '插件无法加载' }];
+    return [{ file, id: '', label: file, kind: '', available: false, enabled: false, events: [], commands: [], settingsSpec: [], settings: {}, settingsError: '', error: '插件无法加载' }];
   }
 }
 
@@ -120,13 +141,27 @@ async function reload(config) {
   config.pluginsRuntime = await loadConfiguredPlugins(config);
 }
 
+function covers(targetReal, candidateReal) {
+  if (candidateReal === targetReal) return true;
+  const relative = path.relative(targetReal, candidateReal);
+  return relative !== '' && !relative.startsWith('..') && !path.isAbsolute(relative);
+}
+
 function pluginPathInConfig(config, filename) {
-  const real = fs.realpathSync(filename);
+  const target = fs.realpathSync(filename);
   return (config.plugins || []).filter((entry) => {
     if (typeof entry !== 'string' || !entry || /^[a-z]+:/i.test(entry)) return true;
     const resolved = path.resolve(config.configDirectory, entry);
-    return !fs.existsSync(resolved) || fs.realpathSync(resolved) !== real;
+    return !fs.existsSync(resolved) || !covers(target, fs.realpathSync(resolved));
   });
+}
+
+function removalTarget(config, filename) {
+  const root = pluginsDir(config);
+  const dir = path.dirname(filename);
+  const base = path.basename(filename);
+  if ((base === 'plugin.mjs' || base === 'plugin.js') && contained(root, dir) && path.dirname(fs.realpathSync(dir)) === fs.realpathSync(root)) return dir;
+  return filename;
 }
 
 export async function setPluginEnabled(config, id, enabled) {
@@ -154,9 +189,28 @@ export async function setPluginEnabled(config, id, enabled) {
   return listInstalled(config);
 }
 
+export async function savePluginSettings(config, id, values) {
+  if (!PLUGIN_ID.test(id || '') || !values || typeof values !== 'object' || Array.isArray(values)) throw fail('插件配置无效');
+  const filename = await entryForId(config, id);
+  if (!filename || !isPackageEntry(filename)) throw fail('插件没有可保存的配置');
+  const dir = path.dirname(filename);
+  const resolved = writePackageSettings(dir, values);
+  config.pluginSettings = { ...(config.pluginSettings || {}), [id]: resolved };
+  if (config.pluginPackages?.[id]) config.pluginPackages[id] = { ...config.pluginPackages[id], values: resolved, error: '' };
+  return listInstalled(config);
+}
+
+async function entryForId(config, id) {
+  for (const candidate of moduleFiles(config)) {
+    const described = await describeModule(candidate, config);
+    if (described.some((plugin) => plugin.id === id)) return candidate;
+  }
+  return '';
+}
+
 export async function removePlugin(config, { id = '', file = '' } = {}) {
   const filename = moduleFiles(config).find((candidate) => {
-    if (file) return path.basename(candidate) === file;
+    if (file) return displayName(candidate) === file;
     return false;
   });
   let target = filename;
@@ -166,7 +220,8 @@ export async function removePlugin(config, { id = '', file = '' } = {}) {
       if (described.some((plugin) => plugin.id === id)) target = candidate;
     }
   }
-  if (!target || !MODULE_NAME.test(path.basename(target)) || !contained(pluginsDir(config), target)) throw fail('插件不存在');
+  if (!target || !contained(pluginsDir(config), target)) throw fail('插件不存在');
+  target = removalTarget(config, target);
   const described = await describeModule(target, config);
   const ids = described.map((plugin) => plugin.id).filter((item) => PLUGIN_ID.test(item));
   const previousDisabled = [...(config.disabledPlugins || [])];
@@ -185,7 +240,7 @@ export async function removePlugin(config, { id = '', file = '' } = {}) {
     await reload(config).catch(() => {});
     throw error;
   }
-  fs.rmSync(target, { force: true });
+  fs.rmSync(target, { recursive: true, force: true });
   config.disabledPlugins = previousDisabled.filter((item) => !ids.includes(item));
   try {
     await reload(config);

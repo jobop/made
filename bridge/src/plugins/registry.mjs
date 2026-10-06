@@ -1,6 +1,7 @@
 import { pathToFileURL } from 'node:url';
 import path from 'node:path';
 import fs from 'node:fs';
+import { isPackageEntry, packageDirectories, readPackageSettings } from '../plugin-package.mjs';
 import { MODEL_ID } from '../model-settings.mjs';
 import { builtinAgents } from '../agents/index.mjs';
 import { normalizeAgentIcon } from '../agent-icons.mjs';
@@ -88,9 +89,21 @@ export async function loadConfiguredPlugins(config) {
     if (!/\.(mjs|js)$/.test(filename) || !fs.statSync(filename).isFile()) throw new Error(`插件模块无效：${label}`);
     const exported = (await import(pathToFileURL(filename).href)).default;
     const bundle = Array.isArray(exported) ? exported : [exported];
+    const pack = isPackageEntry(filename) ? readPackageSettings(path.dirname(filename)) : null;
     for (const p of bundle) {
       validatePlugin(p);
       if (p.kind !== 'coding-agent' && p.kind !== 'board-plugin') throw new Error(`插件 ${p.id}：外部插件仅支持 coding-agent；语音识别请配置兼容接口的 URL、API Key 和模型名`);
+      if (pack) {
+        const mismatch = pack.id && pack.id !== p.id;
+        const error = mismatch ? '插件配置规范与插件 ID 不一致' : pack.error;
+        config.pluginPackages = { ...(config.pluginPackages || {}), [p.id]: {
+          name: path.basename(path.dirname(filename)),
+          fields: error ? [] : pack.fields,
+          values: error ? {} : pack.values,
+          error,
+        } };
+        if (!error) config.pluginSettings = { ...(config.pluginSettings || {}), [p.id]: pack.values };
+      }
       if (!disabled.has(p.id)) plugins.push(p);
     }
   };
@@ -104,6 +117,11 @@ export async function loadConfiguredPlugins(config) {
   }
   const pluginsDir = path.join(config.configDirectory || process.cwd(), 'plugins');
   if (fs.existsSync(pluginsDir) && fs.statSync(pluginsDir).isDirectory()) {
+    for (const item of packageDirectories(pluginsDir)) {
+      if (explicitPaths.has(fs.realpathSync(item.entry))) continue;
+      explicitPaths.add(fs.realpathSync(item.entry));
+      await loadFile(item.entry, `./plugins/${item.name}/${path.basename(item.entry)}`);
+    }
     for (const name of fs.readdirSync(pluginsDir).sort()) {
       if (!/\.(mjs|js)$/.test(name)) continue;
       const filename = path.join(pluginsDir, name);
