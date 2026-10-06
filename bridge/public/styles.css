@@ -188,6 +188,12 @@
     .board-footnote { max-width: 68ch; margin: 18px auto 0; color: var(--dim); text-align: center; font-size: var(--font-small); line-height: 1.55; }
     .info-panel { padding: 28px 30px; }
     .info-rows { display: grid; gap: 1px; margin-top: 16px; }
+    .catalog-list { display: grid; gap: 12px; margin-top: 16px; }
+    .catalog-card { display: grid; gap: 8px; padding: 16px 18px; border: 1px solid var(--line); border-radius: 14px; background: rgba(255,255,255,.02); }
+    .catalog-card h3 { margin: 0; font-size: var(--font-body); }
+    .catalog-meta { color: var(--dim); font-size: var(--font-small); line-height: 1.5; }
+    .catalog-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+    .catalog-empty { margin-top: 16px; color: var(--dim); font-size: var(--font-small); }
     .info-row { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 15px; min-height: 52px; border-top: 1px solid var(--line); font-size: var(--font-body); }
     .info-row:first-child { border-top: 0; }
     .info-name { display: flex; align-items: center; gap: 10px; color: var(--muted); font-weight: 700; }

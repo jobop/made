@@ -20,7 +20,61 @@
 
 ## 插件扩展（开源接口 v1）
 
-编程助手通过电脑侧插件扩展，码得助手名单、名称、能力与图标像素全部由桥接器下发。未连接时只显示连接与配对状态，没有默认助手占位；固件也不内置动物绘图模板。自定义图片可用 `bridge/tools/convert-agent-icon.py` 转成 48×48、最多 16 色的小图放在插件中。语音识别不做插件化，只填 URL、API Key、模型名，兼容服务和模型共用内置转写客户端。开发说明和示例见 [插件开发指南](docs/PLUGINS.md)。安装插件或更换图片并重启桥接器后，码得自动刷新，不需反复刷固件。首次迁移到动态图像协议需要更新本版本固件。
+编程助手通过电脑侧插件扩展，码得助手名单、名称、能力与图标像素全部由桥接器下发。未连接时只显示连接与配对状态，没有默认助手占位；固件也不内置动物绘图模板。自定义图片可用 `bridge/tools/convert-agent-icon.py` 转成 48×48、最多 16 色的小图放在插件中。语音识别不做插件化，只填 URL、API Key、模型名，兼容服务和模型共用内置转写客户端。开发说明和示例见 [插件开发指南](docs/PLUGINS.md)。安装插件或更换图片并重启桥接器后，码得自动刷新，不需反复刷固件。首次迁移到动态图像协议需要更新本版本固件。板侧事件与命令见下一章。
+
+## 板侧事件与命令
+
+码得上报事件，和桥接器向码得下发命令，是两条独立的设备接口。事件那次请求只表示「发生了」，响应是 `{accepted:true}`，不夹带命令。命令放在该设备自己的队列里：管控插件可以在处理事件时入队，也可以等处理函数返回后再入队；桥接器也可以不经过任何事件，直接入队。码得解锁并连上桥接器之后自行领取并执行，然后确认。USB 直连、局域网、接收器和公网都走同一套设备接口。
+
+锁屏期间码得不连接桥接器，不上报事件，也不领取命令。队列里的命令会留到解锁之后。配网、配对和语言不在命令里。
+
+### 事件
+
+板上目前公开这些事件。只有已安装且启用的管控插件登记了某个事件，码得才会上报它。未登记的按键仍保持原来的录音、确认、取消和回桌面行为。
+
+| 事件 | 何时发生 |
+| --- | --- |
+| `boot.click` | 解锁后单击 BOOT（同时开始录音） |
+| `boot.double` | 解锁后双击 BOOT（同时确认当前任务） |
+| `boot.triple` | 解锁后三击 BOOT（同时取消当前任务） |
+| `boot.long` | 解锁后长按 BOOT（同时退出应用） |
+
+设置页或删除确认框打开时，这些按键不会上报。码得 `POST /device/events`，正文为 `{"name":"boot.click"}`。字段若有，每个值最长约 120 字节。
+
+### 命令
+
+码得 `GET /device/commands` 领取，执行后 `POST /device/commands/ack`，正文为 `{"ids":["1"]}`。未确认的命令留在队列里，下次领取还会带上。队列最多 8 条。
+
+| 命令 | 字段 | 板子做什么 |
+| --- | --- | --- |
+| `caption.show` | `text` | 显示一行提示 |
+| `audio.play` | 无；附带 WAV | 播放随命令下发的语音 |
+| `theme.apply` | `name` | 切换主题；`default` 恢复内置主题，成功后重启 |
+| `volume.set` | `level` | 把音量设为 0–100 |
+| `agent.select` | `id`，或 `direction` 为 `next` / `prev` | 切换助手 |
+| `session.create` | 无 | 为当前助手新建任务 |
+| `session.select` | `id`，或 `direction` 为 `next` / `prev` | 切换任务 |
+| `session.delete` | `id` | 删除当前助手下的这个任务 |
+| `voice.start` | 无 | 开始录音并上传 |
+| `task.confirm` | 可选 `id` | 确认当前屏幕上的任务 |
+| `task.cancel` | 可选 `id` | 取消当前屏幕上的任务 |
+
+`task.confirm` 和 `task.cancel` 不写 `id` 时，作用于当前可见任务。主题名是桥接器 `themes/` 里的目录名。
+
+播放语音时，语音和命令一起入队。码得看到 `audio:true` 后，再 `GET /device/commands/<id>/audio` 取走同一段 WAV 并播放。格式为 16-bit PCM WAV，采样率 8k–48k，单声道或双声道，不超过 256KB。队列里同时只保留一条待播放语音。
+
+插件调用 `send({name,fields})`；播放语音时第二个参数是 WAV。插件只能下发自己 `commands` 里声明、并且板侧清单里已有的命令。示例见 `bridge/examples/plugins/board-caption.mjs`。
+
+桥接器直接下发走本机工作台，须带本机操作令牌：
+
+```sh
+curl -X POST http://127.0.0.1:8787/api/board/commands \
+  -H "content-type: application/json" \
+  -H "x-vibe-token: <本机操作令牌>" \
+  -d '{"deviceId":"<12位设备号>","name":"caption.show","fields":{"text":"你好"}}'
+```
+
+语音用同一个地址，`Content-Type` 为 `audio/wav`，查询参数 `deviceId` 指出哪块板，正文就是 WAV。这条路径只要求命令在板侧已上报的清单里。旧固件的清单只有 `caption.show`；要使用上表中的其余命令，需要烧录包含该清单的码得固件。
 
 ## 仓库模块
 
@@ -28,7 +82,7 @@
 
 - `made/`：**码得固件**。从微雪 1.85B 官方 Brookesia 示例出发，保留本板 360×360 桌面与 BSP；桌面仅注册小智、码得与 Settings（设置）。SquareLine Demo、准星、重力球、天气、相册、画画和计算器均不在当前桌面中；部分组件源码仍保留。`made/release/` 提供烧录文件；移植范围和限制见子目录的 `PORTING.md`。
 - `receiver/`：**可选的第二块 ESP32-S3 / ESP32-C3 接收端**。它建立独立热点，让码得绕开公司 Wi-Fi；接收端经 USB 将码得的配对、语音和任务请求转给电脑桥接器。`receiver/release/` 对应 S3 原生 USB，`receiver/release-esp32c3/` 对应 C3 板载 WCH 转 UART0。
-- `bridge/`：**电脑桥接器**。`src/` 是可运行的客户端，包含独立语音识别入口、任务会话与内部对话记录、Codex/Cursor/Qoder 命令行适配器、WorkBuddy Open API 转交适配器、状态持久化、确认与取消接口。`public/` 是电脑工作台，只有“大盘、助手、任务”三个入口。`plugins/`、`themes/`、`examples/` 仍留在桥接器里，由桥接器加载，不拆进市场。`demo-project/` 是可以安全试用的演示 Git 仓库。
+- `bridge/`：**电脑桥接器**。`src/` 是可运行的客户端，包含独立语音识别入口、任务会话与内部对话记录、Codex/Cursor/Qoder 命令行适配器、WorkBuddy Open API 转交适配器、状态持久化、确认与取消接口。`public/` 是电脑工作台，入口是“大盘、助手、任务、插件”。`plugins/`、`themes/`、`examples/` 仍留在桥接器里，由桥接器加载，不拆进市场。`demo-project/` 是可以安全试用的演示 Git 仓库。
 - `plugin-market/`：插件包管理。登记和分发主题、管控、agent 运行时三类包，本身不执行。
 - `expert-market/`：专家包管理。登记和分发注入到 agent 的人格，本身不执行。
 - `3d-model/`：码得外壳的 3D 打印模型。源文件、STL、3MF 和预览图都在这里。

@@ -931,5 +931,30 @@ export const messages = {
   "tunnel.official.newTab": {
     "zh-CN": "在新窗口打开官方网站",
     "en": "Open the official website in a new window"
-  }
+  },
+  "plug.001": { "zh-CN": "管控插件", "en": "Board plugin" },
+  "plug.002": { "zh-CN": "助手插件", "en": "Assistant plugin" },
+  "plug.003": { "zh-CN": "已启用", "en": "Enabled" },
+  "plug.004": { "zh-CN": "已停用", "en": "Disabled" },
+  "plug.005": { "zh-CN": "未就绪", "en": "Not ready" },
+  "plug.006": { "zh-CN": "停用", "en": "Disable" },
+  "plug.007": { "zh-CN": "启用", "en": "Enable" },
+  "plug.008": { "zh-CN": "移除", "en": "Remove" },
+  "plug.009": { "zh-CN": "应用到码得", "en": "Apply to made" },
+  "plug.010": { "zh-CN": "删除", "en": "Delete" },
+  "plug.011": { "zh-CN": "插件目录里还没有插件。把 .mjs 文件放进 bridge/plugins 后点刷新。", "en": "The plugins folder is empty. Put an .mjs file in bridge/plugins and refresh." },
+  "plug.012": { "zh-CN": "主题目录里还没有主题。", "en": "The themes folder is empty." },
+  "plug.013": { "zh-CN": "提示音", "en": "Chime" },
+  "plug.014": { "zh-CN": "锁屏图标", "en": "Lock icon" },
+  "plug.015": { "zh-CN": "锁屏背景", "en": "Lock background" },
+  "plug.016": { "zh-CN": "确定移除插件「{v0}」？文件会从插件目录删除。", "en": "Remove plugin “{v0}”? Its file will be deleted from the plugins folder." },
+  "plug.017": { "zh-CN": "确定删除主题「{v0}」？", "en": "Delete theme “{v0}”?" },
+  "plug.018": { "zh-CN": "已下发到 {v0} 台码得", "en": "Sent to {v0} made device(s)" },
+  "plug.019": { "zh-CN": "插件状态已更新", "en": "Plugin status updated" },
+  "plug.020": { "zh-CN": "主题已删除", "en": "Theme deleted" },
+  "plug.021": { "zh-CN": "插件已移除", "en": "Plugin removed" },
+  "plug.022": { "zh-CN": "正在读取插件和主题…", "en": "Reading plugins and themes…" },
+  "plug.023": { "zh-CN": "无法加载", "en": "Could not load" },
+  "plug.024": { "zh-CN": "事件", "en": "Events" },
+  "plug.025": { "zh-CN": "命令", "en": "Commands" }
 };

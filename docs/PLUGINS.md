@@ -22,7 +22,7 @@
 
 ## 编程助手
 
-完整接口见 `bridge/src/plugins/contracts.d.ts`，内置实现在 `bridge/src/agents/`。已安装的外部插件留在 `bridge/plugins/`，由桥接器加载；插件市场只负责发包，不代替这个运行目录。
+完整接口见 `bridge/src/plugins/contracts.d.ts`，内置实现在 `bridge/src/agents/`。已安装的外部插件留在 `bridge/plugins/`，由桥接器自动加载，并在工作台「插件」页启用、停用或移除。这个目录里的插件文件不进入 git。主题包在 `bridge/themes/`，同一页管理，波波主题也在其中。插件市场只负责发包，不代替这个运行目录。
 
 必填元数据：`apiVersion: 1`、`kind: 'coding-agent'`、唯一 `id`、`label`、`capabilities`。ID 为 1–40 个小写字母、数字、下划线、连字符（首字符字母或数字）。名称至多 64 UTF-8 字节。所有插件共享 ID 命名空间。
 
@@ -47,6 +47,32 @@
 自定义非敏感选项可置于 `config.pluginSettings[插件ID]`。插件若需密钥，请自行使用环境变量或系统密钥存储，不要把密钥写入可分发的项目配置。
 
 插件可读取 `config.locale`（`zh-CN` 或 `en`）为自己的可用性说明和进度文案选择语言；桥接器不会对第三方插件的名称、提示或原始答复做全文替换。稳定的 `id`、会话标识与图标协议均不受语言影响。界面本地化约定见 [国际化开发说明](I18N.md)。
+
+## 管控插件
+
+事件和命令分开走。码得 `POST /device/events` 只上报已登记事件，响应是 `{accepted:true}`，不携带命令。插件在 `onEvent` 里返回 `{commands}`，或调用上下文里的 `send(command)`，两条路都把命令放进该设备的队列。`send` 在 `onEvent` 返回后仍然有效，可以稍后调用。命令名必须同时出现在板侧清单和插件自己的 `commands` 里；字段沿用事件字段的限制。
+
+桥接器也可以不经过事件直接下发。本机工作台 `POST /api/board/commands`，请求体为 `{deviceId,name,fields}`，并带本机操作令牌。这条路径只要求命令在板侧清单里。
+
+播放语音时，语音数据和命令一起入队。插件调用 `send({name:'audio.play'}, wav)`。工作台则 `POST /api/board/commands?deviceId=...`，`Content-Type` 为 `audio/wav`，正文就是 PCM WAV（16-bit，8k–48k，单声道或双声道，不超过 256KB）。码得领取命令时若看到 `audio:true`，再 `GET /device/commands/<id>/audio` 取走同一段语音并播放。
+
+当前板侧会执行的命令：
+
+| 命令 | 字段 | 作用 |
+| --- | --- | --- |
+| `caption.show` | `text` | 显示一行提示 |
+| `audio.play` | 无；附带 WAV | 播放下发的语音 |
+| `theme.apply` | `name` | 切换主题；`default` 恢复内置主题并重启 |
+| `volume.set` | `level` | 音量 0–100 |
+| `agent.select` | `id`，或 `direction`=`next`/`prev` | 切换助手 |
+| `session.create` | 无 | 为当前助手新建任务 |
+| `session.select` | `id`，或 `direction`=`next`/`prev` | 切换任务 |
+| `session.delete` | `id` | 删除当前助手下的任务 |
+| `voice.start` | 无 | 开始录音并上传 |
+| `task.confirm` | 可选 `id` | 确认当前可见任务 |
+| `task.cancel` | 可选 `id` | 取消当前可见任务 |
+
+码得用 `GET /device/commands` 领取，执行后 `POST /device/commands/ack`，请求体为 `{ids}`。未确认的命令留在队列里，下次领取会再次带上。队列最多 8 条，其中待播放语音同时只保留一条。USB、局域网、接收器和公网都走这同一套设备接口。配网、配对和语言不在命令里。
 
 ## 语音识别采用固定兼容接口
 

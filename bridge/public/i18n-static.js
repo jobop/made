@@ -556,6 +556,46 @@ export const staticMessages = {
     "zh-CN": "发送并回显",
     "en": "Send for review"
   },
+  "static.140": {
+    "zh-CN": "插件",
+    "en": "Plugins"
+  },
+  "static.141": {
+    "zh-CN": "插件 · 码得",
+    "en": "Plugins · made"
+  },
+  "static.142": {
+    "zh-CN": "PLUGINS · THEMES",
+    "en": "PLUGINS · THEMES"
+  },
+  "static.143": {
+    "zh-CN": "装在这台电脑上，",
+    "en": "Installed on this computer, "
+  },
+  "static.144": {
+    "zh-CN": "由你开关。",
+    "en": "and switched by you."
+  },
+  "static.145": {
+    "zh-CN": "插件放在 bridge/plugins，主题放在 bridge/themes。插件文件不进入 git。启用和停用会立即生效；替换插件文件内容后，请重启桥接器。",
+    "en": "Plugins live in bridge/plugins and themes in bridge/themes. Plugin files stay out of git. Enabling or disabling takes effect immediately. Restart the bridge after you replace a plugin file."
+  },
+  "static.146": {
+    "zh-CN": "已安装插件",
+    "en": "Installed plugins"
+  },
+  "static.147": {
+    "zh-CN": "管控插件和助手插件。停用后不再处理码得事件，也不再出现在助手列表。",
+    "en": "Board plugins and assistant plugins. A disabled plugin stops handling made events and leaves the assistant list."
+  },
+  "static.148": {
+    "zh-CN": "已安装主题",
+    "en": "Installed themes"
+  },
+  "static.149": {
+    "zh-CN": "主题包都在这里管理，包括波波。应用到码得后，设备解锁并连上电脑时才会换上这套外观。",
+    "en": "Theme packs are managed here, including Bobo. made applies one after it is unlocked and connected to this computer."
+  },
   "language.label": {
     "zh-CN": "语言",
     "en": "Language"

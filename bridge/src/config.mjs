@@ -86,5 +86,6 @@ export function loadConfig(env = process.env) {
     },
     stateDir,
     usbPort,
+    configFile: selected,
   };
 }

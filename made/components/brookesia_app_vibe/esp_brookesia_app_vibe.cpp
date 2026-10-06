@@ -187,6 +187,17 @@ bool validProjectId(const std::string &id)
     });
 }
 
+bool validCommandId(const char *id)
+{
+    if (!id || id[0] < '1' || id[0] > '9') return false;
+    const size_t length = strnlen(id, 17);
+    if (length > 16) return false;
+    for (size_t i = 1; i < length; ++i) {
+        if (id[i] < '0' || id[i] > '9') return false;
+    }
+    return true;
+}
+
 bool validSessionId(const std::string &id)
 {
     if (id.size() != 36) return false;
@@ -1178,6 +1189,7 @@ void VibeCoding::timerCallback(lv_timer_t *timer)
             ESP_LOGW(BUTTON_TAG, "Vibe Coding close request failed; retrying");
         }
     } else {
+        self->applyRemoteCommands();
         self->render();
     }
     self->ui_stage_.store(100);
@@ -3134,7 +3146,7 @@ void VibeCoding::render()
     if (selected_session == snapshot.sessions.end()) {
         displayed_task_id_.clear();
         lv_label_set_text(position_label_, T("暂无任务"));
-        lv_label_set_text(instruction_label_, T("点右上角 + 创建任务"));
+        lv_label_set_text(instruction_label_, !snapshot.session_notice.empty() ? own_session_notice.c_str() : T("点右上角 + 创建任务"));
         const std::string empty_message = !snapshot.connection_error.empty() ? own_error :
             !snapshot.session_notice.empty() ? own_session_notice :
             !provider_ready ? (provider.reason.empty() ? T("请先在电脑端启用此助手") : provider.reason) :
@@ -3176,14 +3188,15 @@ void VibeCoding::render()
 
     if (snapshot.tasks.empty()) {
         displayed_task_id_.clear();
-        lv_label_set_text(instruction_label_, !voice_notice.empty() ? voice_notice.c_str() :
+        lv_label_set_text(instruction_label_, !snapshot.session_notice.empty() ? own_session_notice.c_str() :
+                          !voice_notice.empty() ? voice_notice.c_str() :
                           provider_ready ? T("还没有对话 · 单击 BOOT 说话") : T("电脑端助手不可用"));
         const std::string result = !snapshot.connection_error.empty() ? own_error :
             !config_loaded_.load() ? T("正在读取电脑设置") :
+            !snapshot.session_notice.empty() ? own_session_notice :
             !voice_available_.load() ? T("在电脑工作台设置语音识别") :
             voice.phase == vibe_voice::Phase::Recording ? T("说完后稍等，会自动发送。") :
             voice.phase == vibe_voice::Phase::Uploading ? T("正在识别语音…") :
-            !snapshot.session_notice.empty() ? own_session_notice :
             !voice_notice.empty() ? voice_notice :
             provider.external_unscoped ? T("此助手任务隔离受限，请在电脑端核对。顶部上下滑切任务。") :
             T("顶部上下滑切任务，点标题也可切换。左右滑切助手。");
@@ -3193,7 +3206,8 @@ void VibeCoding::render()
         const Task &task = snapshot.tasks.front();
         displayed_task_id_ = task.id;
         noteComputerReply(task);
-        const std::string instruction = !voice_notice.empty() ? voice_notice :
+        const std::string instruction = !snapshot.session_notice.empty() ? own_session_notice :
+            !voice_notice.empty() ? voice_notice :
             std::string(statusName(task.status)) +
             T(" · 你：") + task.instruction;
         std::string result;
@@ -3219,6 +3233,7 @@ void VibeCoding::render()
         if (showing_task_result && task.result_truncated) {
             result += T("\n\n更多内容请在电脑任务页查看");
         }
+        if (!snapshot.session_notice.empty()) result = own_session_notice + (result.empty() ? std::string() : "\n\n" + result);
         lv_label_set_text(instruction_label_, instruction.c_str());
         ui_stage_.store(30);
         showAnswer(selected_session_id + "/" + task.id + "/" + task.status,
@@ -3286,17 +3301,22 @@ void VibeCoding::setConnectionError(std::string error)
     }
 }
 
+struct HttpCapture {
+    std::string *body = nullptr;
+    size_t limit = 0;
+};
+
 esp_err_t VibeCoding::httpEvent(esp_http_client_event_t *event)
 {
     if (event->event_id != HTTP_EVENT_ON_DATA || !event->user_data || event->data_len <= 0) return ESP_OK;
-    auto *response = static_cast<std::string *>(event->user_data);
-    if (response->size() + static_cast<size_t>(event->data_len) > MAX_RESPONSE_BYTES) return ESP_FAIL;
-    response->append(static_cast<const char *>(event->data), event->data_len);
+    auto *capture = static_cast<HttpCapture *>(event->user_data);
+    if (!capture->body || capture->body->size() + static_cast<size_t>(event->data_len) > capture->limit) return ESP_FAIL;
+    capture->body->append(static_cast<const char *>(event->data), event->data_len);
     return ESP_OK;
 }
 
 bool VibeCoding::request(const std::string &path, bool post, std::string &response, int &status,
-                         const std::string &json_body)
+                         const std::string &json_body, size_t response_limit, int timeout_ms)
 {
     if (locked_.load()) return false;
     if (!post && receiverVoiceUploading()) return false;
@@ -3319,15 +3339,16 @@ bool VibeCoding::request(const std::string &path, bool post, std::string &respon
                                   json_body.empty() ? "" : "application/json",
                                   json_body.empty() ? nullptr : reinterpret_cast<const uint8_t *>(json_body.data()),
                                   json_body.size(),
-                                  response, status, MAX_RESPONSE_BYTES, 5000);
+                                  response, status, response_limit, timeout_ms);
     } else {
+        HttpCapture capture{&response, response_limit};
         esp_http_client_config_t config = {};
         config.url = url.c_str();
         config.disable_auto_redirect = true;
         if (url.rfind("https://", 0) == 0) config.crt_bundle_attach = esp_crt_bundle_attach;
         config.event_handler = httpEvent;
-        config.user_data = &response;
-        config.timeout_ms = 5000;
+        config.user_data = &capture;
+        config.timeout_ms = timeout_ms;
         config.buffer_size = 1024;
         esp_http_client_handle_t client = esp_http_client_init(&config);
         if (!client) return false;
@@ -3517,7 +3538,19 @@ void VibeCoding::announceBoardCatalog()
         "{\"name\":\"boot.double\",\"cadence\":\"edge\"},"
         "{\"name\":\"boot.triple\",\"cadence\":\"edge\"},"
         "{\"name\":\"boot.long\",\"cadence\":\"edge\"}"
-        "],\"commands\":[{\"name\":\"caption.show\"}]}";
+        "],\"commands\":["
+        "{\"name\":\"caption.show\"},"
+        "{\"name\":\"audio.play\"},"
+        "{\"name\":\"theme.apply\"},"
+        "{\"name\":\"volume.set\"},"
+        "{\"name\":\"agent.select\"},"
+        "{\"name\":\"session.create\"},"
+        "{\"name\":\"session.select\"},"
+        "{\"name\":\"session.delete\"},"
+        "{\"name\":\"voice.start\"},"
+        "{\"name\":\"task.confirm\"},"
+        "{\"name\":\"task.cancel\"}"
+        "]}";
     std::string response;
     int status = 0;
     if (!request("/device/capabilities", true, response, status, body) || status != 200) return;
@@ -3540,30 +3573,325 @@ void VibeCoding::flushBoardEvent()
     const std::string body = std::string("{\"name\":\"") + name + "\"}";
     std::string response;
     int status = 0;
-    if (!request("/device/events", true, response, status, body) || status != 200) return;
-    cJSON *root = cJSON_Parse(response.c_str());
-    if (!root) return;
-    const cJSON *commands = cJSON_GetObjectItemCaseSensitive(root, "commands");
-    if (cJSON_IsArray(commands)) {
-        cJSON *command = nullptr;
-        cJSON_ArrayForEach(command, commands) {
-            if (!cJSON_IsObject(command)) continue;
-            const cJSON *command_name = cJSON_GetObjectItemCaseSensitive(command, "name");
-            if (!cJSON_IsString(command_name) || std::strcmp(command_name->valuestring, "caption.show") != 0) continue;
-            const cJSON *fields = cJSON_GetObjectItemCaseSensitive(command, "fields");
-            const cJSON *text = cJSON_IsObject(fields) ? cJSON_GetObjectItemCaseSensitive(fields, "text") : nullptr;
-            if (!cJSON_IsString(text) || !text->valuestring || !text->valuestring[0]) continue;
-            std::string caption(text->valuestring, strnlen(text->valuestring, 120));
-            while (!caption.empty() && (static_cast<unsigned char>(caption.back()) & 0xC0) == 0x80) caption.pop_back();
-            if (!caption.empty() && (static_cast<unsigned char>(caption.back()) & 0xC0) == 0xC0) caption.pop_back();
+    (void)request("/device/events", true, response, status, body);
+}
+
+namespace {
+std::string trimNotice(std::string caption)
+{
+    if (caption.size() > 120) caption.resize(120);
+    while (!caption.empty() && (static_cast<unsigned char>(caption.back()) & 0xC0) == 0x80) caption.pop_back();
+    if (!caption.empty() && (static_cast<unsigned char>(caption.back()) & 0xC0) == 0xC0) caption.pop_back();
+    return caption;
+}
+
+std::string commandField(const cJSON *command, const char *key)
+{
+    const cJSON *fields = cJSON_GetObjectItemCaseSensitive(command, "fields");
+    return cJSON_IsObject(fields) ? jsonString(fields, key) : std::string();
+}
+
+int parseLevel(const std::string &level)
+{
+    if (level.empty() || level.size() > 3) return -1;
+    if (level.size() > 1 && level[0] == '0') return -1;
+    int value = 0;
+    for (char c : level) {
+        if (c < '0' || c > '9') return -1;
+        value = value * 10 + (c - '0');
+    }
+    return value <= 100 ? value : -1;
+}
+
+bool validThemeName(const std::string &name)
+{
+    if (name == "default") return true;
+    if (name.empty() || name.size() > 64) return false;
+    return std::all_of(name.begin(), name.end(), [](unsigned char c) {
+        return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_' || c == '-';
+    });
+}
+
+bool validDirection(const std::string &direction)
+{
+    return direction == "next" || direction == "prev";
+}
+}
+
+void VibeCoding::setVolumeLevel(int level)
+{
+    if (level < 0) level = 0;
+    if (level > 100) level = 100;
+    if (bsp_extra_out_volume_set(level) != ESP_OK) return;
+    renderVolume();
+}
+
+void VibeCoding::selectProviderById(const std::string &id)
+{
+    const auto voice = vibe_voice::status();
+    if (voice.phase == vibe_voice::Phase::Recording || voice.phase == vibe_voice::Phase::Uploading) {
+        std::lock_guard<std::mutex> lock(model_mutex_);
+        model_.voice_hint = "Finish voice capture before switching agent";
+        ++model_.revision;
+        return;
+    }
+    {
+        std::lock_guard<std::mutex> lock(model_mutex_);
+        if (!config_loaded_.load() || providers_.empty()) return;
+        int index = -1;
+        for (int i = 0; i < static_cast<int>(providers_.size()); ++i) {
+            if (providers_[i].id == id) index = i;
+        }
+        if (index < 0) {
+            model_.session_notice = T("没有这个助手");
+            ++model_.revision;
+            return;
+        }
+        if (index == selected_provider_.load()) return;
+        submitted_task_seen_ = true;
+        displayed_task_id_.clear();
+        rendered_session_id_.clear();
+        selected_provider_.store(index);
+        button_epoch_.fetch_add(1);
+        model_.sessions.clear();
+        model_.tasks.clear();
+        model_.feedback.clear();
+        model_.feedback_task_id.clear();
+        model_.voice_hint.clear();
+        model_.session_notice.clear();
+        model_.connection_error = "Loading sessions...";
+        visible_task_id_.clear();
+        ++model_.revision;
+    }
+    drawn_revision_ = UINT32_MAX;
+}
+
+void VibeCoding::selectSessionById(const std::string &id)
+{
+    const auto voice = vibe_voice::status();
+    if (voice.phase == vibe_voice::Phase::Recording || voice.phase == vibe_voice::Phase::Uploading) return;
+    {
+        std::lock_guard<std::mutex> lock(model_mutex_);
+        if (!config_loaded_.load()) return;
+        const auto found = std::find_if(model_.sessions.begin(), model_.sessions.end(), [&id](const Session &session) {
+            return session.id == id;
+        });
+        auto *provider = findProviderLocked(selectedProviderLocked().id);
+        if (!provider || found == model_.sessions.end()) {
+            model_.session_notice = T("没有这个任务");
+            ++model_.revision;
+            return;
+        }
+        if (provider->selected_session_id == id) return;
+        provider->selected_session_id = id;
+        model_.tasks.clear();
+        model_.feedback.clear();
+        model_.feedback_task_id.clear();
+        model_.session_notice.clear();
+        visible_task_id_.clear();
+        ++model_.revision;
+    }
+    button_epoch_.fetch_add(1);
+    submitted_task_seen_ = true;
+    displayed_task_id_.clear();
+    rendered_session_id_.clear();
+    drawn_revision_ = UINT32_MAX;
+}
+
+void VibeCoding::queueDeleteSessionId(const std::string &id)
+{
+    const auto voice = vibe_voice::status();
+    std::lock_guard<std::mutex> lock(model_mutex_);
+    if (voice.phase == vibe_voice::Phase::Recording || voice.phase == vibe_voice::Phase::Uploading) {
+        model_.session_notice = T("录音中，请稍后删除任务");
+        ++model_.revision;
+        return;
+    }
+    const auto &provider = selectedProviderLocked();
+    const auto found = std::find_if(model_.sessions.begin(), model_.sessions.end(), [&id](const Session &session) {
+        return session.id == id;
+    });
+    if (found == model_.sessions.end() || pending_delete_session_ || delete_session_in_flight_) {
+        if (found == model_.sessions.end()) {
+            model_.session_notice = T("没有这个任务");
+            ++model_.revision;
+        }
+        return;
+    }
+    pending_delete_provider_id_ = provider.id;
+    pending_delete_session_id_ = id;
+    pending_delete_session_ = true;
+    model_.session_notice = T("正在删除任务…");
+    ++model_.revision;
+}
+
+void VibeCoding::startThemeApply(const std::string &name)
+{
+    const auto pairing = vibe_pairing::snapshot();
+    const bool usb_mode = pairing.access_mode == vibe_pairing::AccessMode::UsbDirect;
+    std::string base = !pairing.url.empty() ? pairing.url : pairing.manual_url;
+    if (!usb_mode && base.empty()) {
+        std::lock_guard<std::mutex> lock(model_mutex_);
+        model_.session_notice = T("尚未连接电脑，无法应用");
+        ++model_.revision;
+        return;
+    }
+    struct ApplyArgs {
+        VibeCoding *self;
+        std::string name;
+        std::string base;
+        bool usb_mode;
+    };
+    const std::string theme_name = name == "default" ? std::string() : name;
+    if (xTaskCreate([](void *arg) {
+            auto *args = static_cast<ApplyArgs *>(arg);
+            const esp_err_t result = args->usb_mode
+                                         ? vibe_theme::applyFromBridge(args->name, "")
+                                         : vibe_theme::applyFromBridge(args->name, args->base);
+            if (result == ESP_OK) args->self->theme_reboot_pending_.store(true);
+            delete args;
+            vTaskDelete(nullptr);
+        }, "vibe_theme_cmd", 12288, new ApplyArgs{this, theme_name, base, usb_mode}, 3, nullptr) != pdPASS) {
+        std::lock_guard<std::mutex> lock(model_mutex_);
+        model_.session_notice = T("应用任务启动失败");
+        ++model_.revision;
+    }
+}
+
+void VibeCoding::applyRemoteCommands()
+{
+    std::vector<RemoteCommand> batch;
+    {
+        std::lock_guard<std::mutex> lock(model_mutex_);
+        batch.swap(inbound_commands_);
+    }
+    for (auto &command : batch) {
+        if (command.name == "caption.show") {
+            std::string caption = trimNotice(command.text);
             if (caption.empty()) continue;
             std::lock_guard<std::mutex> lock(model_mutex_);
             model_.session_notice = std::move(caption);
             ++model_.revision;
-            break;
+        } else if (command.name == "audio.play") {
+            if (!command.audio.empty() &&
+                !made_chime_play_wav(reinterpret_cast<const uint8_t *>(command.audio.data()), command.audio.size())) {
+                std::lock_guard<std::mutex> lock(model_mutex_);
+                model_.session_notice = T("无法播放下发的语音");
+                ++model_.revision;
+            }
+        } else if (command.name == "theme.apply") {
+            if (validThemeName(command.theme)) startThemeApply(command.theme);
+        } else if (command.name == "volume.set") {
+            const int level = parseLevel(command.level);
+            if (level >= 0) setVolumeLevel(level);
+        } else if (command.name == "agent.select") {
+            if (vibe_provider::validId(command.target)) selectProviderById(command.target);
+            else if (command.direction == "next") chooseProvider(1);
+            else if (command.direction == "prev") chooseProvider(-1);
+        } else if (command.name == "session.create") {
+            requestNewSession();
+        } else if (command.name == "session.select") {
+            if (validSessionId(command.target)) selectSessionById(command.target);
+            else if (command.direction == "next") chooseSession(1);
+            else if (command.direction == "prev") chooseSession(-1);
+        } else if (command.name == "session.delete") {
+            if (validSessionId(command.target)) queueDeleteSessionId(command.target);
+        } else if (command.name == "voice.start") {
+            startVoice();
+        } else if (command.name == "task.confirm" || command.name == "task.cancel") {
+            std::string task_id = command.target;
+            if (task_id.empty()) {
+                std::lock_guard<std::mutex> lock(model_mutex_);
+                task_id = visible_task_id_;
+            }
+            if (validTaskId(task_id)) {
+                queueActionForId(command.name == "task.confirm" ? "confirm" : "cancel", task_id);
+            }
+        }
+    }
+}
+
+void VibeCoding::pullBoardCommands()
+{
+    auto postAck = [this](const std::vector<std::string> &ids) {
+        if (ids.empty()) return true;
+        std::string body = "{\"ids\":[";
+        for (size_t i = 0; i < ids.size(); ++i) {
+            if (i) body += ',';
+            body += '"';
+            body += ids[i];
+            body += '"';
+        }
+        body += "]}";
+        std::string response;
+        int status = 0;
+        return request("/device/commands/ack", true, response, status, body) && status == 200;
+    };
+    if (!ack_retry_.empty() && postAck(ack_retry_)) ack_retry_.clear();
+    {
+        std::lock_guard<std::mutex> lock(model_mutex_);
+        if (inbound_commands_.size() >= 8) return;
+    }
+    std::string response;
+    int status = 0;
+    if (!request("/device/commands", false, response, status) || status != 200) return;
+    cJSON *root = cJSON_Parse(response.c_str());
+    if (!root) return;
+    const cJSON *commands = cJSON_GetObjectItemCaseSensitive(root, "commands");
+    std::vector<RemoteCommand> accepted;
+    std::vector<std::string> ack_ids = ack_retry_;
+    if (cJSON_IsArray(commands)) {
+        int count = 0;
+        cJSON *command = nullptr;
+        cJSON_ArrayForEach(command, commands) {
+            if (count++ >= 8) break;
+            if (!cJSON_IsObject(command)) continue;
+            const cJSON *id_item = cJSON_GetObjectItemCaseSensitive(command, "id");
+            const cJSON *name_item = cJSON_GetObjectItemCaseSensitive(command, "name");
+            if (!cJSON_IsString(id_item) || !validCommandId(id_item->valuestring) || !cJSON_IsString(name_item)) continue;
+            const std::string id = id_item->valuestring;
+            if (std::find(ack_ids.begin(), ack_ids.end(), id) == ack_ids.end()) ack_ids.push_back(id);
+            if (std::find(delivered_command_ids_.begin(), delivered_command_ids_.end(), id) != delivered_command_ids_.end()) continue;
+            RemoteCommand next;
+            next.id = id;
+            next.name = name_item->valuestring;
+            next.text = commandField(command, "text");
+            next.target = commandField(command, "id");
+            next.direction = commandField(command, "direction");
+            next.level = commandField(command, "level");
+            next.theme = commandField(command, "name");
+            if (!validDirection(next.direction)) next.direction.clear();
+            const cJSON *audio = cJSON_GetObjectItemCaseSensitive(command, "audio");
+            if (cJSON_IsTrue(audio)) {
+                std::string clip;
+                int clip_status = 0;
+                const std::string path = "/device/commands/" + id + "/audio";
+                if (!request(path, false, clip, clip_status, "", 256 * 1024, 35000) || clip_status != 200 || clip.size() < 44) {
+                    ack_ids.erase(std::remove(ack_ids.begin(), ack_ids.end(), id), ack_ids.end());
+                    continue;
+                }
+                next.audio = std::move(clip);
+            }
+            delivered_command_ids_.push_back(id);
+            if (delivered_command_ids_.size() > 32) delivered_command_ids_.erase(delivered_command_ids_.begin());
+            accepted.push_back(std::move(next));
         }
     }
     cJSON_Delete(root);
+    if (!accepted.empty()) {
+        std::lock_guard<std::mutex> lock(model_mutex_);
+        for (auto &command : accepted) {
+            if (inbound_commands_.size() >= 8) {
+                delivered_command_ids_.erase(std::remove(delivered_command_ids_.begin(), delivered_command_ids_.end(), command.id),
+                                             delivered_command_ids_.end());
+                ack_ids.erase(std::remove(ack_ids.begin(), ack_ids.end(), command.id), ack_ids.end());
+                continue;
+            }
+            inbound_commands_.push_back(std::move(command));
+        }
+    }
+    if (!postAck(ack_ids)) ack_retry_ = std::move(ack_ids);
+    else ack_retry_.clear();
 }
 
 void VibeCoding::sendHeartbeat()
@@ -4158,6 +4486,7 @@ void VibeCoding::workerLoop()
         if (canOperate() && config_loaded_.load()) {
             if (!board_catalog_sent_) announceBoardCatalog();
             flushBoardEvent();
+            pullBoardCommands();
             refreshSessions();
             refreshTasks();
         }

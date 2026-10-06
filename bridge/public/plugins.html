@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#0b1518">
+  <title data-i18n="static.141">插件 · 码得</title>
+  <link rel="icon" type="image/png" sizes="112x112" href="/made-icon.png">
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body data-page="plugins">
+  <div class="page-glow" aria-hidden="true"></div>
+  <div class="app">
+    <header class="topbar">
+      <a class="brand" href="/" aria-label="码得大盘" data-i18n-aria-label="static.002">
+        <span class="brand-mark" aria-hidden="true"><img src="/made-icon.png" alt="" width="112" height="112"></span>
+        <span><span class="brand-name"><span data-i18n="static.003">码得</span></span><span class="brand-sub"><span data-i18n="static.004">made · CODING COMPANION</span></span></span>
+      </a>
+      <nav class="topnav" aria-label="页面导航" data-i18n-aria-label="static.005"><a href="/"><span data-i18n="static.006">大盘</span></a><a href="/assistants.html"><span data-i18n="static.007">助手</span></a><a href="/tasks.html"><span data-i18n="static.008">任务</span></a><a class="active" aria-current="page" href="/plugins.html"><span data-i18n="static.140">插件</span></a></nav>
+      <div class="language-picker"><label for="languageSelect" data-i18n="language.label">语言</label><select id="languageSelect" aria-label="界面语言" data-i18n-aria-label="language.label"><option value="zh-CN">简体中文</option><option value="en">English</option></select></div>
+      <div class="top-actions">
+        <span id="headerConnection" class="connection-pill"><span class="dot"></span><span><span data-i18n="static.009">正在连接</span></span></span>
+        <button id="refreshButton" class="icon-button" type="button" title="刷新状态" aria-label="刷新状态" data-i18n-title="static.010" data-i18n-aria-label="static.010"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M20 11a8 8 0 1 0-2.3 6.1"/><path d="M20 5v6h-6"/></svg></button>
+      </div>
+    </header>
+    <main id="top">
+      <section class="hero" aria-labelledby="hero-title">
+        <div><span class="eyebrow"><span data-i18n="static.142">PLUGINS · THEMES</span></span><h1 id="hero-title"><span data-i18n="static.143">装在这台电脑上，</span><em><span data-i18n="static.144">由你开关。</span></em></h1><p class="hero-desc"><span data-i18n="static.145">插件放在 bridge/plugins，主题放在 bridge/themes。插件文件不进入 git。启用和停用会立即生效；替换插件文件内容后，请重启桥接器。</span></p></div>
+      </section>
+      <div class="dashboard-layout">
+        <section class="panel info-panel" aria-labelledby="plugins-title">
+          <h2 id="plugins-title"><span data-i18n="static.146">已安装插件</span></h2>
+          <p class="panel-intro"><span data-i18n="static.147">管控插件和助手插件。停用后不再处理码得事件，也不再出现在助手列表。</span></p>
+          <div id="pluginList" class="catalog-list"></div>
+        </section>
+        <section class="panel info-panel" aria-labelledby="themes-title">
+          <h2 id="themes-title"><span data-i18n="static.148">已安装主题</span></h2>
+          <p class="panel-intro"><span data-i18n="static.149">主题包都在这里管理，包括波波。应用到码得后，设备解锁并连上电脑时才会换上这套外观。</span></p>
+          <div id="themeList" class="catalog-list"></div>
+        </section>
+      </div>
+    </main>
+    <footer class="footer"><span><span data-i18n="static.082">码得 · 多助手桥接</span></span><span id="lastUpdated"></span></footer>
+  </div>
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+  <script type="module" src="/plugins.js"></script>
+</body>
+</html>

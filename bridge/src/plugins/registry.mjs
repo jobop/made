@@ -84,16 +84,32 @@ export async function loadConfiguredPlugins(config) {
     if (disabled.has(recognizer.id)) throw new Error(`语音识别 ${recognizer.id} 是内置接口，不能通过 disabledPlugins 禁用；请在语音设置中配置`);
   }
   const plugins = [...builtinAgents.filter(p => !disabled.has(p.id)), ...builtinSpeechRecognizers];
-  for (const entry of config.plugins || []) {
-    if (typeof entry !== 'string' || !entry || /^[a-z]+:/i.test(entry)) throw new Error('plugins 仅接受显式的本地模块路径');
-    const filename = path.resolve(config.configDirectory || process.cwd(), entry);
-    if (!/\.(mjs|js)$/.test(filename) || !fs.statSync(filename).isFile()) throw new Error(`插件模块无效：${entry}`);
+  const loadFile = async (filename, label) => {
+    if (!/\.(mjs|js)$/.test(filename) || !fs.statSync(filename).isFile()) throw new Error(`插件模块无效：${label}`);
     const exported = (await import(pathToFileURL(filename).href)).default;
     const bundle = Array.isArray(exported) ? exported : [exported];
     for (const p of bundle) {
       validatePlugin(p);
       if (p.kind !== 'coding-agent' && p.kind !== 'board-plugin') throw new Error(`插件 ${p.id}：外部插件仅支持 coding-agent；语音识别请配置兼容接口的 URL、API Key 和模型名`);
       if (!disabled.has(p.id)) plugins.push(p);
+    }
+  };
+  const explicitPaths = new Set();
+  for (const entry of config.plugins || []) {
+    if (typeof entry !== 'string' || !entry || /^[a-z]+:/i.test(entry)) throw new Error('plugins 仅接受显式的本地模块路径');
+    const filename = path.resolve(config.configDirectory || process.cwd(), entry);
+    if (!fs.existsSync(filename)) throw new Error(`插件模块无效：${entry}`);
+    explicitPaths.add(fs.realpathSync(filename));
+    await loadFile(filename, entry);
+  }
+  const pluginsDir = path.join(config.configDirectory || process.cwd(), 'plugins');
+  if (fs.existsSync(pluginsDir) && fs.statSync(pluginsDir).isDirectory()) {
+    for (const name of fs.readdirSync(pluginsDir).sort()) {
+      if (!/\.(mjs|js)$/.test(name)) continue;
+      const filename = path.join(pluginsDir, name);
+      if (!fs.statSync(filename).isFile()) continue;
+      if (explicitPaths.has(fs.realpathSync(filename))) continue;
+      await loadFile(filename, `./plugins/${name}`);
     }
   }
   const registry = createPluginRegistry(plugins);

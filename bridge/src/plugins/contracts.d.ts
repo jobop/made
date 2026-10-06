@@ -73,7 +73,17 @@ export interface BoardCommand {
   name: string;
   fields?: Record<string, string>;
 }
-/** Bridge plugin: subscribes to board events and may return board commands. */
+export interface QueuedBoardCommand extends BoardCommand {
+  id: string;
+  fields: Record<string, string>;
+}
+/**
+ * Bridge plugin: subscribes to board events. Event delivery and command
+ * delivery are separate. Return commands or call send(); both enqueue for a
+ * later pull. send() stays valid after onEvent returns. Pass a PCM WAV
+ * buffer as the second argument only for audio.play; the board fetches those
+ * bytes with the command.
+ */
 export interface BoardPlugin {
   apiVersion: 1;
   kind: 'board-plugin';
@@ -82,6 +92,16 @@ export interface BoardPlugin {
   events: string[];
   commands: string[];
   probe: (config: PluginConfig) => { available: boolean; reason?: string };
-  onEvent: (context: { event: BoardEvent; config: PluginConfig; deviceId: string }) => Promise<{ commands?: BoardCommand[] } | void> | { commands?: BoardCommand[] } | void;
+  onConnect?: (context: {
+    deviceId: string;
+    config: PluginConfig;
+    send: (command: BoardCommand, audio?: Uint8Array) => QueuedBoardCommand;
+  }) => Promise<void> | void;
+  onEvent: (context: {
+    event: BoardEvent;
+    config: PluginConfig;
+    deviceId: string;
+    send: (command: BoardCommand, audio?: Uint8Array) => QueuedBoardCommand;
+  }) => Promise<{ commands?: BoardCommand[] } | void> | { commands?: BoardCommand[] } | void;
 }
 export type VibePlugin = CodingAgentPlugin | BoardPlugin;

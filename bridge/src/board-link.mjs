@@ -1,10 +1,12 @@
 export const CAPABILITY_NAME = /^[a-z][a-z0-9_]{0,15}(?:\.[a-z][a-z0-9_]{0,15}){0,2}$/;
 const FIELD_KEY = /^[a-z][a-z0-9_]{0,15}$/;
+const COMMAND_ID = /^[1-9][0-9]{0,15}$/;
 const MAX_ITEMS = 32;
-const MAX_COMMANDS = 8;
+const MAX_QUEUE = 8;
 const MAX_FIELDS = 6;
 const MAX_TEXT = 120;
 const MAX_PER_SECOND = 8;
+const MAX_AUDIO = 256 * 1024;
 const PLUGIN_TIMEOUT_MS = 1500;
 
 function fail(message) {
@@ -74,6 +76,52 @@ function commandsFrom(plugin, result, catalog) {
   return commands;
 }
 
+function pcmWav(audio) {
+  if (!Buffer.isBuffer(audio) || audio.length < 44 || audio.length > MAX_AUDIO) return false;
+  if (audio.toString('ascii', 0, 4) !== 'RIFF' || audio.toString('ascii', 8, 12) !== 'WAVE') return false;
+  let offset = 12;
+  let format = 0;
+  let channels = 0;
+  let rate = 0;
+  let bits = 0;
+  let data = 0;
+  while (offset + 8 <= audio.length) {
+    const id = audio.toString('ascii', offset, offset + 4);
+    const size = audio.readUInt32LE(offset + 4);
+    if (id === 'fmt ' && offset + 24 <= audio.length) {
+      format = audio.readUInt16LE(offset + 8);
+      channels = audio.readUInt16LE(offset + 10);
+      rate = audio.readUInt32LE(offset + 12);
+      bits = audio.readUInt16LE(offset + 22);
+    } else if (id === 'data') data = size;
+    const step = 8 + size + (size & 1);
+    if (step > audio.length) return false;
+    offset += step;
+  }
+  return format === 1 && bits === 16 && channels >= 1 && channels <= 2 && rate >= 8000 && rate <= 48000 && data > 0;
+}
+
+function enqueueCommand(queues, audios, catalogs, seq, deviceId, command, allowed, audio) {
+  const catalog = catalogs.get(deviceId);
+  if (!catalog) throw fail('板侧尚未上报命令清单');
+  if (!command || typeof command !== 'object' || typeof command.name !== 'string' || !CAPABILITY_NAME.test(command.name)) throw fail('命令无效');
+  if (!catalog.commands.some((item) => item.name === command.name)) throw fail('命令不在板侧清单');
+  if (allowed && !allowed.has(command.name)) throw fail('插件未声明该命令');
+  const fields = parseFields(command.fields);
+  if (audio != null && command.name !== 'audio.play') throw fail('只有 audio.play 可以附带语音');
+  if (command.name === 'audio.play' && audio == null) throw fail('audio.play 需要同时附带语音');
+  if (audio != null && !pcmWav(audio)) throw fail('语音须为不超过 256KB 的 16-bit PCM WAV');
+  const queue = queues.get(deviceId) || [];
+  if (queue.length >= MAX_QUEUE) throw fail('命令队列已满');
+  if (audio != null && queue.some((item) => item.audio)) throw fail('已有一条待播放语音');
+  seq.n += 1;
+  const item = { id: String(seq.n), name: command.name, fields, audio: audio != null };
+  queue.push(item);
+  queues.set(deviceId, queue);
+  if (audio != null) audios.set(`${deviceId}\n${item.id}`, audio);
+  return { id: item.id, name: item.name, fields: { ...item.fields }, audio: item.audio };
+}
+
 async function runPlugin(plugin, context) {
   let timer;
   try {
@@ -90,12 +138,73 @@ async function runPlugin(plugin, context) {
 
 export function createBoardLink() {
   const catalogs = new Map();
+  const queues = new Map();
+  const audios = new Map();
   const hits = new Map();
+  const seq = { n: 0 };
+  const dropAudio = (deviceId, id) => audios.delete(`${deviceId}\n${id}`);
+  const enqueue = (deviceId, command, allowed, audio) => enqueueCommand(queues, audios, catalogs, seq, deviceId, command, allowed, audio);
   return {
     setCatalog(deviceId, payload) {
       const catalog = parseCatalog(payload);
       catalogs.set(deviceId, catalog);
+      const known = new Set(catalog.commands.map((item) => item.name));
+      const queue = queues.get(deviceId) || [];
+      const next = queue.filter((item) => known.has(item.name));
+      for (const item of queue) {
+        if (!next.includes(item)) dropAudio(deviceId, item.id);
+      }
+      queues.set(deviceId, next);
       return catalog;
+    },
+    forget(deviceId) {
+      catalogs.delete(deviceId);
+      queues.delete(deviceId);
+      for (const key of [...hits.keys(), ...audios.keys()]) {
+        if (key.startsWith(`${deviceId}\n`)) {
+          hits.delete(key);
+          audios.delete(key);
+        }
+      }
+    },
+    pending(deviceId) {
+      return (queues.get(deviceId) || []).map((item) => ({
+        id: item.id, name: item.name, fields: { ...item.fields }, audio: item.audio === true,
+      }));
+    },
+    audio(deviceId, id) {
+      const wav = audios.get(`${deviceId}\n${id}`);
+      return wav ? Buffer.from(wav) : null;
+    },
+    send(deviceId, command, audio) {
+      return enqueue(deviceId, command, undefined, audio);
+    },
+    connect(deviceId, runtime, config) {
+      if (!runtime?.boardPlugins) return;
+      for (const plugin of runtime.boardPlugins()) {
+        if (typeof plugin.onConnect !== 'function' || !pluginAvailable(plugin, config)) continue;
+        const allowed = new Set(plugin.commands);
+        const send = (command, audio) => enqueue(deviceId, command, allowed, audio);
+        try {
+          const result = plugin.onConnect({ deviceId, config, send });
+          if (result && typeof result.then === 'function') result.catch(() => {});
+        } catch {
+          /* A plugin that fails to arm must not block the catalog response. */
+        }
+      }
+    },
+    ack(deviceId, payload) {
+      if (!payload || typeof payload !== 'object' || Array.isArray(payload) || !Array.isArray(payload.ids) || payload.ids.length > MAX_QUEUE) throw fail('确认无效');
+      const drop = new Set();
+      for (const id of payload.ids) {
+        if (typeof id !== 'string' || !COMMAND_ID.test(id) || drop.has(id)) throw fail('确认无效');
+        drop.add(id);
+      }
+      const queue = queues.get(deviceId) || [];
+      const next = queue.filter((item) => !drop.has(item.id));
+      for (const id of drop) dropAudio(deviceId, id);
+      queues.set(deviceId, next);
+      return { acked: queue.length - next.length };
     },
     subscription(deviceId, runtime, config) {
       const catalog = catalogs.get(deviceId);
@@ -124,23 +233,30 @@ export function createBoardLink() {
       if (recent.length >= MAX_PER_SECOND) throw fail('事件上报过于频繁');
       recent.push(now);
       hits.set(key, recent);
-      const commands = [];
+      const allowedFor = (plugin) => new Set(plugin.commands);
       for (const plugin of runtime.boardPlugins()) {
         if (!plugin.events.includes(payload.name) || !pluginAvailable(plugin, config)) continue;
+        const allowed = allowedFor(plugin);
         let result;
         try {
-          result = await runPlugin(plugin, { event: { name: payload.name, fields }, config, deviceId });
+          result = await runPlugin(plugin, {
+            event: { name: payload.name, fields },
+            config,
+            deviceId,
+            send: (command, audio) => enqueue(deviceId, command, allowed, audio),
+          });
         } catch {
           continue;
         }
-        try {
-          commands.push(...commandsFrom(plugin, result, catalog));
-        } catch {
-          continue;
+        for (const command of commandsFrom(plugin, result, catalog)) {
+          try {
+            enqueue(deviceId, command, allowed);
+          } catch (error) {
+            if (error.message === '命令队列已满') break;
+          }
         }
-        if (commands.length >= MAX_COMMANDS) break;
       }
-      return { commands: commands.slice(0, MAX_COMMANDS) };
+      return { accepted: true };
     },
   };
 }

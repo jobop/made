@@ -267,6 +267,9 @@ inline constexpr Entry dictionary[] = {
     {"增大", "Louder"},
     {"静音", "Muted"},
     {"提示音和语音回答都用这个音量", "Chimes and replies use this volume"},
+    {"没有这个助手", "No such assistant"},
+    {"没有这个任务", "No such task"},
+    {"无法播放下发的语音", "Cannot play the delivered voice"},
 };
 inline constexpr size_t dictionary_size = sizeof(dictionary) / sizeof(dictionary[0]);
 }

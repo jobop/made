@@ -76,6 +76,18 @@ test('显式本地模块可加载助手插件，禁用和默认助手验证有�
   await assert.rejects(loadConfiguredPlugins({ ...config, plugins: ['./bad-version.mjs'] }), /apiVersion/);
 });
 
+test('插件目录中的模块无需写入 plugins 配置也会加载', async (t) => {
+  const directory = temporary(t);
+  fs.mkdirSync(path.join(directory, 'plugins'));
+  fs.writeFileSync(path.join(directory, 'plugins', 'dropped-in.mjs'), `export default {
+    apiVersion: 1, kind: 'board-plugin', id: 'dropped_in', label: '丢进来的插件',
+    events: ['boot.click'], commands: ['caption.show'],
+    probe: () => ({ available: true }), onEvent: () => ({ commands: [] })
+  };`);
+  const loaded = await loadConfiguredPlugins({ configDirectory: directory, plugins: [], disabledPlugins: [], defaultProvider: 'codex' });
+  assert.equal(loaded.boardPlugin('dropped_in').label, '丢进来的插件');
+});
+
 test('外部语音插件拒绝加载，包括禁用条目，内置语音接口不能被插件配置禁用', async (t) => {
   const directory = temporary(t);
   fs.writeFileSync(path.join(directory, 'speech.mjs'), `export default {

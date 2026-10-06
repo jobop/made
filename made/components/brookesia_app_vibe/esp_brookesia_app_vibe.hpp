@@ -172,10 +172,18 @@ private:
     void sendHeartbeat();
     void sendAction(PendingAction action);
     bool request(const std::string &path, bool post, std::string &response, int &status,
-                 const std::string &json_body = {});
+                 const std::string &json_body = {}, size_t response_limit = 32 * 1024,
+                 int timeout_ms = 5000);
     void queueBoardEvent(const char *name);
     void announceBoardCatalog();
     void flushBoardEvent();
+    void pullBoardCommands();
+    void applyRemoteCommands();
+    void setVolumeLevel(int level);
+    void selectProviderById(const std::string &id);
+    void selectSessionById(const std::string &id);
+    void queueDeleteSessionId(const std::string &id);
+    void startThemeApply(const std::string &name);
     void setConnectionError(std::string error);
     void queueActionForId(const char *verb, const std::string &task_id);
     void queueSubmittedVoiceCancel(const std::string &task_id);
@@ -230,6 +238,19 @@ private:
     std::string voice_project_id_; // Protected by model_mutex_.
     std::vector<std::string> board_events_; // Protected by model_mutex_. Subscribed event names.
     std::string pending_board_event_; // Protected by model_mutex_. At most one report in flight.
+    struct RemoteCommand {
+        std::string id;
+        std::string name;
+        std::string text;
+        std::string target;
+        std::string direction;
+        std::string level;
+        std::string theme;
+        std::string audio;
+    };
+    std::vector<RemoteCommand> inbound_commands_; // Protected by model_mutex_.
+    std::vector<std::string> delivered_command_ids_; // Worker only.
+    std::vector<std::string> ack_retry_; // Worker only.
     bool board_catalog_sent_ = false; // Worker only; cleared when the catalog is invalidated.
     std::vector<vibe_provider::Provider> providers_; // Protected by model_mutex_; starts empty.
     std::string catalog_identity_; // Protected by model_mutex_; URL + authenticated token.

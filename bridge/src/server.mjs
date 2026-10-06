@@ -21,6 +21,7 @@ import { TunnelManager } from './tunnel.mjs';
 import { UsbReceiver, USB_DIRECT_AUTHORITY, USB_RECEIVER_AUTHORITY } from './usb-receiver.mjs';
 
 import { createPluginRegistry, loadConfiguredPlugins } from './plugins/registry.mjs';
+import { listInstalled, removePlugin, removeTheme, setPluginEnabled, themeExists } from './installed.mjs';
 import { createBoardLink } from './board-link.mjs';
 import { initializeSpeechSettings, saveSpeechSettings } from './speech-settings.mjs';
 import { builtinSpeechRecognizers } from './speech/index.mjs';
@@ -287,6 +288,8 @@ export function createApp(config, { run, transcribe, tunnel: providedTunnel, ena
         '/': ['index.html', 'text/html; charset=utf-8'],
         '/assistants.html': ['assistants.html', 'text/html; charset=utf-8'],
         '/tasks.html': ['tasks.html', 'text/html; charset=utf-8'],
+        '/plugins.html': ['plugins.html', 'text/html; charset=utf-8'],
+        '/plugins.js': ['plugins.js', 'text/javascript; charset=utf-8'],
         '/styles.css': ['styles.css', 'text/css; charset=utf-8'],
         '/app.js': ['app.js', 'text/javascript; charset=utf-8'],
         '/provider-icon.js': ['provider-icon.js', 'text/javascript; charset=utf-8'],
@@ -307,6 +310,10 @@ export function createApp(config, { run, transcribe, tunnel: providedTunnel, ena
       }
       if (req.method === 'GET' && url.pathname === '/api/session') {
         send(res, 200, { token: sessionToken });
+        return;
+      }
+      if (req.method === 'GET' && url.pathname === '/api/installed') {
+        send(res, 200, await listInstalled(config), false);
         return;
       }
       if (req.method === 'GET' && url.pathname === '/api/state') {
@@ -420,7 +427,74 @@ export function createApp(config, { run, transcribe, tunnel: providedTunnel, ena
         }
         const pairRemove = url.pathname.match(/^\/api\/pair\/([0-9a-f]{12})\/remove$/);
         if (pairRemove) {
-          send(res, 200, pairing.remove(pairRemove[1]));
+          const removed = pairing.remove(pairRemove[1]);
+          boardLink.forget(pairRemove[1]);
+          send(res, 200, removed);
+          return;
+        }
+        if (url.pathname === '/api/plugins/enabled') {
+          const payload = await body(req);
+          if (!payload || typeof payload !== 'object' || typeof payload.enabled !== 'boolean' || typeof payload.id !== 'string') {
+            throw new Error('插件设置无效');
+          }
+          send(res, 200, await setPluginEnabled(config, payload.id, payload.enabled), false);
+          return;
+        }
+        if (url.pathname === '/api/plugins/remove') {
+          const payload = await body(req);
+          send(res, 200, await removePlugin(config, {
+            id: typeof payload?.id === 'string' ? payload.id : '',
+            file: typeof payload?.file === 'string' ? payload.file : '',
+          }), false);
+          return;
+        }
+        const themeRemove = url.pathname.match(/^\/api\/themes\/([A-Za-z0-9_-]{1,64})\/remove$/);
+        if (themeRemove) {
+          send(res, 200, { themes: removeTheme(config, themeRemove[1]) }, false);
+          return;
+        }
+        const themeApply = url.pathname.match(/^\/api\/themes\/([A-Za-z0-9_-]{1,64})\/apply$/);
+        if (themeApply) {
+          if (!themeExists(config, themeApply[1])) throw new Error('主题不存在');
+          const paired = pairing.summary().paired;
+          if (!paired.length) throw new Error('没有已配对的码得');
+          let applied = 0;
+          const failures = [];
+          for (const device of paired) {
+            try {
+              boardLink.send(device.deviceId, { name: 'theme.apply', fields: { name: themeApply[1] } });
+              applied += 1;
+            } catch (error) {
+              failures.push(error.message);
+            }
+          }
+          if (!applied) throw new Error(failures[0] || '主题未能下发');
+          send(res, 200, { applied, failed: failures.length }, false);
+          return;
+        }
+        if (url.pathname === '/api/board/commands') {
+          const wav = String(req.headers['content-type'] || '').startsWith('audio/wav');
+          const deviceId = wav ? url.searchParams.get('deviceId') : '';
+          if (wav) {
+            if (typeof deviceId !== 'string' || !/^[0-9a-f]{12}$/.test(deviceId) || !pairing.paired.has(deviceId)) {
+              throw new Error('设备未配对');
+            }
+            let audio;
+            try {
+              audio = await binaryBody(req, 256 * 1024);
+            } catch (error) {
+              if (error.message === '录音超过 30 秒上限') throw new Error('语音超过 256KB');
+              throw error;
+            }
+            send(res, 200, { command: boardLink.send(deviceId, { name: 'audio.play' }, audio) });
+            return;
+          }
+          const payload = await body(req);
+          const named = payload && typeof payload === 'object' && !Array.isArray(payload) ? payload.deviceId : '';
+          if (typeof named !== 'string' || !/^[0-9a-f]{12}$/.test(named) || !pairing.paired.has(named)) {
+            throw new Error('设备未配对');
+          }
+          send(res, 200, { command: boardLink.send(named, { name: payload.name, fields: payload.fields }) });
           return;
         }
         const pairAction = url.pathname.match(/^\/api\/pair\/([0-9a-f]{12})\/(confirm|reject)$/);
@@ -575,11 +649,37 @@ export function createApp(config, { run, transcribe, tunnel: providedTunnel, ena
       const deviceId = pairing.deviceIdForToken(token);
       if (req.method === 'POST' && url.pathname === '/device/capabilities') {
         boardLink.setCatalog(deviceId, await body(req));
+        boardLink.connect(deviceId, config.pluginsRuntime, config);
         deviceSend(res, 200, { events: boardLink.subscription(deviceId, config.pluginsRuntime, config) });
         return;
       }
       if (req.method === 'POST' && url.pathname === '/device/events') {
-        deviceSend(res, 200, await boardLink.handleEvent(deviceId, await body(req), config.pluginsRuntime, config));
+        await boardLink.handleEvent(deviceId, await body(req), config.pluginsRuntime, config);
+        deviceSend(res, 200, { accepted: true });
+        return;
+      }
+      if (req.method === 'GET' && url.pathname === '/device/commands') {
+        deviceSend(res, 200, { commands: boardLink.pending(deviceId) });
+        return;
+      }
+      const commandAudio = req.method === 'GET' && url.pathname.match(/^\/device\/commands\/([1-9][0-9]{0,15})\/audio$/);
+      if (commandAudio) {
+        const wav = boardLink.audio(deviceId, commandAudio[1]);
+        if (!wav) {
+          deviceSend(res, 404, { error: '语音不存在' });
+          return;
+        }
+        res.writeHead(200, {
+          'Content-Type': 'audio/wav',
+          'Content-Length': wav.length,
+          'Cache-Control': 'no-store',
+          'X-Content-Type-Options': 'nosniff',
+        });
+        res.end(wav);
+        return;
+      }
+      if (req.method === 'POST' && url.pathname === '/device/commands/ack') {
+        deviceSend(res, 200, boardLink.ack(deviceId, await body(req)));
         return;
       }
       if (req.method === 'GET' && url.pathname === '/device/tasks') {
