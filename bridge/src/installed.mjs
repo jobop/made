@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { pathToFileURL } from 'node:url';
+import { BUILTIN_ROOT, packageRoots, packagesHome } from './config.mjs';
 import { loadConfiguredPlugins, validatePlugin } from './plugins/registry.mjs';
 import { isPackageEntry, packageDirectories, readPackageSettings, writePackageSettings } from './plugin-package.mjs';
 
@@ -14,12 +15,24 @@ const fail = (message) => {
   return error;
 };
 
+/** 用户插件目录：市场装到这里，工作台也只允许从这里移除。 */
 function pluginsDir(config) {
-  return path.join(config.configDirectory, 'plugins');
+  return path.join(packagesHome(config), 'plugins');
 }
 
+/** 用户主题目录：同上。 */
 function themesDir(config) {
-  return path.join(config.configDirectory, 'themes');
+  return path.join(packagesHome(config), 'themes');
+}
+
+/** 插件查找顺序：内置在前、用户目录在后（同名时用户目录覆盖内置）。 */
+function pluginsDirs(config) {
+  return packageRoots(config).map((root) => path.join(root, 'plugins'));
+}
+
+/** 主题查找顺序：同上。 */
+function themesDirs(config) {
+  return packageRoots(config).map((root) => path.join(root, 'themes'));
 }
 
 function contained(root, target) {
@@ -31,16 +44,22 @@ function contained(root, target) {
 }
 
 function moduleFiles(config) {
-  const directory = pluginsDir(config);
-  if (!fs.existsSync(directory) || !fs.statSync(directory).isDirectory()) return [];
-  const packages = packageDirectories(directory).map((item) => item.entry).filter((filename) => contained(directory, filename));
-  const loose = fs.readdirSync(directory).sort().flatMap((name) => {
-    if (!MODULE_NAME.test(name)) return [];
-    const filename = path.join(directory, name);
-    if (!fs.statSync(filename).isFile() || !contained(directory, filename)) return [];
-    return [filename];
-  });
-  return [...packages, ...loose];
+  // 同名条目以用户目录为准：内置在前，后写入的覆盖前面的。
+  const found = new Map();
+  for (const directory of pluginsDirs(config)) {
+    if (!fs.existsSync(directory) || !fs.statSync(directory).isDirectory()) continue;
+    for (const item of packageDirectories(directory)) {
+      if (!contained(directory, item.entry)) continue;
+      found.set(item.name, item.entry);
+    }
+    for (const name of fs.readdirSync(directory).sort()) {
+      if (!MODULE_NAME.test(name)) continue;
+      const filename = path.join(directory, name);
+      if (!fs.statSync(filename).isFile() || !contained(directory, filename)) continue;
+      found.set(name, filename);
+    }
+  }
+  return [...found.values()];
 }
 
 function displayName(filename) {
@@ -99,32 +118,33 @@ export async function listInstalled(config) {
 }
 
 export function listThemes(config) {
-  const directory = themesDir(config);
-  if (!fs.existsSync(directory) || !fs.statSync(directory).isDirectory()) return [];
-  const themes = [];
-  for (const name of fs.readdirSync(directory).sort()) {
-    if (!THEME_NAME.test(name)) continue;
-    const dir = path.join(directory, name);
-    const manifestPath = path.join(dir, 'theme.json');
-    if (!fs.statSync(dir).isDirectory() || !contained(directory, dir) || !fs.existsSync(manifestPath)) continue;
-    let title = name;
-    try {
-      const raw = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
-      if (typeof raw.title === 'string' && raw.title.trim()) title = raw.title.trim();
-    } catch { /* A broken manifest still shows the folder name. */ }
-    const files = fs.readdirSync(dir).filter((item) => {
-      const file = path.join(dir, item);
-      return /^[A-Za-z0-9_.-]+$/.test(item) && fs.statSync(file).isFile();
-    });
-    themes.push({
-      name,
-      title,
-      sound: files.includes('chime.wav'),
-      icon: files.includes('icon.bin'),
-      background: files.includes('bg.bin'),
-    });
+  const found = new Map();
+  for (const directory of themesDirs(config)) {
+    if (!fs.existsSync(directory) || !fs.statSync(directory).isDirectory()) continue;
+    for (const name of fs.readdirSync(directory).sort()) {
+      if (!THEME_NAME.test(name)) continue;
+      const dir = path.join(directory, name);
+      const manifestPath = path.join(dir, 'theme.json');
+      if (!fs.statSync(dir).isDirectory() || !contained(directory, dir) || !fs.existsSync(manifestPath)) continue;
+      let title = name;
+      try {
+        const raw = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+        if (typeof raw.title === 'string' && raw.title.trim()) title = raw.title.trim();
+      } catch { /* A broken manifest still shows the folder name. */ }
+      const files = fs.readdirSync(dir).filter((item) => {
+        const file = path.join(dir, item);
+        return /^[A-Za-z0-9_.-]+$/.test(item) && fs.statSync(file).isFile();
+      });
+      found.set(name, {
+        name,
+        title,
+        sound: files.includes('chime.wav'),
+        icon: files.includes('icon.bin'),
+        background: files.includes('bg.bin'),
+      });
+    }
   }
-  return themes;
+  return [...found.values()];
 }
 
 function writeConfig(config, mutate) {
@@ -220,7 +240,8 @@ export async function removePlugin(config, { id = '', file = '' } = {}) {
       if (described.some((plugin) => plugin.id === id)) target = candidate;
     }
   }
-  if (!target || !contained(pluginsDir(config), target)) throw fail('插件不存在');
+  if (!target) throw fail('插件不存在');
+  if (!contained(pluginsDir(config), target)) throw fail('内置插件不能移除，只能移除用户目录里的插件');
   target = removalTarget(config, target);
   const described = await describeModule(target, config);
   const ids = described.map((plugin) => plugin.id).filter((item) => PLUGIN_ID.test(item));
@@ -255,7 +276,11 @@ export function removeTheme(config, name) {
   if (!THEME_NAME.test(name || '')) throw fail('主题不存在');
   const directory = themesDir(config);
   const target = path.join(directory, name);
-  if (!fs.existsSync(target) || !fs.statSync(target).isDirectory() || !contained(directory, target)) throw fail('主题不存在');
+  if (!fs.existsSync(target) || !fs.statSync(target).isDirectory() || !contained(directory, target)) {
+    // 用户目录里没有，但内置目录里有：说清楚为什么删不掉。
+    if (fs.existsSync(path.join(BUILTIN_ROOT, 'themes', name, 'theme.json'))) throw fail('内置主题不能移除，只能移除用户目录里的主题');
+    throw fail('主题不存在');
+  }
   if (!fs.existsSync(path.join(target, 'theme.json'))) throw fail('主题不存在');
   fs.rmSync(target, { recursive: true, force: true });
   return listThemes(config);

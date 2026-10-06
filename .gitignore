@@ -22,6 +22,5 @@ receiver/build*/
 # WorkBuddy 工作区数据（会话记忆等）
 .workbuddy/
 
-# 本机安装的桥接插件，由工作台「插件」页管理，不入库
-bridge/plugins/*
-!bridge/plugins/README.md
+# 用户包目录已移出仓库：插件与主题装在 ~/made/{plugins,themes}（可用 MADE_HOME 覆盖），
+# 桥接器启动时自动扫描。随代码发布的内置包在 bridge/builtin/，需要入库。

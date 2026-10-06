@@ -577,8 +577,8 @@ export const staticMessages = {
     "en": "and switched by you."
   },
   "static.145": {
-    "zh-CN": "插件放在 bridge/plugins，主题放在 bridge/themes。插件文件不进入 git。启用和停用会立即生效；替换插件文件内容后，请重启桥接器。",
-    "en": "Plugins live in bridge/plugins and themes in bridge/themes. Plugin files stay out of git. Enabling or disabling takes effect immediately. Restart the bridge after you replace a plugin file."
+    "zh-CN": "插件放在 ~/made/plugins，主题放在 ~/made/themes，桥接器每次启动自动扫描。bridge/builtin 里的内置包跟代码走，同名时 ~/made 覆盖内置。启用和停用会立即生效；替换插件文件内容后，请重启桥接器。",
+    "en": "Plugins live in ~/made/plugins and themes in ~/made/themes; the bridge scans them on every start. Built-in packs under bridge/builtin travel with the code, and ~/made overrides a built-in of the same name. Enabling or disabling takes effect immediately. Restart the bridge after you replace a plugin file."
   },
   "static.146": {
     "zh-CN": "接收码得事件，可以下发命令。停用后不再处理这些事件。",

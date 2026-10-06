@@ -59,7 +59,7 @@
 | `task.confirm` | 可选 `id` | 确认当前屏幕上的任务 |
 | `task.cancel` | 可选 `id` | 取消当前屏幕上的任务 |
 
-`task.confirm` 和 `task.cancel` 不写 `id` 时，作用于当前可见任务。主题名是桥接器 `themes/` 里的目录名。
+`task.confirm` 和 `task.cancel` 不写 `id` 时，作用于当前可见任务。主题名是用户目录 `~/made/themes/` 或内置目录 `bridge/builtin/themes/` 里的目录名。
 
 播放语音时，语音和命令一起入队。码得看到 `audio:true` 后，再 `GET /device/commands/<id>/audio` 取走同一段 WAV 并播放。格式为 16-bit PCM WAV，采样率 8k–48k，单声道或双声道，不超过 256KB。队列里同时只保留一条待播放语音。
 
@@ -82,7 +82,7 @@ curl -X POST http://127.0.0.1:8787/api/board/commands \
 
 - `made/`：**码得固件**。从微雪 1.85B 官方 Brookesia 示例出发，保留本板 360×360 桌面与 BSP；桌面仅注册小智、码得与 Settings（设置）。SquareLine Demo、准星、重力球、天气、相册、画画和计算器均不在当前桌面中；部分组件源码仍保留。`made/release/` 提供烧录文件；移植范围和限制见子目录的 `PORTING.md`。
 - `receiver/`：**可选的第二块 ESP32-S3 / ESP32-C3 接收端**。它建立独立热点，让码得绕开公司 Wi-Fi；接收端经 USB 将码得的配对、语音和任务请求转给电脑桥接器。`receiver/release/` 对应 S3 原生 USB，`receiver/release-esp32c3/` 对应 C3 板载 WCH 转 UART0。
-- `bridge/`：**电脑桥接器**。`src/` 是可运行的客户端，包含独立语音识别入口、任务会话与内部对话记录、Codex/Cursor/Qoder 命令行适配器、WorkBuddy Open API 转交适配器、状态持久化、确认与取消接口。`public/` 是电脑工作台，入口是“大盘、助手、任务、插件”。`plugins/`、`themes/`、`examples/` 仍留在桥接器里，由桥接器加载，不拆进市场。`demo-project/` 是可以安全试用的演示 Git 仓库。
+- `bridge/`：**电脑桥接器**。`src/` 是可运行的客户端，包含独立语音识别入口、任务会话与内部对话记录、Codex/Cursor/Qoder 命令行适配器、WorkBuddy Open API 转交适配器、状态持久化、确认与取消接口。`public/` 是电脑工作台，入口是“大盘、助手、任务、插件”。插件与主题装在固定的用户目录 `~/made/plugins/`、`~/made/themes/`（可用 `MADE_HOME` 覆盖），桥接器启动时自动扫描；随代码发布的内置包在 `bridge/builtin/`，同名时用户目录覆盖内置。`examples/` 也在桥接器里。市场只发包，不代替这个运行目录。`demo-project/` 是可以安全试用的演示 Git 仓库。
 - `plugin-market/`：插件包管理。登记和分发主题、管控、agent 运行时三类包，本身不执行。
 - `expert-market/`：专家包管理。登记和分发注入到 agent 的人格，本身不执行。
 - `3d-model/`：码得外壳的 3D 打印模型。源文件、STL、3MF 和预览图都在这里。

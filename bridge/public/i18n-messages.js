@@ -942,7 +942,7 @@ export const messages = {
   "plug.008": { "zh-CN": "移除", "en": "Remove" },
   "plug.009": { "zh-CN": "应用到码得", "en": "Apply to made" },
   "plug.010": { "zh-CN": "删除", "en": "Delete" },
-  "plug.011": { "zh-CN": "插件目录里还没有插件。把 .mjs 文件放进 bridge/plugins 后点刷新。", "en": "The plugins folder is empty. Put an .mjs file in bridge/plugins and refresh." },
+  "plug.011": { "zh-CN": "插件目录里还没有插件。把 .mjs 文件放进 ~/made/plugins 后点刷新。", "en": "The plugins folder is empty. Put an .mjs file in ~/made/plugins and refresh." },
   "plug.029": { "zh-CN": "还没有管控插件。", "en": "No board plugins yet." },
   "plug.030": { "zh-CN": "还没有助手插件。", "en": "No assistant plugins yet." },
   "plug.012": { "zh-CN": "主题目录里还没有主题。", "en": "The themes folder is empty." },

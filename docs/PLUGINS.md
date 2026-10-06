@@ -14,7 +14,7 @@
 }
 ```
 
-路径相对配置文件解析。支持 `.mjs`、`.js` 的 default export：单个插件对象或插件数组。`bridge/plugins/` 里的插件目录和单文件也会自动加载。不自动下载或安装依赖。插件是本机 JavaScript，拥有桥接器进程的权限，因此只加载你信任的代码。安装变更需重启电脑桥接器，不需再次配对。
+路径相对配置文件解析。支持 `.mjs`、`.js` 的 default export：单个插件对象或插件数组。`~/made/plugins/` 里的插件目录和单文件无需登记也会自动加载。不自动下载或安装依赖。插件是本机 JavaScript，拥有桥接器进程的权限，因此只加载你信任的代码。安装变更需重启电脑桥接器，不需再次配对。
 
 示例 `echo-example` 仅回显文字和上一句，用于验证新助手、持久上下文、进度和取消，不执行编程任务。
 
@@ -22,7 +22,9 @@
 
 ## 编程助手
 
-完整接口见 `bridge/src/plugins/contracts.d.ts`，内置实现在 `bridge/src/agents/`。已安装的外部插件留在 `bridge/plugins/`，由桥接器自动加载，并在工作台「插件」页启用、停用或移除。这个目录里的插件文件不进入 git。主题包在 `bridge/themes/`，同一页管理，波波主题也在其中。插件市场只负责发包，不代替这个运行目录。
+完整接口见 `bridge/src/plugins/contracts.d.ts`，内置实现在 `bridge/src/agents/`。
+
+外部插件装在固定目录 `~/made/plugins/`（可用 `MADE_HOME` 环境变量或配置里的 `madeHome` 改到别处），桥接器启动时自动扫描，并在工作台「插件」页启用、停用或移除；移除只作用于这个用户目录。随代码发布的内置插件放在 `bridge/builtin/plugins/`，主题在 `bridge/builtin/themes/`，同名时用户目录覆盖内置，内置包不能被工作台移除。插件市场只负责发包，不代替这个运行目录。
 
 必填元数据：`apiVersion: 1`、`kind: 'coding-agent'`、唯一 `id`、`label`、`capabilities`。ID 为 1–40 个小写字母、数字、下划线、连字符（首字符字母或数字）。名称至多 64 UTF-8 字节。所有插件共享 ID 命名空间。
 
@@ -48,7 +50,7 @@
 
 ## 插件配置规范
 
-一个可发行的插件是一个目录，桥接器从 `bridge/plugins/<名字>/` 加载：
+一个可发行的插件是一个目录，桥接器从 `~/made/plugins/<名字>/` 加载：
 
 ```
 alarm-clock/

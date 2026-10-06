@@ -25,6 +25,8 @@ function fixture(t) {
   fs.writeFileSync(path.join(pkg, 'settings.json'), JSON.stringify({ demoSeconds: '45' }));
   const config = {
     configDirectory: directory,
+    // 用户包目录固定为 ~/made，测试里指向临时目录。
+    madeHome: directory,
     configFile: path.join(directory, 'config.local.json'),
     plugins: [],
     disabledPlugins: [],

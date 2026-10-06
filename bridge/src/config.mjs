@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import os from 'node:os';
 import { loadLanguageSettings } from './language-settings.mjs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -8,6 +9,28 @@ import { DEFAULT_TRANSCRIBE_MODEL, DEFAULT_TRANSCRIBE_URL, loadVoiceSettings, va
 
 export const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const PLUGIN_ID = /^[a-z0-9][a-z0-9_-]{0,39}$/;
+
+/** 随代码发布的内置包目录：bridge/builtin/{plugins,themes}。升级代码即升级内置包。 */
+export const BUILTIN_ROOT = path.join(ROOT, 'builtin');
+
+/**
+ * 用户包目录根：默认 ~/made，可用 MADE_HOME 环境变量或配置里的 madeHome 覆盖。
+ *
+ * 这是一个固定位置，不跟着配置文件走：市场把包装到 <root>/plugins 与 <root>/themes，
+ * 桥接器每次启动自动扫描，换一个工作目录也不需要重新安装。
+ */
+export function packagesHome(config = {}) {
+  return path.resolve(config.madeHome || process.env.MADE_HOME || path.join(os.homedir(), 'made'));
+}
+
+/**
+ * 包目录的查找顺序：内置在前、用户目录在后，同名时用户目录覆盖内置。
+ *
+ * 内置目录只读，移除与改配置只作用于用户目录。
+ */
+export function packageRoots(config = {}) {
+  return [BUILTIN_ROOT, packagesHome(config)];
+}
 
 export function loadConfig(env = process.env) {
   const configPath = path.resolve(env.VIBE_CONFIG || path.join(ROOT, 'config.local.json'));
@@ -53,6 +76,7 @@ export function loadConfig(env = process.env) {
   const asrMode = env.VIBE_ASR_MODE || 'openai';
   if (!PLUGIN_ID.test(asrMode)) throw new Error('VIBE_ASR_MODE 必须是语音插件 ID');
   if (raw.plugins !== undefined && (!Array.isArray(raw.plugins) || raw.plugins.some(p => typeof p !== 'string'))) throw new Error('plugins 必须是本地模块路径数组');
+  if (raw.madeHome !== undefined && (typeof raw.madeHome !== 'string' || !raw.madeHome.trim())) throw new Error('madeHome 必须是非空字符串');
   if (raw.disabledPlugins !== undefined && (!Array.isArray(raw.disabledPlugins) || raw.disabledPlugins.some(p => !PLUGIN_ID.test(p)))) throw new Error('disabledPlugins 必须是插件 ID 数组');
   if (raw.pluginSettings !== undefined && (!raw.pluginSettings || typeof raw.pluginSettings !== 'object' || Array.isArray(raw.pluginSettings))) throw new Error('pluginSettings 必须是对象');
   const savedVoiceSettings = loadVoiceSettings(stateDir);
@@ -60,6 +84,7 @@ export function loadConfig(env = process.env) {
   const savedOpenaiKey = loadOpenAIKey(stateDir);
   return {
     configDirectory: base,
+    madeHome: packagesHome({ madeHome: env.MADE_HOME || raw.madeHome }),
     locale: loadLanguageSettings(stateDir, raw.locale ?? 'zh-CN'),
     plugins: raw.plugins || [],
     disabledPlugins: raw.disabledPlugins || [],

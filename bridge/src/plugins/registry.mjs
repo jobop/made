@@ -1,6 +1,7 @@
 import { pathToFileURL } from 'node:url';
 import path from 'node:path';
 import fs from 'node:fs';
+import { packageRoots } from '../config.mjs';
 import { isPackageEntry, packageDirectories, readPackageSettings } from '../plugin-package.mjs';
 import { MODEL_ID } from '../model-settings.mjs';
 import { builtinAgents } from '../agents/index.mjs';
@@ -115,20 +116,25 @@ export async function loadConfiguredPlugins(config) {
     explicitPaths.add(fs.realpathSync(filename));
     await loadFile(filename, entry);
   }
-  const pluginsDir = path.join(config.configDirectory || process.cwd(), 'plugins');
-  if (fs.existsSync(pluginsDir) && fs.statSync(pluginsDir).isDirectory()) {
+  // 扫内置 bridge/builtin/plugins 与用户 ~/made/plugins：同名条目用户目录覆盖内置。
+  const scanned = new Map();
+  for (const root of packageRoots(config)) {
+    const pluginsDir = path.join(root, 'plugins');
+    if (!fs.existsSync(pluginsDir) || !fs.statSync(pluginsDir).isDirectory()) continue;
     for (const item of packageDirectories(pluginsDir)) {
-      if (explicitPaths.has(fs.realpathSync(item.entry))) continue;
-      explicitPaths.add(fs.realpathSync(item.entry));
-      await loadFile(item.entry, `./plugins/${item.name}/${path.basename(item.entry)}`);
+      scanned.set(item.name, { filename: item.entry, label: `./plugins/${item.name}/${path.basename(item.entry)}` });
     }
     for (const name of fs.readdirSync(pluginsDir).sort()) {
       if (!/\.(mjs|js)$/.test(name)) continue;
       const filename = path.join(pluginsDir, name);
       if (!fs.statSync(filename).isFile()) continue;
-      if (explicitPaths.has(fs.realpathSync(filename))) continue;
-      await loadFile(filename, `./plugins/${name}`);
+      scanned.set(name, { filename, label: `./plugins/${name}` });
     }
+  }
+  for (const { filename, label } of scanned.values()) {
+    if (explicitPaths.has(fs.realpathSync(filename))) continue;
+    explicitPaths.add(fs.realpathSync(filename));
+    await loadFile(filename, label);
   }
   const registry = createPluginRegistry(plugins);
   if (!registry.hasAgent(config.defaultProvider)) throw new Error('默认编程助手未安装或已禁用');

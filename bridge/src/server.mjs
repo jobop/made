@@ -6,7 +6,7 @@ import os from 'node:os';
 import { isIP } from 'node:net';
 import { randomUUID, timingSafeEqual } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
-import { loadConfig, ROOT } from './config.mjs';
+import { loadConfig, packageRoots, ROOT } from './config.mjs';
 import { JobStore } from './jobs.mjs';
 import { VIBE_SESSION_ID } from './sessions.mjs';
 import { createRunner, providerStates, isBuiltinAgent } from './providers.mjs';
@@ -147,6 +147,36 @@ function publicModels(config) {
   return Object.fromEntries(config.pluginsRuntime.agents().map(plugin => [plugin.id,
     plugin.capabilities.model ? (config.models?.[plugin.id] ?? (plugin.id === 'codex' ? config.codexModel : undefined) ?? plugin.model?.default ?? '') : null,
   ]));
+}
+
+/**
+ * 设备能取到的主题：内置 bridge/builtin/themes 与用户 ~/made/themes，同名时用户目录覆盖内置。
+ * 返回 name → 目录的映射，目录里一定有 theme.json。
+ */
+function themeDirectories(config) {
+  const found = new Map();
+  for (const root of packageRoots(config)) {
+    const themesRoot = path.join(root, 'themes');
+    let entries = [];
+    try {
+      entries = fs.readdirSync(themesRoot, { withFileTypes: true });
+    } catch { continue; /* 目录还不存在 */ }
+    for (const entry of entries) {
+      if (!entry.isDirectory() || !/^[A-Za-z0-9_-]{1,64}$/.test(entry.name)) continue;
+      const dir = path.join(themesRoot, entry.name);
+      if (!fs.existsSync(path.join(dir, 'theme.json'))) continue;
+      found.set(entry.name, dir);
+    }
+  }
+  return found;
+}
+
+function themeTitle(dir, name) {
+  try {
+    const title = JSON.parse(fs.readFileSync(path.join(dir, 'theme.json'), 'utf8')).title;
+    if (typeof title === 'string' && title.trim()) return title;
+  } catch { /* 清单坏了就退回目录名 */ }
+  return name;
 }
 
 function listenServer(server, port, host) {
@@ -556,20 +586,9 @@ export function createApp(config, { run, transcribe, tunnel: providedTunnel, ena
       }
       // ---- 主题包（themes/<名字>/theme.json + 可选资产文件）----
       if (req.method === 'GET' && url.pathname === '/api/themes') {
-        const themesDir = path.join(ROOT, 'themes');
-        const out = [];
-        try {
-          for (const entry of fs.readdirSync(themesDir, { withFileTypes: true })) {
-            if (!entry.isDirectory()) continue;
-            const manifestPath = path.join(themesDir, entry.name, 'theme.json');
-            if (!fs.existsSync(manifestPath)) continue;
-            let title = entry.name;
-            try {
-              title = JSON.parse(fs.readFileSync(manifestPath, 'utf8')).title || title;
-            } catch {}
-            out.push({ name: entry.name, title });
-          }
-        } catch {}
+        const out = [...themeDirectories(config)]
+          .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+          .map(([name, dir]) => ({ name, title: themeTitle(dir, name) }));
         deviceSend(res, 200, out, false);
         return;
       }
@@ -581,20 +600,15 @@ export function createApp(config, { run, transcribe, tunnel: providedTunnel, ena
           deviceSend(res, 400, { error: '主题名无效' });
           return;
         }
-        const dir = path.join(ROOT, 'themes', name);
-        const manifestPath = path.join(dir, 'theme.json');
-        if (!fs.existsSync(manifestPath)) {
+        const dir = themeDirectories(config).get(name);
+        if (!dir) {
           deviceSend(res, 404, { error: '主题不存在' });
           return;
         }
-        let title = name;
-        try {
-          title = JSON.parse(fs.readFileSync(manifestPath, 'utf8')).title || title;
-        } catch {}
         const files = fs
           .readdirSync(dir)
           .filter((f) => fs.statSync(path.join(dir, f)).isFile());
-        deviceSend(res, 200, { name, title, files }, false);
+        deviceSend(res, 200, { name, title: themeTitle(dir, name), files }, false);
         return;
       }
       const themeFileMatch =
@@ -606,7 +620,8 @@ export function createApp(config, { run, transcribe, tunnel: providedTunnel, ena
           deviceSend(res, 400, { error: '主题名无效' });
           return;
         }
-        const filePath = path.join(ROOT, 'themes', themeName, themeFile);
+        const themeDir = themeDirectories(config).get(themeName);
+        const filePath = themeDir ? path.join(themeDir, themeFile) : '';
         if (!fs.existsSync(filePath) || !fs.statSync(filePath).isFile()) {
           deviceSend(res, 404, { error: '文件不存在' });
           return;

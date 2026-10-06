@@ -65,7 +65,7 @@ test('显式本地模块可加载助手插件，禁用和默认助手验证有�
       capabilities: {session:'native', model:true, cancel:true, progress:true}, model:{default:'test',required:false},
       probe:()=>({available:true}), run:async()=>({status:'completed',result:'测试'}) }
   ];`);
-  const config = { configDirectory: directory, plugins: ['./extension.mjs'], disabledPlugins: ['codex', 'cursor', 'qoder', 'workbuddy'], defaultProvider: 'community_agent' };
+  const config = { configDirectory: directory, madeHome: directory, plugins: ['./extension.mjs'], disabledPlugins: ['codex', 'cursor', 'qoder', 'workbuddy'], defaultProvider: 'community_agent' };
   const loaded = await loadConfiguredPlugins(config);
   assert.deepEqual(loaded.agents().map(p => p.id), ['community_agent']);
   assert.deepEqual(loaded.speechRecognizers().map(p => p.id), ['openai', 'whisper', 'off']);
@@ -76,7 +76,7 @@ test('显式本地模块可加载助手插件，禁用和默认助手验证有�
   await assert.rejects(loadConfiguredPlugins({ ...config, plugins: ['./bad-version.mjs'] }), /apiVersion/);
 });
 
-test('插件目录中的模块无需写入 plugins 配置也会加载', async (t) => {
+test('用户插件目录中的模块无需写入 plugins 配置也会加载', async (t) => {
   const directory = temporary(t);
   fs.mkdirSync(path.join(directory, 'plugins'));
   fs.writeFileSync(path.join(directory, 'plugins', 'dropped-in.mjs'), `export default {
@@ -84,7 +84,7 @@ test('插件目录中的模块无需写入 plugins 配置也会加载', async (t
     events: ['boot.click'], commands: ['caption.show'],
     probe: () => ({ available: true }), onEvent: () => ({ commands: [] })
   };`);
-  const loaded = await loadConfiguredPlugins({ configDirectory: directory, plugins: [], disabledPlugins: [], defaultProvider: 'codex' });
+  const loaded = await loadConfiguredPlugins({ configDirectory: directory, madeHome: directory, plugins: [], disabledPlugins: [], defaultProvider: 'codex' });
   assert.equal(loaded.boardPlugin('dropped_in').label, '丢进来的插件');
 });
 
@@ -94,7 +94,7 @@ test('外部语音插件拒绝加载，包括禁用条目，内置语音接口�
     apiVersion:1, kind:'speech-recognizer', id:'community_speech', label:'社区语音', fields:[],
     probe:()=>({available:true}), transcribe:async()=> '转写'
   };`);
-  const config = { configDirectory: directory, plugins: ['./speech.mjs'], defaultProvider: 'codex' };
+  const config = { configDirectory: directory, madeHome: directory, plugins: ['./speech.mjs'], defaultProvider: 'codex' };
   await assert.rejects(loadConfiguredPlugins(config), /外部插件仅支持 coding-agent.*URL.*API Key.*模型名/);
   await assert.rejects(loadConfiguredPlugins({ ...config, disabledPlugins: ['community_speech'] }), /外部插件仅支持 coding-agent/);
   for (const id of ['openai', 'whisper', 'off']) {
@@ -141,7 +141,7 @@ test('本地模块助手贯通圆屏配置、会话接口、模型保存和后�
   };`);
   const configPath = path.join(directory, 'config.json');
   fs.writeFileSync(configPath, JSON.stringify({ projects: [{ id: 'demo', label: '项目'.repeat(20000), path: directory }, { id: 'other', path: directory }], defaultProvider: '9_community', plugins: ['./community.mjs'], disabledPlugins: ['codex', 'cursor', 'qoder', 'workbuddy'] }));
-  const env = { VIBE_CONFIG: configPath, VIBE_STATE_DIR: path.join(directory, 'state'), VIBE_ASR_MODE: 'off' };
+  const env = { VIBE_CONFIG: configPath, VIBE_STATE_DIR: path.join(directory, 'state'), VIBE_ASR_MODE: 'off', MADE_HOME: path.join(directory, 'made-home') };
   const config = loadConfig(env);
   config.pluginsRuntime = await loadConfiguredPlugins(config);
   config.port = await freeTcpPort();
