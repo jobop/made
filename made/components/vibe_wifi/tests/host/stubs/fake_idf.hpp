@@ -20,8 +20,13 @@ inline constexpr char WIFI_EVENT[] = "wifi", IP_EVENT[] = "ip";
 constexpr int ESP_EVENT_ANY_ID = -1, WIFI_EVENT_STA_START = 1, WIFI_EVENT_STA_DISCONNECTED = 2;
 constexpr int WIFI_EVENT_SCAN_DONE = 3, WIFI_EVENT_STA_STOP = 4, IP_EVENT_STA_GOT_IP = 1, IP_EVENT_STA_LOST_IP = 2;
 using Handler = void (*)(void*, esp_event_base_t, int32_t, void*);
+struct wifi_event_sta_disconnected_t { uint8_t reason = 0; };
 struct wifi_config_t {
-    struct { uint8_t ssid[32]{}; uint8_t password[64]{}; } sta;
+    struct {
+        uint8_t ssid[32]{}; uint8_t password[64]{};
+        struct { int authmode = 0; } threshold;
+        struct { bool capable = false; bool required = false; } pmf_cfg;
+    } sta;
     struct {
         uint8_t ssid[32]{}; uint8_t password[64]{}; uint8_t ssid_len = 0;
         uint8_t channel = 0, max_connection = 0; int authmode = 0;
@@ -32,7 +37,7 @@ struct wifi_init_config_t {};
 #define WIFI_INIT_CONFIG_DEFAULT() wifi_init_config_t{}
 enum wifi_mode_t { WIFI_MODE_NULL, WIFI_MODE_AP, WIFI_MODE_STA, WIFI_MODE_APSTA };
 constexpr int WIFI_STORAGE_FLASH = 0, WIFI_STORAGE_RAM = 1, WIFI_IF_STA = 0, WIFI_IF_AP = 1;
-constexpr int WIFI_SCAN_TYPE_ACTIVE = 0, WIFI_AUTH_WPA2_PSK = 3;
+constexpr int WIFI_SCAN_TYPE_ACTIVE = 0, WIFI_AUTH_OPEN = 0, WIFI_AUTH_WPA2_PSK = 3;
 struct esp_ip4_addr_t { uint32_t addr = 0; };
 struct esp_netif_ip_info_t { esp_ip4_addr_t ip, gw, netmask; };
 struct esp_netif_dns_info_t { struct { int type = 0; struct { esp_ip4_addr_t ip4; } u_addr; } ip; };
@@ -47,7 +52,7 @@ struct esp_netif_t {
 };
 #define ESP_IP4TOADDR(a,b,c,d) ((uint32_t(a) << 24) | (uint32_t(b) << 16) | (uint32_t(c) << 8) | uint32_t(d))
 struct wifi_scan_config_t { bool show_hidden = false; uint8_t channel = 0; int scan_type = 0; };
-struct wifi_ap_record_t { uint8_t ssid[33]{}; int8_t rssi = 0; };
+struct wifi_ap_record_t { uint8_t ssid[33]{}; int8_t rssi = 0; int authmode = WIFI_AUTH_WPA2_PSK; };
 struct wifi_event_sta_scan_done_t { uint32_t status = 0; uint8_t number = 0; uint8_t scan_id = 0; };
 struct esp_timer_create_args_t { void (*callback)(void*); void* arg; int dispatch_method; const char* name; };
 using esp_timer_handle_t = void*;
@@ -176,5 +181,11 @@ inline int nvs_get_str(int, const char* key, char* out, size_t* size) {
     std::memcpy(out, item->second.c_str(), item->second.size() + 1); return ESP_OK;
 }
 inline int nvs_set_str(int, const char* key, const char* value) { fake::nvs[key] = value; return ESP_OK; }
+inline int nvs_set_u8(int, const char* key, uint8_t value) { fake::nvs[key] = value ? "1" : "0"; return ESP_OK; }
+inline int nvs_get_u8(int, const char* key, uint8_t* value) {
+    const auto item = fake::nvs.find(key);
+    if (item == fake::nvs.end() || item->second.empty()) return ESP_ERR_NOT_FOUND;
+    *value = item->second[0] == '1' ? 1 : 0; return ESP_OK;
+}
 inline int nvs_commit(int) { return ESP_OK; }
 inline void nvs_close(int) {}

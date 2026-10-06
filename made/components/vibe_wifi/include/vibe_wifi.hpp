@@ -27,6 +27,10 @@ bool receiver_ssid(char* out, size_t capacity);
 esp_err_t connect_receiver();
 esp_err_t restore_station();
 bool receiver_active();
+// True after the user joins a network from 网络设置, until they explicitly
+// connect the receiver hotspot again.
+bool station_held();
+int disconnect_reason();
 
 enum class ReceiverScanState { Idle, Scanning, Done, Failed };
 

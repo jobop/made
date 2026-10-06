@@ -885,7 +885,7 @@ esp_err_t bsp_display_new(const bsp_display_config_t *config, esp_lcd_panel_hand
     uint16_t *strip = heap_caps_malloc(BSP_LCD_H_RES * 20 * sizeof(uint16_t), MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);
     if (strip != NULL) {
         for (int i = 0; i < BSP_LCD_H_RES * 20; ++i) {
-            strip[i] = 0xFFFF;
+            strip[i] = 0x0000;
         }
         for (int y = 0; y < BSP_LCD_V_RES; y += 20) {
             esp_lcd_panel_draw_bitmap(*ret_panel, 0, y, BSP_LCD_H_RES, y + 20, strip);

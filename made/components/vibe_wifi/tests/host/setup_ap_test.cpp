@@ -96,6 +96,11 @@ int main() {
     assert(restore_station() == ESP_OK && !receiver_active());
     assert(std::memcmp(&station, &fake::config, sizeof(station)) == 0);
     assert(fake::storage == WIFI_STORAGE_FLASH && fake::persistent_writes == persistent_writes);
+    assert(connect_receiver() == ESP_OK && receiver_active() && !station_held());
+    assert(save_credentials("Home", "home-pass") == ESP_OK && !receiver_active() && station_held());
+    assert(fake::storage == WIFI_STORAGE_FLASH);
+    assert(std::strcmp(reinterpret_cast<const char*>(fake::config.sta.ssid), "Home") == 0);
+    assert(fake::nvs["ssid"] == "Home");
     fake::ap_exists = false;
     fake::simulate_netif_events = true;
     assert(start_setup_ap(repeated) == ESP_OK);

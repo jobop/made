@@ -35,6 +35,8 @@ std::mutex setup_mutex;
 wifi_config_t previous_station = {};
 bool previous_had_credentials = false;
 std::atomic<bool> using_receiver{false};
+std::atomic<bool> station_hold{false};
+int last_disconnect_reason = 0;
 // station_mutex protects scan ownership and snapshots as well as driver
 // connection changes. Only the retry gate is read without that mutex.
 std::atomic<bool> receiver_scan_in_flight{false};
@@ -75,6 +77,9 @@ void fillConfig(wifi_config_t& config, const char* ssid, const char* password) {
     const size_t password_len = std::strlen(password);
     std::memcpy(config.sta.ssid, ssid, ssid_len);
     std::memcpy(config.sta.password, password, password_len);
+    config.sta.threshold.authmode = password_len == 0 ? WIFI_AUTH_OPEN : WIFI_AUTH_WPA2_PSK;
+    config.sta.pmf_cfg.capable = true;
+    config.sta.pmf_cfg.required = false;
 }
 
 bool readSavedConfig(wifi_config_t& config) {
@@ -112,6 +117,26 @@ bool readReceiverConfig(wifi_config_t& config) {
 
 bool hasDriverConfig(const wifi_config_t& config) {
     return strnlen(reinterpret_cast<const char*>(config.sta.ssid), sizeof(config.sta.ssid)) > 0;
+}
+
+void persistStationHold(bool held) {
+    nvs_handle_t handle;
+    if (nvs_open(kNamespace, NVS_READWRITE, &handle) != ESP_OK) return;
+    if (nvs_set_u8(handle, "sta_hold", held ? 1 : 0) == ESP_OK) (void)nvs_commit(handle);
+    nvs_close(handle);
+}
+
+// A missing flag means this firmware has not recorded a choice yet. A station
+// already saved in NVS stays in force, so a reboot does not hand the radio
+// back to the receiver hotspot.
+bool loadStationHold(bool saved_station) {
+    nvs_handle_t handle;
+    if (nvs_open(kNamespace, NVS_READONLY, &handle) != ESP_OK) return saved_station;
+    uint8_t value = 0;
+    const esp_err_t error = nvs_get_u8(handle, "sta_hold", &value);
+    nvs_close(handle);
+    if (error != ESP_OK) return saved_station;
+    return value == 1;
 }
 
 void scheduleRetry(uint32_t delay_ms) {
@@ -245,6 +270,11 @@ void eventHandler(void*, esp_event_base_t base, int32_t event_id, void* data) {
         if (retry_timer != nullptr) (void)esp_timer_stop(retry_timer);
     } else if (base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED) {
         connected.store(false);
+        const auto* lost = static_cast<const wifi_event_sta_disconnected_t*>(data);
+        if (lost != nullptr) {
+            last_disconnect_reason = lost->reason;
+            ESP_LOGW(kTag, "Wi-Fi disconnected, reason=%d", lost->reason);
+        }
         const uint32_t current = retry_ms.load();
         scheduleRetry(current);
         retry_ms.store(current >= kMaxRetryMs / 2 ? kMaxRetryMs : current * 2);
@@ -379,6 +409,7 @@ esp_err_t start() {
         if (error != ESP_OK) return error;
     }
     have_credentials.store(configured);
+    station_hold.store(loadStationHold(apply_config && configured));
     std::memset(&config, 0, sizeof(config));
 
     const esp_timer_create_args_t timer_config = {
@@ -425,16 +456,27 @@ esp_err_t save_credentials(const char* ssid, const char* password) {
     if (!started.load()) return ESP_ERR_INVALID_STATE;
     if (!validCredentials(ssid, password)) return ESP_ERR_INVALID_ARG;
     std::lock_guard<std::mutex> lock(station_mutex);
-    if (using_receiver.load() || setup_active.load()) return ESP_ERR_INVALID_STATE;
+    if (setup_active.load()) return ESP_ERR_INVALID_STATE;
 
     nvs_handle_t handle;
     esp_err_t error = nvs_open(kNamespace, NVS_READWRITE, &handle);
     if (error != ESP_OK) return error;
     error = nvs_set_str(handle, "ssid", ssid);
     if (error == ESP_OK) error = nvs_set_str(handle, "password", password);
+    if (error == ESP_OK) error = nvs_set_u8(handle, "sta_hold", 1);
     if (error == ESP_OK) error = nvs_commit(handle);
     nvs_close(handle);
     if (error != ESP_OK) return error;
+
+    // A saved home network replaces the receiver hotspot. Receiver mode keeps
+    // the driver config in RAM, so switch back to flash before applying it.
+    if (using_receiver.load()) {
+        error = esp_wifi_set_storage(WIFI_STORAGE_FLASH);
+        if (error != ESP_OK) return error;
+        using_receiver.store(false);
+        previous_had_credentials = false;
+        std::memset(&previous_station, 0, sizeof(previous_station));
+    }
 
     wifi_config_t config = {};
     fillConfig(config, ssid, password);
@@ -446,6 +488,8 @@ esp_err_t save_credentials(const char* ssid, const char* password) {
     if (error != ESP_OK) return error;
     have_credentials.store(true);
     connected.store(false);
+    station_hold.store(true);
+    last_disconnect_reason = 0;
     retry_ms.store(1000);
     scheduleRetry(100);
     return ESP_OK;
@@ -508,6 +552,8 @@ esp_err_t connect_receiver() {
         return error;
     }
     using_receiver.store(true);
+    station_hold.store(false);
+    persistStationHold(false);
     have_credentials.store(true);
     retry_ms.store(1000);
     scheduleRetry(100);
@@ -540,6 +586,8 @@ esp_err_t restore_station() {
 }
 
 bool receiver_active() { return using_receiver.load(); }
+bool station_held() { return station_hold.load(); }
+int disconnect_reason() { return last_disconnect_reason; }
 
 esp_err_t request_receiver_scan() {
     if (!started.load()) return ESP_ERR_INVALID_STATE;

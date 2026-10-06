@@ -115,6 +115,34 @@ void placePageHeader(lv_obj_t *left, lv_obj_t *title, lv_obj_t *right)
     lv_label_set_long_mode(title, LV_LABEL_LONG_DOT);
 }
 
+lv_point_t tap_origin{};
+bool tap_tracking = false;
+
+void trackTap(lv_event_t *event)
+{
+    if (lv_event_get_code(event) != LV_EVENT_PRESSED) return;
+    lv_indev_t *indev = lv_indev_active();
+    tap_tracking = false;
+    if (!indev) return;
+    lv_indev_get_point(indev, &tap_origin);
+    tap_tracking = true;
+}
+
+// A swipe that starts on a button must not activate it. Registered ahead of
+// the click callback so stop_processing drops that click.
+void ignoreSwipeClick(lv_event_t *event)
+{
+    if (lv_event_get_code(event) != LV_EVENT_CLICKED) return;
+    lv_indev_t *indev = lv_indev_active();
+    if (!indev || !tap_tracking) return;
+    lv_point_t now{};
+    lv_indev_get_point(indev, &now);
+    tap_tracking = false;
+    if (std::abs(now.x - tap_origin.x) > 12 || std::abs(now.y - tap_origin.y) > 12 ||
+        lv_indev_get_gesture_dir(indev) != LV_DIR_NONE)
+        lv_event_stop_processing(event);
+}
+
 lv_obj_t *touchButton(lv_obj_t *parent, int x, int y, int width, int height,
                       const char *caption, lv_event_cb_t callback, void *user,
                       uint32_t color = 0)
@@ -131,12 +159,15 @@ lv_obj_t *touchButton(lv_obj_t *parent, int x, int y, int width, int height,
     lv_obj_set_style_border_width(button, 1, 0);
     lv_obj_set_style_pad_all(button, 0, 0);
     lv_obj_remove_flag(button, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_remove_flag(button, LV_OBJ_FLAG_GESTURE_BUBBLE);
+    lv_obj_add_flag(button, LV_OBJ_FLAG_GESTURE_BUBBLE);
+    lv_obj_add_event_cb(button, trackTap, LV_EVENT_PRESSED, nullptr);
+    lv_obj_add_event_cb(button, ignoreSwipeClick, LV_EVENT_CLICKED, nullptr);
     if (callback) lv_obj_add_event_cb(button, callback, LV_EVENT_CLICKED, user);
     if (caption) {
         lv_obj_t *label = lv_label_create(button);
         lv_label_set_text(label, T(caption));
         bindLabel(label, caption);
+        lv_label_set_long_mode(label, LV_LABEL_LONG_DOT);
         lv_obj_set_style_text_align(label, LV_TEXT_ALIGN_CENTER, 0);
         lv_obj_set_style_text_color(label, lv_color_hex(VT(text_primary)), 0);
         lv_obj_set_style_text_font(label, text_font, 0);
@@ -235,6 +266,11 @@ VibeCoding *VibeCoding::requestInstance()
     return _instance;
 }
 
+bool VibeCoding::startOnDisplay()
+{
+    return requestInstance()->run();
+}
+
 VibeCoding::VibeCoding() : App(
     esp_brookesia::systems::base::App::Config::SIMPLE_CONSTRUCTOR("码得", &img_app_vibe, true),
     vibePhoneConfig())
@@ -316,7 +352,7 @@ bool VibeCoding::run()
     rendered_catalog_ready_ = false;
 
     page_label_ = lv_label_create(screen);
-    lv_obj_set_pos(page_label_, made_x(246), made_y(111));
+    lv_obj_set_pos(page_label_, made_x(246), made_y(122));
     lv_obj_set_width(page_label_, made_s(60));
     lv_obj_set_style_text_align(page_label_, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_set_style_text_color(page_label_, lv_color_hex(VT(text_hint)), 0);
@@ -325,14 +361,19 @@ bool VibeCoding::run()
     // Creating a conversation is explicit. This touch target is large enough
     // for the small round screen and never doubles as the record button.
     new_session_button_ = lv_obj_create(screen);
-    lv_obj_set_pos(new_session_button_, made_x(270), made_y(59));
-    lv_obj_set_size(new_session_button_, made_s(40), made_s(40));
-    lv_obj_set_style_radius(new_session_button_, 20, 0);
+    // 加号与齿轮镜像：齿轮 40..86，加号 274..320，离各自屏幕边缘同为 40。
+    // 圆形按钮（r23）在 y56..102 一行贴到这个位置仍完整落在圆屏弦内。
+    lv_obj_set_pos(new_session_button_, made_x(274), made_y(56));
+    lv_obj_set_size(new_session_button_, made_s(46), made_s(46));
+    lv_obj_set_style_radius(new_session_button_, 23, 0);
     lv_obj_set_style_bg_color(new_session_button_, lv_color_hex(VT(btn_normal)), 0);
     lv_obj_set_style_border_color(new_session_button_, lv_color_hex(VT(border)), 0);
     lv_obj_set_style_border_width(new_session_button_, 1, 0);
     lv_obj_set_style_pad_all(new_session_button_, 0, 0);
     lv_obj_remove_flag(new_session_button_, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(new_session_button_, LV_OBJ_FLAG_GESTURE_BUBBLE);
+    lv_obj_add_event_cb(new_session_button_, trackTap, LV_EVENT_PRESSED, nullptr);
+    lv_obj_add_event_cb(new_session_button_, ignoreSwipeClick, LV_EVENT_CLICKED, nullptr);
     lv_obj_add_event_cb(new_session_button_, newSessionCallback, LV_EVENT_CLICKED, this);
     lv_obj_t *new_session_mark = lv_label_create(new_session_button_);
     lv_label_set_text(new_session_mark, "+");
@@ -342,15 +383,18 @@ bool VibeCoding::run()
     lv_obj_center(new_session_mark);
 
     delete_session_button_ = lv_obj_create(screen);
-    lv_obj_set_pos(delete_session_button_, made_x(225), made_y(59));
-    lv_obj_set_size(delete_session_button_, made_s(40), made_s(40));
-    lv_obj_set_style_radius(delete_session_button_, 20, 0);
+    // 减号放头像（右缘 217）和加号（左缘 274）正中间：222..268，不遮动物。
+    lv_obj_set_pos(delete_session_button_, made_x(222), made_y(56));
+    lv_obj_set_size(delete_session_button_, made_s(46), made_s(46));
+    lv_obj_set_style_radius(delete_session_button_, 23, 0);
     lv_obj_set_style_bg_color(delete_session_button_, lv_color_hex(VT(btn_normal)), 0);
     lv_obj_set_style_border_color(delete_session_button_, lv_color_hex(VT(border)), 0);
     lv_obj_set_style_border_width(delete_session_button_, 1, 0);
     lv_obj_set_style_pad_all(delete_session_button_, 0, 0);
     lv_obj_remove_flag(delete_session_button_, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_remove_flag(delete_session_button_, LV_OBJ_FLAG_GESTURE_BUBBLE);
+    lv_obj_add_flag(delete_session_button_, LV_OBJ_FLAG_GESTURE_BUBBLE);
+    lv_obj_add_event_cb(delete_session_button_, trackTap, LV_EVENT_PRESSED, nullptr);
+    lv_obj_add_event_cb(delete_session_button_, ignoreSwipeClick, LV_EVENT_CLICKED, nullptr);
     lv_obj_add_event_cb(delete_session_button_, deleteSessionCallback, LV_EVENT_CLICKED, this);
     lv_obj_t *delete_session_mark = lv_label_create(delete_session_button_);
     lv_label_set_text(delete_session_mark, "-");
@@ -359,13 +403,15 @@ bool VibeCoding::run()
     lv_obj_remove_flag(delete_session_mark, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_center(delete_session_mark);
     lv_obj_add_flag(delete_session_button_, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_move_foreground(new_session_button_);
 
     // The access editor is a modal surface. Its touch keyboard fits within
     // the round screen, and BOOT short clicks are ignored while it is open.
-    settings_button_ = touchButton(screen, 50, 59, 40, 40, nullptr, settingsCallback, this);
-    lv_obj_set_style_radius(settings_button_, 20, 0);
-    constexpr int teeth[][2] = {{16, 5}, {16, 27}, {5, 16}, {27, 16},
-                                {9, 9}, {25, 9}, {9, 25}, {25, 25}};
+    settings_button_ = touchButton(screen, 40, 56, 46, 46, nullptr, settingsCallback, this);
+    lv_obj_set_style_radius(settings_button_, 23, 0);
+    lv_obj_set_ext_click_area(settings_button_, 10);
+    constexpr int teeth[][2] = {{17, 6}, {17, 28}, {6, 17}, {28, 17},
+                                {10, 10}, {26, 10}, {10, 26}, {26, 26}};
     for (const auto &tooth : teeth) {
         lv_obj_t *part = lv_obj_create(settings_button_);
         lv_obj_set_pos(part, made_s(tooth[0]), made_s(tooth[1]));
@@ -377,7 +423,7 @@ bool VibeCoding::run()
         lv_obj_remove_flag(part, LV_OBJ_FLAG_SCROLLABLE);
     }
     lv_obj_t *gear_ring = lv_obj_create(settings_button_);
-    lv_obj_set_pos(gear_ring, made_s(10), made_s(10));
+    lv_obj_set_pos(gear_ring, made_s(13), made_s(13));
     lv_obj_set_size(gear_ring, made_s(20), made_s(20));
     lv_obj_set_style_radius(gear_ring, 10, 0);
     lv_obj_set_style_bg_color(gear_ring, lv_color_hex(VT(text_primary)), 0);
@@ -408,13 +454,14 @@ bool VibeCoding::run()
     lv_obj_set_style_border_width(settings_home_, 0, 0);
     lv_obj_set_style_pad_all(settings_home_, 0, 0);
     lv_obj_remove_flag(settings_home_, LV_OBJ_FLAG_SCROLLABLE);
-    settingsLabel(settings_home_, T("设置"), 92, 52, 176);
-    touchButton(settings_home_, 85, 92, 190, 28, "settings.connection", accessOpenCallback, this);
-    touchButton(settings_home_, 85, 126, 190, 28, T("主题设置"), themeOpenCallback, this);
-    touchButton(settings_home_, 85, 160, 190, 28, "settings.volume", volumeOpenCallback, this);
-    touchButton(settings_home_, 85, 194, 190, 28, T("电源设置"), powerOpenCallback, this);
-    touchButton(settings_home_, 85, 228, 190, 28, "settings.language", languageOpenCallback, this);
-    touchButton(settings_home_, 125, 268, 110, 28, T("返回"), settingsCloseCallback, this);
+    settingsLabel(settings_home_, T("设置"), 92, 40, 176);
+    touchButton(settings_home_, 85, 72, 190, 26, "settings.connection", accessOpenCallback, this);
+    touchButton(settings_home_, 85, 102, 190, 26, T("网络设置"), wifiScanOpenCallback, this);
+    touchButton(settings_home_, 85, 132, 190, 26, T("主题设置"), themeOpenCallback, this);
+    touchButton(settings_home_, 85, 162, 190, 26, "settings.volume", volumeOpenCallback, this);
+    touchButton(settings_home_, 85, 192, 190, 26, T("电源设置"), powerOpenCallback, this);
+    touchButton(settings_home_, 85, 222, 190, 26, "settings.language", languageOpenCallback, this);
+    touchButton(settings_home_, 125, 292, 110, 34, T("返回"), settingsCloseCallback, this);
 
     language_panel_ = lv_obj_create(settings_overlay_);
     lv_obj_set_size(language_panel_, made_screen_w(), made_screen_h());
@@ -442,7 +489,7 @@ bool VibeCoding::run()
     touchButton(theme_panel_, 70, 60, 220, 32, T("从电脑同步主题"), themeSyncCallback, this, 0x42566B);
     theme_status_label_ = settingsLabel(theme_panel_, "", 40, 96, 280, VT(text_hint));
     theme_rows_ = lv_obj_create(theme_panel_);
-    lv_obj_set_pos(theme_rows_, made_page_x(20), made_page_y(112));
+    lv_obj_set_pos(theme_rows_, made_page_x(40), made_page_y(112));
     lv_obj_set_size(theme_rows_, made_page_w(280), made_page_y(280) - made_page_y(112));
     lv_obj_set_style_bg_opa(theme_rows_, LV_OPA_TRANSP, 0);
     lv_obj_set_style_border_width(theme_rows_, 0, 0);
@@ -450,7 +497,7 @@ bool VibeCoding::run()
     lv_obj_set_scroll_dir(theme_rows_, LV_DIR_VER);
     lv_obj_set_scrollbar_mode(theme_rows_, LV_SCROLLBAR_MODE_AUTO);
     lv_obj_remove_flag(theme_rows_, LV_OBJ_FLAG_GESTURE_BUBBLE);
-    touchButton(theme_panel_, 125, 288, 110, 30, T("返回"), themeBackCallback, this);
+    touchButton(theme_panel_, 125, 292, 110, 34, T("返回"), themeBackCallback, this);
     lv_obj_add_flag(theme_panel_, LV_OBJ_FLAG_HIDDEN);
 
     power_panel_ = lv_obj_create(settings_overlay_);
@@ -492,12 +539,10 @@ bool VibeCoding::run()
     lv_obj_set_style_border_width(access_panel_, 0, 0);
     lv_obj_set_style_pad_all(access_panel_, 0, 0);
     lv_obj_remove_flag(access_panel_, LV_OBJ_FLAG_SCROLLABLE);
-    // Keep the editor actions near the top of the round display. Buttons at
-    // y=314 were inside the drawn circle but unreliable at its touch edge.
-    lv_obj_t *access_back = touchButton(access_panel_, 86, 29, 58, 36, T("返回"), accessBackCallback, this, VT(btn_cancel));
-    lv_obj_t *access_title = settingsLabel(access_panel_, T("接入设置"), 144, 39, 72);
-    access_save_button_ = touchButton(access_panel_, 216, 29, 58, 36, T("保存"), accessSaveCallback, this, VT(accent));
-    placePageHeader(access_back, access_title, access_save_button_);
+    lv_obj_t *access_back = touchButton(access_panel_, 48, 292, 120, 36, T("返回"), accessBackCallback, this, VT(btn_cancel));
+    settingsLabel(access_panel_, T("接入设置"), 70, 36, 220);
+    access_save_button_ = touchButton(access_panel_, 192, 292, 120, 36, T("保存"), accessSaveCallback, this, VT(accent));
+    (void)access_back;
     // Choose a transport separately from editing its fields. Four narrow tabs
     // were easy to mistap on this round display; these targets have 18 px gaps.
     access_picker_hint_ = settingsLabel(access_panel_, T("选择连接方式"), 65, 78, 230, VT(text_secondary));
@@ -509,7 +554,7 @@ bool VibeCoding::run()
                                           T("接收端"), accessModeCallback, this);
     access_usb_button_ = touchButton(access_panel_, 189, 186, 126, 64,
                                      T("USB 直连"), accessModeCallback, this);
-    phone_setup_button_ = touchButton(access_panel_, 70, 273, 220, 44,
+    phone_setup_button_ = touchButton(access_panel_, 70, 256, 220, 30,
                                        "手机配置", phoneSetupOpenCallback, this, VT(accent));
     access_change_button_ = touchButton(access_panel_, 54, 74, 252, 32,
                                         nullptr, accessPickerCallback, this);
@@ -575,28 +620,25 @@ bool VibeCoding::run()
     lv_obj_set_style_pad_all(receiver_picker_, 0, 0);
     lv_obj_remove_flag(receiver_picker_, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_remove_flag(receiver_picker_, LV_OBJ_FLAG_GESTURE_BUBBLE);
-    touchButton(receiver_picker_, 78, 29, 76, 38, "返回", receiverScanBackCallback, this);
-    receiver_refresh_button_ = touchButton(receiver_picker_, 206, 29, 76, 38,
-        "刷新", receiverScanRefreshCallback, this);
-    settingsLabel(receiver_picker_, "选择接收端", 65, 79, 230);
+    settingsLabel(receiver_picker_, "选择接收端", 65, 36, 230);
     receiver_list_ = lv_obj_create(receiver_picker_);
-    lv_obj_set_pos(receiver_list_, made_page_x(45), made_page_y(110));
-    lv_obj_set_size(receiver_list_, made_page_w(270), made_page_y(268) - made_page_y(110));
+    lv_obj_set_pos(receiver_list_, made_page_x(45), made_page_y(68));
+    lv_obj_set_size(receiver_list_, made_page_w(270), made_page_y(236) - made_page_y(68));
     lv_obj_set_style_bg_opa(receiver_list_, LV_OPA_TRANSP, 0);
     lv_obj_set_style_border_width(receiver_list_, 0, 0);
     lv_obj_set_style_pad_all(receiver_list_, 0, 0);
     lv_obj_set_scroll_dir(receiver_list_, LV_DIR_VER);
     lv_obj_set_scrollbar_mode(receiver_list_, LV_SCROLLBAR_MODE_AUTO);
     lv_obj_remove_flag(receiver_list_, LV_OBJ_FLAG_GESTURE_BUBBLE);
-    receiver_hint_ = settingsLabel(receiver_picker_, "", 60, 274, 240, VT(text_secondary));
-    touchButton(receiver_picker_, 125, 304, 110, 34, "手动填写", receiverScanBackCallback, this);
+    receiver_hint_ = settingsLabel(receiver_picker_, "", 60, 242, 240, VT(text_secondary));
+    touchButton(receiver_picker_, 48, 292, 88, 36, "返回", receiverScanBackCallback, this);
+    touchButton(receiver_picker_, 136, 292, 88, 36, "手动填写", receiverScanBackCallback, this);
+    receiver_refresh_button_ = touchButton(receiver_picker_, 224, 292, 88, 36,
+        "刷新", receiverScanRefreshCallback, this);
     lv_obj_add_flag(receiver_picker_, LV_OBJ_FLAG_HIDDEN);
     receiver_scan_revision_ = UINT32_MAX;
-    // Wi-Fi 模式页里的扫描入口与选网卡子页（布局沿用接收端选择器）。
-    wifi_scan_button_ = touchButton(access_panel_, 65, 215, 230, 46,
-        T("扫描 Wi-Fi 网络"), wifiScanOpenCallback, this, VT(accent));
-    lv_obj_add_flag(wifi_scan_button_, LV_OBJ_FLAG_HIDDEN);
-    wifi_picker_ = lv_obj_create(access_panel_);
+    // 选网是独立的网络设置，不挂在连接电脑的方式下面。
+    wifi_picker_ = lv_obj_create(settings_overlay_);
     lv_obj_set_pos(wifi_picker_, made_s(0), made_s(0));
     lv_obj_set_size(wifi_picker_, made_screen_w(), made_screen_h());
     markPage(wifi_picker_);
@@ -606,23 +648,23 @@ bool VibeCoding::run()
     lv_obj_set_style_pad_all(wifi_picker_, 0, 0);
     lv_obj_remove_flag(wifi_picker_, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_remove_flag(wifi_picker_, LV_OBJ_FLAG_GESTURE_BUBBLE);
-    touchButton(wifi_picker_, 78, 29, 76, 38, "返回", wifiScanBackCallback, this);
-    touchButton(wifi_picker_, 206, 29, 76, 38, "刷新", wifiScanRefreshCallback, this);
-    settingsLabel(wifi_picker_, "选择 Wi-Fi 网络", 65, 79, 230);
+    settingsLabel(wifi_picker_, T("网络设置"), 65, 36, 230);
     wifi_network_list_ = lv_obj_create(wifi_picker_);
-    lv_obj_set_pos(wifi_network_list_, made_page_x(45), made_page_y(110));
-    lv_obj_set_size(wifi_network_list_, made_page_w(270), made_page_y(268) - made_page_y(110));
+    lv_obj_set_pos(wifi_network_list_, made_page_x(45), made_page_y(96));
+    lv_obj_set_size(wifi_network_list_, made_page_w(270), made_page_y(268) - made_page_y(96));
     lv_obj_set_style_bg_opa(wifi_network_list_, LV_OPA_TRANSP, 0);
     lv_obj_set_style_border_width(wifi_network_list_, 0, 0);
     lv_obj_set_style_pad_all(wifi_network_list_, 0, 0);
     lv_obj_set_scroll_dir(wifi_network_list_, LV_DIR_VER);
     lv_obj_set_scrollbar_mode(wifi_network_list_, LV_SCROLLBAR_MODE_AUTO);
     lv_obj_remove_flag(wifi_network_list_, LV_OBJ_FLAG_GESTURE_BUBBLE);
-    wifi_scan_status_ = settingsLabel(wifi_picker_, "", 60, 274, 240, VT(text_secondary));
+    wifi_scan_status_ = settingsLabel(wifi_picker_, "", 50, 64, 260, VT(text_secondary));
+    touchButton(wifi_picker_, 48, 292, 120, 36, "返回", wifiScanBackCallback, this);
+    touchButton(wifi_picker_, 192, 292, 120, 36, "刷新", wifiScanRefreshCallback, this);
     lv_obj_add_flag(wifi_picker_, LV_OBJ_FLAG_HIDDEN);
     wifi_scan_list_revision_ = UINT32_MAX;
     // A field opens a full-screen editor with five wide keys per row.
-    access_editor_panel_ = lv_obj_create(access_panel_);
+    access_editor_panel_ = lv_obj_create(settings_overlay_);
     lv_obj_set_pos(access_editor_panel_, made_s(0), made_s(0));
     lv_obj_set_size(access_editor_panel_, made_screen_w(), made_screen_h());
     markPage(access_editor_panel_);
@@ -662,31 +704,31 @@ bool VibeCoding::run()
     lv_obj_set_style_pad_all(phone_setup_panel_, 0, 0);
     lv_obj_remove_flag(phone_setup_panel_, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_remove_flag(phone_setup_panel_, LV_OBJ_FLAG_GESTURE_BUBBLE);
-    lv_obj_t *phone_back = touchButton(phone_setup_panel_, 76, 28, 68, 36, "返回", phoneSetupBackCallback, this);
-    lv_obj_t *phone_title = settingsLabel(phone_setup_panel_, "手机配置", 148, 37, 136);
-    placePageHeader(phone_back, phone_title, nullptr);
+    lv_obj_t *phone_back = touchButton(phone_setup_panel_, 125, 292, 110, 36, "返回", phoneSetupBackCallback, this);
+    lv_obj_t *phone_title = settingsLabel(phone_setup_panel_, "手机配置", 70, 32, 220);
+    (void)phone_back;
     phone_setup_hint_ = settingsLabel(phone_setup_panel_, "", 55, 69, 250, VT(text_accent), false);
     phone_setup_qr_ = lv_qrcode_create(phone_setup_panel_);
-    lv_qrcode_set_size(phone_setup_qr_, made_s(150));
+    lv_qrcode_set_size(phone_setup_qr_, made_s(120));
     lv_qrcode_set_dark_color(phone_setup_qr_, lv_color_black());
     lv_qrcode_set_light_color(phone_setup_qr_, lv_color_white());
     lv_qrcode_set_quiet_zone(phone_setup_qr_, true);
-    lv_obj_set_pos(phone_setup_qr_, (made_screen_w() - made_s(150)) / 2, made_page_y(108));
+    lv_obj_set_pos(phone_setup_qr_, (made_screen_w() - made_s(120)) / 2, made_page_y(78));
     lv_obj_add_flag(phone_setup_qr_, LV_OBJ_FLAG_HIDDEN);
-    phone_setup_network_ = settingsLabel(phone_setup_panel_, "", 55, 281, 250, VT(title), false);
-    phone_setup_password_ = settingsLabel(phone_setup_panel_, "", 65, 302, 230, VT(title), false);
-    phone_setup_address_ = settingsLabel(phone_setup_panel_, "", 85, 323, 190, VT(text_secondary), false);
+    phone_setup_network_ = settingsLabel(phone_setup_panel_, "", 55, 206, 250, VT(title), false);
+    phone_setup_password_ = settingsLabel(phone_setup_panel_, "", 65, 226, 230, VT(title), false);
+    phone_setup_address_ = settingsLabel(phone_setup_panel_, "", 85, 246, 190, VT(text_secondary), false);
     lv_obj_add_flag(phone_setup_panel_, LV_OBJ_FLAG_HIDDEN);
 
     provider_label_ = lv_label_create(screen);
-    lv_obj_set_pos(provider_label_, made_x(50), made_y(108));
+    lv_obj_set_pos(provider_label_, made_x(50), made_y(122));
     lv_obj_set_style_text_align(provider_label_, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_set_style_text_color(provider_label_, lv_color_hex(VT(text_primary)), 0);
     lv_obj_set_style_text_font(provider_label_, &lv_font_montserrat_26, 0);
     made_text(provider_label_, 260, false);
 
     position_label_ = lv_label_create(screen);
-    lv_obj_set_pos(position_label_, made_x(50), made_y(145));
+    lv_obj_set_pos(position_label_, made_x(50), made_y(154));
     lv_label_set_long_mode(position_label_, LV_LABEL_LONG_DOT);
     lv_obj_set_style_text_align(position_label_, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_set_style_text_color(position_label_, lv_color_hex(VT(text_accent)), 0);
@@ -694,7 +736,7 @@ bool VibeCoding::run()
     made_text(position_label_, 260, false);
 
     session_title_tap_ = lv_obj_create(screen);
-    lv_obj_set_pos(session_title_tap_, made_x(45), made_y(140));
+    lv_obj_set_pos(session_title_tap_, made_x(45), made_y(150));
     lv_obj_set_size(session_title_tap_, made_s(270), made_s(26));
     lv_obj_set_style_bg_opa(session_title_tap_, LV_OPA_TRANSP, 0);
     lv_obj_set_style_border_width(session_title_tap_, 0, 0);
@@ -796,21 +838,22 @@ bool VibeCoding::run()
     lv_obj_set_style_pad_all(bridge_picker_, 0, 0);
     lv_obj_remove_flag(bridge_picker_, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_remove_flag(bridge_picker_, LV_OBJ_FLAG_GESTURE_BUBBLE);
-    lv_obj_t *bridge_settings = touchButton(bridge_picker_, 86, 29, 58, 36, "settings.short", settingsCallback, this, VT(btn_cancel));
-    lv_obj_t *bridge_title = settingsLabel(bridge_picker_, T("选择电脑"), 144, 39, 72);
-    bridge_refresh_button_ = touchButton(bridge_picker_, 216, 29, 58, 36,
+    lv_obj_t *bridge_settings = touchButton(bridge_picker_, 48, 292, 120, 36, "settings.short", settingsCallback, this, VT(btn_cancel));
+    lv_obj_t *bridge_title = settingsLabel(bridge_picker_, T("选择电脑"), 70, 36, 220);
+    bridge_refresh_button_ = touchButton(bridge_picker_, 192, 292, 120, 36,
                                           T("刷新"), bridgeRefreshCallback, this, VT(accent));
-    placePageHeader(bridge_settings, bridge_title, bridge_refresh_button_);
+    (void)bridge_settings;
+    (void)bridge_title;
     bridge_list_ = lv_obj_create(bridge_picker_);
     lv_obj_set_pos(bridge_list_, made_page_x(45), made_page_y(88));
-    lv_obj_set_size(bridge_list_, made_page_w(270), made_page_y(280) - made_page_y(88));
+    lv_obj_set_size(bridge_list_, made_page_w(270), made_page_y(248) - made_page_y(88));
     lv_obj_set_style_bg_opa(bridge_list_, LV_OPA_TRANSP, 0);
     lv_obj_set_style_border_width(bridge_list_, 0, 0);
     lv_obj_set_style_pad_all(bridge_list_, 0, 0);
     lv_obj_set_scroll_dir(bridge_list_, LV_DIR_VER);
     lv_obj_set_scrollbar_mode(bridge_list_, LV_SCROLLBAR_MODE_AUTO);
     lv_obj_remove_flag(bridge_list_, LV_OBJ_FLAG_GESTURE_BUBBLE);
-    bridge_hint_ = settingsLabel(bridge_picker_, T("正在扫描电脑…"), 76, 287, 208, VT(text_accent));
+    bridge_hint_ = settingsLabel(bridge_picker_, T("正在扫描电脑…"), 76, 252, 208, VT(text_accent));
     lv_obj_add_flag(bridge_picker_, LV_OBJ_FLAG_HIDDEN);
     bridge_list_revision_ = UINT32_MAX;
     bridge_rows_.clear();
@@ -829,11 +872,17 @@ bool VibeCoding::run()
     delete_dialog_title_ = settingsLabel(delete_dialog_, "", 55, 129, 250, VT(text_accent), false);
     lv_label_set_long_mode(delete_dialog_title_, LV_LABEL_LONG_DOT);
     settingsLabel(delete_dialog_, T("任务及对话记录将被删除"), 55, 171, 250, VT(text_hint));
-    touchButton(delete_dialog_, 65, 230, 105, 50, T("返回"), deleteSessionCancelCallback, this);
-    touchButton(delete_dialog_, 190, 230, 105, 50, T("删除"), deleteSessionConfirmCallback, this, VT(danger));
+    touchButton(delete_dialog_, 48, 292, 120, 36, T("返回"), deleteSessionCancelCallback, this);
+    touchButton(delete_dialog_, 192, 292, 120, 36, T("删除"), deleteSessionConfirmCallback, this, VT(danger));
     lv_obj_add_flag(delete_dialog_, LV_OBJ_FLAG_HIDDEN);
 
-    openForeground();
+    lock_screen_ = made_lock_screen::create(screen, lockSwipeCallback, this);
+    if (!lock_screen_) {
+        active_ = false;
+        ESP_LOGE(BUTTON_TAG, "Cannot create Made lock screen");
+        return false;
+    }
+    enterLockScreen();
     // Brookesia records timers created during run() and removes them on close.
     if (!lv_timer_create(timerCallback, 50, this)) {
         active_ = false;
@@ -841,7 +890,7 @@ bool VibeCoding::run()
         return false;
     }
     render();
-    ESP_LOGI(BUTTON_TAG, "Made ready");
+    ESP_LOGI(BUTTON_TAG, "Made lock screen ready; swipe up to connect");
 
     ensureWorkerStarted();
     bool expected = false;
@@ -871,7 +920,7 @@ bool VibeCoding::back()
         else showSettings(false);
         return true;
     }
-    return notifyCoreClosed();
+    return true;
 }
 
 bool VibeCoding::pause()
@@ -906,7 +955,8 @@ bool VibeCoding::resume()
 {
     vibe_i18n::initialize();
     active_ = true;
-    openForeground();
+    if (lock_screen_) enterLockScreen();
+    else openForeground();
     invalidateCatalog(true);
     button_epoch_.fetch_add(1);
     active_ = true;
@@ -1092,10 +1142,7 @@ void VibeCoding::buttonLoop()
             if (active_.load() && current_epoch == button_epoch_.load() &&
                 armed_provider == selected_provider_.load()) {
                 if (decision == BootClickGesture::Decision::Home) {
-                    // Stop the foreground loop immediately; the UI thread owns
-                    // Brookesia's close event and will process it shortly.
-                    exit_requested_ = true;
-                    ESP_LOGI(BUTTON_TAG, "BOOT long hold: closing Vibe Coding");
+                    ESP_LOGI(BUTTON_TAG, "BOOT long hold");
                     {
                         std::lock_guard<std::mutex> lock(voice_action_mutex_);
                         vibe_voice::cancel();
@@ -1177,11 +1224,7 @@ void VibeCoding::timerCallback(lv_timer_t *timer)
     self->ui_tick_ms_.store(static_cast<uint32_t>(esp_timer_get_time() / 1000));
     self->ui_stage_.store(1);
     if (self->exit_requested_.load()) {
-        // Retain the request if Brookesia rejects a close during a transition;
-        // the next timer tick will retry instead of silently trapping the app.
-        if (!self->notifyCoreClosed()) {
-            ESP_LOGW(BUTTON_TAG, "Vibe Coding close request failed; retrying");
-        }
+        self->exit_requested_.store(false);
     } else {
         self->applyRemoteCommands();
         self->render();
@@ -1886,8 +1929,9 @@ void VibeCoding::renderThemes()
     // 第一行：内置默认。
     {
         const bool active = vibe_theme::activeName().empty();
-        lv_obj_t *button = touchButton(theme_rows_, 8, 4, 264, 40,
+        lv_obj_t *button = touchButton(theme_rows_, 16, 4, 248, 40,
             nullptr, themeSelectCallback, this, active ? VT(accent) : VT(bg_row));
+        lv_obj_set_overflow_visible(button, false);
         lv_obj_set_user_data(button, strdup(""));
         lv_obj_add_event_cb(button, [](lv_event_t *event) {
             if (lv_event_get_code(event) == LV_EVENT_DELETE) {
@@ -1895,17 +1939,24 @@ void VibeCoding::renderThemes()
                 if (name != nullptr) free(name);
             }
         }, LV_EVENT_DELETE, nullptr);
-        lv_obj_t *name = settingsLabel(button, T("默认主题（当前界面）"), 10, 11, 244,
+        lv_obj_t *name = settingsLabel(button, T("默认主题（当前界面）"), 10, 11, 228,
                                        active ? VT(text_primary) : VT(text_secondary), false);
         lv_obj_set_style_text_font(name, text_font, 0);
+        lv_label_set_long_mode(name, LV_LABEL_LONG_DOT);
+        // 按钮刚创建还没布局，lv_obj_get_width 会读到 0，字会整行消失；
+        // 宽度直接用设计值：按钮 248，两侧各留 8。
+        lv_obj_set_width(name, made_s(232));
+        lv_obj_set_style_text_align(name, LV_TEXT_ALIGN_CENTER, 0);
+        lv_obj_align(name, LV_ALIGN_CENTER, 0, 0);
         lv_obj_remove_flag(name, LV_OBJ_FLAG_CLICKABLE);
     }
     int row = 1;
     for (const auto &theme : themes) {
         const int y = 4 + row * 46;
         const bool active = vibe_theme::activeName() == theme.name;
-        lv_obj_t *button = touchButton(theme_rows_, 8, y, 264, 40,
+        lv_obj_t *button = touchButton(theme_rows_, 16, y, 248, 40,
             nullptr, themeSelectCallback, this, active ? VT(accent) : VT(bg_row));
+        lv_obj_set_overflow_visible(button, false);
         lv_obj_set_user_data(button, strdup(theme.name.c_str()));
         lv_obj_add_event_cb(button, [](lv_event_t *event) {
             if (lv_event_get_code(event) == LV_EVENT_DELETE) {
@@ -1915,10 +1966,13 @@ void VibeCoding::renderThemes()
         }, LV_EVENT_DELETE, nullptr);
         char title[96];
         std::snprintf(title, sizeof(title), "%s%s", theme.title.c_str(), active ? T(" · 使用中") : "");
-        lv_obj_t *name = settingsLabel(button, title, 10, 11, 244,
+        lv_obj_t *name = settingsLabel(button, title, 10, 11, 228,
                                        active ? VT(text_primary) : VT(text_secondary), false);
         lv_obj_set_style_text_font(name, text_font, 0);
         lv_label_set_long_mode(name, LV_LABEL_LONG_DOT);
+        lv_obj_set_width(name, made_s(232));
+        lv_obj_set_style_text_align(name, LV_TEXT_ALIGN_CENTER, 0);
+        lv_obj_align(name, LV_ALIGN_CENTER, 0, 0);
         lv_obj_remove_flag(name, LV_OBJ_FLAG_CLICKABLE);
         ++row;
     }
@@ -1936,8 +1990,8 @@ void VibeCoding::accessBackCallback(lv_event_t *event)
     if (self) {
         if (self->access_editor_panel_ && !lv_obj_has_flag(self->access_editor_panel_, LV_OBJ_FLAG_HIDDEN))
             self->closeAccessEditor(false);
-        else if (self->wifi_picker_ && !lv_obj_has_flag(self->wifi_picker_, LV_OBJ_FLAG_HIDDEN))
-            self->showWifiScan(false);
+        else if (self->receiver_picker_ && !lv_obj_has_flag(self->receiver_picker_, LV_OBJ_FLAG_HIDDEN))
+            self->showReceiverScan(false);
         else self->showAccess(false);
     }
 }
@@ -2170,7 +2224,7 @@ void VibeCoding::updateAccessModeButtons()
     }
     for (lv_obj_t *item : {access_save_button_, access_change_button_, access_usb_hint_,
                           access_host_input_, access_port_input_, access_password_input_,
-                          access_https_button_, receiver_scan_button_, wifi_scan_button_}) {
+                          access_https_button_, receiver_scan_button_}) {
         if (access_picker_open_) lv_obj_add_flag(item, LV_OBJ_FLAG_HIDDEN);
         else lv_obj_remove_flag(item, LV_OBJ_FLAG_HIDDEN);
     }
@@ -2196,9 +2250,6 @@ void VibeCoding::updateAccessModeButtons()
     }
     if (access_receiver_selected_) lv_obj_remove_flag(receiver_scan_button_, LV_OBJ_FLAG_HIDDEN);
     else lv_obj_add_flag(receiver_scan_button_, LV_OBJ_FLAG_HIDDEN);
-    const bool wifi_mode = !access_manual_selected_ && !access_receiver_selected_ && !access_usb_selected_;
-    if (wifi_mode) lv_obj_remove_flag(wifi_scan_button_, LV_OBJ_FLAG_HIDDEN);
-    else lv_obj_add_flag(wifi_scan_button_, LV_OBJ_FLAG_HIDDEN);
     if (access_receiver_selected_) lv_obj_remove_flag(access_password_input_, LV_OBJ_FLAG_HIDDEN);
     else lv_obj_add_flag(access_password_input_, LV_OBJ_FLAG_HIDDEN);
     lv_textarea_set_max_length(access_host_input_, access_receiver_selected_ ? 32 : 100);
@@ -2210,7 +2261,7 @@ void VibeCoding::updateAccessModeButtons()
     else if (access_receiver_selected_)
         lv_label_set_text(access_status_label_, T("点选接收端，再输入热点密码"));
     else if (!access_manual_selected_) {
-        if (vibe_wifi::is_connected()) {
+        if (!vibe_wifi::receiver_active() && vibe_wifi::is_connected()) {
             wifi_ap_record_t ap = {};
             std::string status = T("已连接 Wi-Fi");
             if (esp_wifi_sta_get_ap_info(&ap) == ESP_OK) {
@@ -2220,7 +2271,7 @@ void VibeCoding::updateAccessModeButtons()
             }
             lv_label_set_text(access_status_label_, status.c_str());
         } else {
-            lv_label_set_text(access_status_label_, T("尚未连接 Wi-Fi，可扫描加入网络"));
+            lv_label_set_text(access_status_label_, T("请先在网络设置连接 Wi-Fi"));
         }
     }
     else
@@ -2356,13 +2407,6 @@ void VibeCoding::wifiNetworkCallback(lv_event_t *event)
     const uintptr_t index = (uintptr_t)lv_obj_get_index(lv_event_get_target(event)) + 1;
     ESP_LOGI("vibe_ui", "wifi row clicked: index=%u known=%u", (unsigned)index,
              (unsigned)self->wifi_scan_snapshot_.networks.size());
-    // 屏幕诊断：状态行直接显示点击是否进入回调（串口抓取不可靠时的兜底）。
-    if (self->wifi_scan_status_) {
-        char debug[64];
-        std::snprintf(debug, sizeof(debug), "clicked #%u / %u", (unsigned)index,
-                      (unsigned)self->wifi_scan_snapshot_.networks.size());
-        lv_label_set_text(self->wifi_scan_status_, debug);
-    }
     if (index == 0) return;
     std::string ssid;
     bool open = false;
@@ -2376,8 +2420,11 @@ void VibeCoding::wifiNetworkCallback(lv_event_t *event)
     self->wifi_selected_ssid_ = ssid;
     if (open) {
         // 开放网络无需密码，直接保存并连接。
-        if (vibe_wifi::save_credentials(ssid.c_str(), "") == ESP_OK && self->wifi_scan_status_)
+        if (vibe_wifi::save_credentials(ssid.c_str(), "") == ESP_OK && self->wifi_scan_status_) {
+            self->wifi_join_ssid_ = ssid;
+            self->wifi_join_pending_ = true;
             lv_label_set_text(self->wifi_scan_status_, (std::string(T("正在连接 ")) + ssid + T(" …")).c_str());
+        }
         return;
     }
     // 加密网络：弹出编辑器输入密码，完成后由 closeAccessEditor 触发连接。
@@ -2407,6 +2454,39 @@ void VibeCoding::startWifiScan()
 void VibeCoding::renderWifiNetworks()
 {
     if (!wifi_picker_ || lv_obj_has_flag(wifi_picker_, LV_OBJ_FLAG_HIDDEN)) return;
+    if (wifi_scan_status_ && wifi_join_pending_) {
+        if (!vibe_wifi::receiver_active() && vibe_wifi::is_connected()) {
+            wifi_ap_record_t ap = {};
+            if (esp_wifi_sta_get_ap_info(&ap) == ESP_OK) {
+                char ssid[33] = {};
+                std::memcpy(ssid, ap.ssid, sizeof(ap.ssid));
+                if (wifi_join_ssid_.empty() || wifi_join_ssid_ == ssid) {
+                    lv_label_set_text(wifi_scan_status_, (std::string(T("已连接 Wi-Fi")) + "：" + ssid).c_str());
+                    wifi_join_pending_ = false;
+                }
+            }
+        } else {
+            const int reason = vibe_wifi::disconnect_reason();
+            const bool auth_failed = reason == WIFI_REASON_AUTH_EXPIRE ||
+                reason == WIFI_REASON_MIC_FAILURE ||
+                reason == WIFI_REASON_4WAY_HANDSHAKE_TIMEOUT ||
+                reason == WIFI_REASON_AUTH_FAIL ||
+                reason == WIFI_REASON_ASSOC_FAIL ||
+                reason == WIFI_REASON_HANDSHAKE_TIMEOUT ||
+                reason == WIFI_REASON_CONNECTION_FAIL;
+            const bool missing = reason == WIFI_REASON_NO_AP_FOUND ||
+                reason == WIFI_REASON_NO_AP_FOUND_W_COMPATIBLE_SECURITY ||
+                reason == WIFI_REASON_NO_AP_FOUND_IN_AUTHMODE_THRESHOLD ||
+                reason == WIFI_REASON_NO_AP_FOUND_IN_RSSI_THRESHOLD;
+            if (auth_failed) {
+                lv_label_set_text(wifi_scan_status_, T("连接失败，请核对密码"));
+                wifi_join_pending_ = false;
+            } else if (missing) {
+                lv_label_set_text(wifi_scan_status_, T("找不到这个网络"));
+                wifi_join_pending_ = false;
+            }
+        }
+    }
     wifi_scan_snapshot_ = vibe_wifi::station_scan_snapshot();
     const uint32_t revision = wifi_scan_snapshot_.generation;
     const bool scanning = wifi_scan_snapshot_.state == vibe_wifi::ReceiverScanState::Scanning;
@@ -2455,11 +2535,29 @@ void VibeCoding::showWifiScan(bool visible)
 {
     if (!wifi_picker_) return;
     if (!visible) {
+        const bool was_open = !lv_obj_has_flag(wifi_picker_, LV_OBJ_FLAG_HIDDEN);
         lv_obj_add_flag(wifi_picker_, LV_OBJ_FLAG_HIDDEN);
+        if (was_open && settings_home_) lv_obj_remove_flag(settings_home_, LV_OBJ_FLAG_HIDDEN);
         return;
     }
+    if (settings_home_) lv_obj_add_flag(settings_home_, LV_OBJ_FLAG_HIDDEN);
+    if (access_panel_) lv_obj_add_flag(access_panel_, LV_OBJ_FLAG_HIDDEN);
     lv_obj_remove_flag(wifi_picker_, LV_OBJ_FLAG_HIDDEN);
     lv_obj_move_foreground(wifi_picker_);
+    if (wifi_scan_status_) {
+        if (!vibe_wifi::receiver_active() && vibe_wifi::is_connected()) {
+            wifi_ap_record_t ap = {};
+            std::string status = T("已连接 Wi-Fi");
+            if (esp_wifi_sta_get_ap_info(&ap) == ESP_OK) {
+                char ssid[33] = {};
+                std::memcpy(ssid, ap.ssid, sizeof(ap.ssid));
+                status += std::string("：") + ssid;
+            }
+            lv_label_set_text(wifi_scan_status_, status.c_str());
+        } else {
+            lv_label_set_text(wifi_scan_status_, T("选择要加入的网络"));
+        }
+    }
     wifi_scan_list_revision_ = UINT32_MAX;
     startWifiScan();
     renderWifiNetworks();
@@ -2475,6 +2573,8 @@ void VibeCoding::connectSelectedWifi()
     }
     if (wifi_scan_status_)
         lv_label_set_text(wifi_scan_status_, (std::string(T("正在连接 ")) + wifi_selected_ssid_ + T(" …")).c_str());
+    wifi_join_ssid_ = wifi_selected_ssid_;
+    wifi_join_pending_ = true;
     wifi_selected_ssid_.clear();
 }
 
@@ -2618,8 +2718,12 @@ void VibeCoding::accessSaveCallback(lv_event_t *event)
             saved = true;
         }
     } else if (!self->access_manual_selected_) {
-        saved = vibe_pairing::use_automatic_discovery();
-        if (!saved) error = T("保存自动发现设置失败");
+        if (vibe_wifi::receiver_active() || !vibe_wifi::is_connected()) {
+            error = T("请先在网络设置连接 Wi-Fi");
+        } else {
+            saved = vibe_pairing::use_automatic_discovery();
+            if (!saved) error = T("保存自动发现设置失败");
+        }
     } else {
         std::string host = lv_textarea_get_text(self->access_host_input_);
         bool https = self->access_https_selected_;
@@ -4372,8 +4476,11 @@ void VibeCoding::workerLoop()
         // Entry/exit station switching shares this worker with phone setup.
         // A rapid reopen cannot race an old exit into the wrong Wi-Fi mode.
         if (canOperate() && foreground_network_pending_.exchange(false)) {
+            // A network chosen in 网络设置 stays up. Receiver mode reconnects
+            // only when that choice is still the active station.
             if (vibe_pairing::snapshot().access_mode == vibe_pairing::AccessMode::Receiver &&
-                !vibe_wifi::receiver_active() && vibe_wifi::connect_receiver() != ESP_OK)
+                !vibe_wifi::station_held() && !vibe_wifi::receiver_active() &&
+                vibe_wifi::connect_receiver() != ESP_OK)
                 setConnectionError(T("请在接入设置填写接收端热点信息"));
         }
         const bool usb_direct_active = canOperate() &&

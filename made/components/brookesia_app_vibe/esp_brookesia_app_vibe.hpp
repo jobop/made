@@ -24,6 +24,7 @@ namespace esp_brookesia::apps {
 class VibeCoding final : public systems::phone::App {
 public:
     static VibeCoding *requestInstance();
+    static bool startOnDisplay();
     ~VibeCoding() override = default;
 
 protected:
@@ -323,7 +324,6 @@ private:
     lv_obj_t *receiver_pressed_button_ = nullptr;
     lv_point_t receiver_press_point_{};
     bool receiver_press_moved_ = false;
-    lv_obj_t *wifi_scan_button_ = nullptr;
     lv_obj_t *wifi_picker_ = nullptr;
     lv_obj_t *wifi_network_list_ = nullptr;
     lv_obj_t *wifi_scan_status_ = nullptr;
@@ -347,6 +347,8 @@ private:
     uint32_t screen_off_timeout_s_ = 0; // 0 = never.
     bool screen_off_ = false;
     uint32_t wifi_scan_list_revision_ = UINT32_MAX; // LVGL task only.
+    bool wifi_join_pending_ = false; // LVGL task only.
+    std::string wifi_join_ssid_; // LVGL task only.
     std::string wifi_selected_ssid_; // LVGL task only.
     bool access_manual_selected_ = false;
     bool access_picker_open_ = true;
