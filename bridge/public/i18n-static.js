@@ -593,8 +593,8 @@ export const staticMessages = {
     "en": "Installed themes"
   },
   "static.149": {
-    "zh-CN": "主题包都在这里管理，包括波波。应用到码得后，设备解锁并连上电脑时才会换上这套外观。",
-    "en": "Theme packs are managed here, including Bobo. made applies one after it is unlocked and connected to this computer."
+    "zh-CN": "主题包都在这里管理。应用到码得后，设备解锁并连上电脑时才会换上这套外观。",
+    "en": "Theme packs are managed here. made applies one after it is unlocked and connected to this computer."
   },
   "language.label": {
     "zh-CN": "语言",
