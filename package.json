@@ -5,7 +5,8 @@
   "description": "码得仓库：设备、接收器、桥接器，以及与运行时解耦的包管理",
   "scripts": {
     "start": "npm --prefix bridge start",
-    "test": "npm --prefix bridge test"
+    "test": "npm --prefix bridge test",
+    "flash": "node tools/flash.mjs"
   },
   "engines": {
     "node": ">=22"

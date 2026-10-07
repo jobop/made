@@ -26,6 +26,20 @@
 
 目录是 `made/`（码得固件）、`receiver/`（接收器固件）、`bridge/`（桥接器）。不要再从仓库根执行 `node src/server.mjs`，也不要增量编译仍指向 `firmware-brookesia` 或 `receiver-firmware` 的旧构建目录。
 
+### 刷机工具
+
+日常烧录用刷机工具 `tools/flash.mjs`，一条命令认板、选目标、烧录，默认不擦 Flash 以保住 NVS。它把下面那套手动流程固化了：
+
+```sh
+# 先停掉占着串口的桥接器，再刷
+npm run flash                              # 交互式：扫描 → 认板 → 推荐目标 → 确认
+npm run flash -- --scan                    # 只认板
+npm run flash -- made -p /dev/cu.usbmodem101 -y
+npm run flash -- receiver-c3-usb --build   # 先构建再烧
+```
+
+目标、认板与推荐规则、全部选项、写盘地址表和排错，见 [刷机工具](docs/FLASH.md)。以下是手动流程，需要精细控制（只写应用分区、换自定义 `sdkconfig`）时用。
+
 ### 启动桥接器
 
 烧录或重新启动前，先停掉已经占用 `8787`、`8788` 和 `/dev/cu.usbmodem*` 的旧进程。改目录之前留下的桥接器会一直占着串口，esptool 会因此连不上板子。
@@ -45,7 +59,9 @@ npm start
 两块板都可以枚举成 Espressif `303a:1001`。先对每个口执行 `python -m esptool --port /dev/cu.usbmodemXXXX chip_id`，再决定镜像。端口会随 USB 口变化。
 
 - ESP32-S3 且带 8MB PSRAM：码得（微雪 1.85B），16MB Flash，只用 `made/` 的镜像。
-- ESP32-C3：接收器，4MB Flash，只用 `receiver/` 的镜像。
+- ESP32-C3：接收器，4MB Flash，用 `receiver/` 的镜像。C3 有两套固件变体，认板看 esptool 的 `USB mode` 行：报 `USB-Serial/JTAG` 是原生 USB（`sdkconfig.c3usb`），否则是 UART / WCH 转串口（`sdkconfig.c3uart`）。刷错变体桥接器收不到数据。
+
+这些规则已由 [刷机工具](docs/FLASH.md) 自动执行，手动烧录时按上面的判据认板。
 
 2026-10-06 这次实板是：码得 `/dev/cu.usbmodem1101`（MAC `84:c7:bb:78:e4:30`），接收器 `/dev/cu.usbmodem1301`（MAC `10:20:ba:ce:f4:1c`，原生 USB，不是 WCH `1a86:55d3`）。
 
