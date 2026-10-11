@@ -135,8 +135,8 @@ bool playClip()
     bool played = false;
     ThemeClip clip;
     const bool theme_sound = loadThemeClip(clip);
-    if (theme_sound && bsp_extra_codec_set_fs(clip.rate, 16, clip.stereo ? I2S_SLOT_MODE_STEREO
-                                                                        : I2S_SLOT_MODE_MONO) == ESP_OK) {
+    // 同 playMemoryWav：set_fs 只认 STEREO，单声道提示音靠下面复制成对写入两个槽。
+    if (theme_sound && bsp_extra_codec_set_fs(clip.rate, 16, I2S_SLOT_MODE_STEREO) == ESP_OK) {
         played = true;
         const size_t frame_channels = clip.stereo ? 2 : 1;
         size_t offset = 0;
@@ -232,7 +232,9 @@ bool playMemoryWav(const uint8_t *buffer, size_t length)
     if (bsp_extra_audio_session_acquire(BSP_EXTRA_AUDIO_OWNER_VIBE) != ESP_OK) return false;
     bool played = false;
     const bool stereo = channels == 2;
-    if (bsp_extra_codec_set_fs(rate, 16, stereo ? I2S_SLOT_MODE_STEREO : I2S_SLOT_MODE_MONO) == ESP_OK) {
+    // bsp_extra_codec_set_fs 只接受 STEREO，传 MONO 会直接被拒；单声道样本本就在写
+    // I2S 时复制到左右两槽，所以这里恒定请求 STEREO，否则单声道 WAV 会被静默丢播。
+    if (bsp_extra_codec_set_fs(rate, 16, I2S_SLOT_MODE_STEREO) == ESP_OK) {
         played = true;
         const size_t frame_channels = stereo ? 2 : 1;
         size_t cursor = 0;
