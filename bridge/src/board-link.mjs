@@ -182,14 +182,14 @@ export function createBoardLink() {
     deviceIds() {
       return [...catalogs.keys()];
     },
-    connect(deviceId, runtime, config) {
+    connect(deviceId, runtime, config, bridge) {
       if (!runtime?.boardPlugins) return;
       for (const plugin of runtime.boardPlugins()) {
         if (typeof plugin.onConnect !== 'function' || !pluginAvailable(plugin, config)) continue;
         const allowed = new Set(plugin.commands);
         const send = (command, audio) => enqueue(deviceId, command, allowed, audio);
         try {
-          const result = plugin.onConnect({ deviceId, config, send });
+          const result = plugin.onConnect({ deviceId, config, send, bridge });
           if (result && typeof result.then === 'function') result.catch(() => {});
         } catch {
           /* A plugin that fails to arm must not block the catalog response. */
@@ -222,7 +222,7 @@ export function createBoardLink() {
       }
       return wanted;
     },
-    async handleEvent(deviceId, payload, runtime, config) {
+    async handleEvent(deviceId, payload, runtime, config, bridge) {
       if (!payload || typeof payload !== 'object' || Array.isArray(payload)) throw fail('事件无效');
       if (typeof payload.name !== 'string' || !CAPABILITY_NAME.test(payload.name)) throw fail('事件无效');
       const fields = parseFields(payload.fields);
@@ -247,6 +247,7 @@ export function createBoardLink() {
             config,
             deviceId,
             send: (command, audio) => enqueue(deviceId, command, allowed, audio),
+            bridge,
           });
         } catch {
           continue;

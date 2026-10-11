@@ -42,6 +42,37 @@ npx made-market info <包 ID>             # 查看版本、校验和与安装位
 - `install` 会**整目录重建**目标目录（`rmSync` 后按归档写入），用户已有的 `settings.json` 会被包内默认值覆盖，密钥和端点配置要先备份再装、装完恢复。
 - `install` 从市场实时索引取包，不是从本地源码目录；改完插件源码要先 `publish` 出新版本，再 `install` 才会拿到新代码。判断装的是哪一版看 sha256，不看文件时间。
 
+## 插件开放能力清单
+
+管控插件的能力面 = 两条供给线的并集。写插件、评需求前先查这张表；市场网站有同步的[开放能力说明页](https://made-market.link/capabilities.html)，脚手架 `npx made-market init --kind control` 会把同一份清单生成进包里（`capabilities.json` + `contracts.d.ts`）。**给插件加新能力时，三处必须同步更新：本清单、市场 CLI 脚手架（made-market 仓库 `cli/`）、市场网站说明页（`site/capabilities.html`）。**
+
+**板侧线 —— 清单由固件上报（`esp_brookesia_app_vibe.cpp` 的 `announceBoardCatalog`），扩清单要刷固件：**
+
+| 事件（cadence 均为 edge） | 触发 |
+| --- | --- |
+| `boot.click` | 按键短按（语音意图） |
+| `boot.double` | 双击（确认） |
+| `boot.triple` | 三击（取消） |
+| `boot.long` | 长按（回主页） |
+
+| 命令 | 作用 |
+| --- | --- |
+| `caption.show` | 屏幕字幕（字段 `text`，另有时长等，见固件解析） |
+| `audio.play` | 播放音频，可附带 WAV（16-bit PCM，8k–48kHz，≤256KB） |
+| `theme.apply` | 应用主题插件 |
+| `volume.set` | 音量 |
+| `agent.select` | 切换当前助手 |
+| `session.create` / `session.select` / `session.delete` | 会话管理 |
+| `voice.start` | 主动点亮录音 |
+| `task.confirm` / `task.cancel` | 审批待确认任务 |
+
+**桥接器线 —— `bridge/src/plugins/enhance.mjs` 露出的句柄，改完重启桥接器即生效：**
+
+- 触发面：`onEvent` / `onConnect` / `onDisconnect`（板侧事件与连接）、`onJob`（任务生命周期：`created` / `confirmed` / `started` / `progress` / `completed` / `handed_off` / `failed` / `cancelled`；插件自建任务不广播 `created`，防自激）、`onTurnInput` / `onTurnOutput`（回合管道：按注册顺序成链，返回字符串即 override，最后一个说话的算数；1500ms 超时，单个插件失败沿用上一环，绝不阻断任务；`onTurnInput` 改的是执行副本，任务原文不动）。
+- `bridge` 门面（事件、钩子、通知的上下文里都拿得到）：`agents()` / `agent(id)` / `jobs()` / `job(id)` / `sessions(agentId?)` / `createTask({instruction, agentId?, projectId?, title?})`（自动建会话并落待确认任务，限流 10 次/分钟）/ `submitTurn({instruction, sessionId})` / `confirmJob(id)` / `cancelJob(id)` / `themes()` / `devices()` / `send(deviceId, command, audio?)` / `pending(deviceId)`。
+
+接口类型真源是 `bridge/src/plugins/contracts.d.ts`，用法与完整示例在 `docs/PLUGINS.md`。能力归线的判断标准：板子上有没有这个命令/事件（固件的事），还是桥接器内存里有没有这个句柄（桥接器的事）——前者刷固件，后者改桥接器，插件永远只是清单的消费者。
+
 ## 启动与烧录
 
 目录是 `made/`（码得固件）、`receiver/`（接收器固件）、`bridge/`（桥接器）。不要再从仓库根执行 `node src/server.mjs`，也不要增量编译仍指向 `firmware-brookesia` 或 `receiver-firmware` 的旧构建目录。

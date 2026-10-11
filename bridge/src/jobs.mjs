@@ -11,8 +11,9 @@ function now() {
 }
 
 export class JobStore {
-  constructor({ file, projects, defaultProject, defaultProvider, workspaceRoot, run, providerAvailable, pluginsRuntime }) {
+  constructor({ file, projects, defaultProject, defaultProvider, workspaceRoot, run, providerAvailable, pluginsRuntime, hooks }) {
     this.agent = pluginsRuntime ? (id) => pluginsRuntime.agent(id) : run.agent || builtinAgent;
+    this.hooks = hooks || null;
     this.file = file;
     this.projects = projects;
     this.workspaceRoot = workspaceRoot || '';
@@ -211,6 +212,7 @@ export class JobStore {
     this.sessions.recordTurn(session.id, text);
     this.jobs.push(job);
     this.save();
+    this.hooks?.notify('created', job);
     return job;
   }
 
@@ -231,6 +233,7 @@ export class JobStore {
     job.status = 'queued';
     job.updatedAt = now();
     this.save();
+    this.hooks?.notify('confirmed', job);
     void this.pump();
     return job;
   }
@@ -247,6 +250,7 @@ export class JobStore {
     job.updatedAt = now();
     this.controllers.get(job.id)?.abort();
     this.save();
+    this.hooks?.notify('cancelled', job);
     return job;
   }
 
@@ -262,12 +266,16 @@ export class JobStore {
         job.status = 'running';
         job.updatedAt = now();
         this.save();
+        this.hooks?.notify('started', job);
         try {
           const configured = this.projects.find((item) => item.id === job.projectId);
           const project = this.workspaceRoot
             ? { ...configured, path: path.join(this.workspaceRoot, job.vibeSessionId) }
             : configured;
-          const outcome = await this.run(job, project, controller.signal, (text) => {
+          // 回合输入管道：插件可以改写本轮实际执行的指令；存储里的任务原文保持不变。
+          const instruction = this.hooks ? await this.hooks.turnIn(job) : job.instruction;
+          const effectiveJob = instruction === job.instruction ? job : { ...job, instruction };
+          const outcome = await this.run(effectiveJob, project, controller.signal, (text) => {
             if (job.status === 'running' && this.agent(job.provider)?.capabilities.progress) {
               const progress = String(text || '').replace(/[\x00-\x1f\x7f]+/g, ' ').trim().slice(0, 80);
               if (!progress || progress === job.progress) return;
@@ -278,6 +286,7 @@ export class JobStore {
               if (current - (this.progressSavedAt.get(job.id) || 0) >= 750) {
                 this.progressSavedAt.set(job.id, current);
                 this.save();
+                this.hooks?.notify('progress', job);
               }
             }
           }, (sessionId) => {
@@ -296,13 +305,17 @@ export class JobStore {
               throw new Error('编程工具插件返回了无效的任务状态');
             }
             job.status = outcome.status || 'completed';
-            job.result = outcome.result || job.result;
+            let result = outcome.result || job.result;
+            // 回合输出管道：仅在任务完成时调用，插件返回新字符串即改写结果。
+            if (job.status === 'completed') result = this.hooks ? await this.hooks.turnOut(job, result) : result;
+            job.result = result;
             if (outcome.handoff && typeof outcome.handoff === 'object') job.handoff = { ...outcome.handoff };
             if (job.status === 'completed' && typeof outcome.gitSnapshot === 'string') {
               this.sessions.setGitSnapshot(job.vibeSessionId, outcome.gitSnapshot);
             }
             job.updatedAt = now();
             this.save();
+            this.hooks?.notify(job.status, job);
           }
         } catch (error) {
           if (job.status === 'running') {
@@ -316,6 +329,7 @@ export class JobStore {
             }
             job.updatedAt = now();
             this.save();
+            this.hooks?.notify('failed', job);
           }
         } finally {
           this.controllers.delete(job.id);

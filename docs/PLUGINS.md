@@ -114,6 +114,32 @@ alarm-clock/
 
 事件和命令分开走。码得 `POST /device/events` 只上报已登记事件，响应是 `{accepted:true}`，不携带命令。插件在 `onEvent` 里返回 `{commands}`，或调用上下文里的 `send(command)`，两条路都把命令放进该设备的队列。`send` 在 `onEvent` 返回后仍然有效，可以稍后调用。命令名必须同时出现在板侧清单和插件自己的 `commands` 里；字段沿用事件字段的限制。
 
+### 增强接口（回合管道与桥接器句柄）
+
+管控插件是**有自主行为能力的增强体**：触发（事件、回合钩子、任务通知）只决定它何时被唤醒，被唤醒后能做什么取决于桥接器开放的接口面。接口有两条供给线，演进节奏不同：
+
+- **板侧线**：事件与命令，清单由固件上报（`/device/capabilities`），桥接器只做清单校验。要新命令（例如关机）必须改固件，桥接器给不了。
+- **桥接器线**：`onEvent` / `onConnect` 上下文里的 `bridge` 句柄（助手、任务、主题、板侧发送），重启桥接器即生效。
+
+`bridge` 句柄（见 `contracts.d.ts` 的 `BridgeFacade`）：
+
+| 方法 | 作用 |
+| --- | --- |
+| `agents()` / `agent(id)` | 已启用助手的清单与可用性 |
+| `jobs()` / `job(id)` / `sessions(agentId?)` | 任务与会话（只读快照） |
+| `createTask({instruction, agentId?, projectId?, title?})` | 为某助手建任务，落在 `waiting_confirmation`；每分钟限 10 次 |
+| `submitTurn({instruction, sessionId})` | 在已有任务上追加一轮 |
+| `confirmJob(id)` / `cancelJob(id)` | 确认或取消任务 |
+| `themes()` / `devices()` / `send(deviceId, command, audio?)` / `pending(deviceId)` | 主题清单、已连设备、直接入队命令 |
+
+三个可选钩子（声明了才参与，不声明就是纯事件→命令插件）：
+
+- **`onTurnInput(ctx)`** — 回合输入管道。`ctx.instruction` 是上一环的产物，返回新字符串即改写本轮**实际执行**的指令；存储里的任务原文保持不变，任务列表仍显示用户原话。多个插件按注册顺序排成链，后者拿到前者的产物，最后一个说话的算数。
+- **`onTurnOutput(ctx)`** — 回合输出管道，仅在任务**完成**时调用。返回新字符串即改写 `job.result`。`handed_off` 的后续追加不经过这条管道。
+- **`onJob(ctx)`** — 任务生命周期通知：`created / confirmed / started / progress / completed / handed_off / failed / cancelled`。fire-and-forget，插件出错不影响任务。**插件自己创建的任务（`source:'plugin'`）不再广播 `created`**，避免"建任务 → 收到 created → 再建任务"的自激循环。
+
+管道的硬约束：每个钩子有 **1500ms 超时**，超时或抛错时沿用上一环的值，绝不阻断任务本身；返回非字符串一律视为"未改写"。"让某个助手发声"的完整链路就是 `bridge.createTask(...)` → `bridge.confirmJob(id)` → 任务完成时在 `onJob` 里 `bridge.send(deviceId, {name:'audio.play'}, wav)`。
+
 桥接器也可以不经过事件直接下发。本机工作台 `POST /api/board/commands`，请求体为 `{deviceId,name,fields}`，并带本机操作令牌。这条路径只要求命令在板侧清单里。
 
 播放语音时，语音数据和命令一起入队。插件调用 `send({name:'audio.play'}, wav)`。工作台则 `POST /api/board/commands?deviceId=...`，`Content-Type` 为 `audio/wav`，正文就是 PCM WAV（16-bit，8k–48k，单声道或双声道，不超过 256KB）。码得领取命令时若看到 `audio:true`，再 `GET /device/commands/<id>/audio` 取走同一段语音并播放。

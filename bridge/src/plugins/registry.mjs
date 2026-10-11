@@ -39,6 +39,10 @@ export function validatePlugin(plugin) {
     names('events', 1);
     names('commands', 0);
     if (typeof plugin.onEvent !== 'function') fail('缺少 onEvent');
+    // 增强钩子是可选项：不声明就不参与管道，声明了就必须是函数。
+    for (const key of ['onTurnInput', 'onTurnOutput', 'onJob']) {
+      if (plugin[key] !== undefined && typeof plugin[key] !== 'function') fail(`${key} 必须是函数`);
+    }
   } else if (plugin.kind === 'speech-recognizer') {
     if (typeof plugin.transcribe !== 'function' || !Array.isArray(plugin.fields) || plugin.fields.length > 16) fail('缺少 transcribe 或 fields 无效');
     const keys = new Set();

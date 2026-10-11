@@ -21,7 +21,8 @@ import { TunnelManager } from './tunnel.mjs';
 import { UsbReceiver, USB_DIRECT_AUTHORITY, USB_RECEIVER_AUTHORITY } from './usb-receiver.mjs';
 
 import { createPluginRegistry, loadConfiguredPlugins } from './plugins/registry.mjs';
-import { listInstalled, removePlugin, removeTheme, savePluginSettings, setPluginEnabled, themeExists } from './installed.mjs';
+import { createEnhancement } from './plugins/enhance.mjs';
+import { listInstalled, listThemes, removePlugin, removeTheme, savePluginSettings, setPluginEnabled, themeExists } from './installed.mjs';
 import { createBoardLink } from './board-link.mjs';
 import { initializeSpeechSettings, saveSpeechSettings } from './speech-settings.mjs';
 import { builtinSpeechRecognizers } from './speech/index.mjs';
@@ -251,6 +252,8 @@ export function createApp(config, { run, transcribe, tunnel: providedTunnel, ena
   const usbForwardSecret = randomUUID();
   const pairing = new PairingStore(config.stateDir);
   const boardLink = createBoardLink();
+  // 增强运行时：回合管道与生命周期通知给 JobStore 用，bridge 句柄给插件上下文用。
+  const enhance = createEnhancement(config);
   const tunnel = providedTunnel || new TunnelManager({
     devicePort: config.devicePort, stateDir: config.stateDir, bridgeId: pairing.bridgeId,
   });
@@ -303,10 +306,13 @@ export function createApp(config, { run, transcribe, tunnel: providedTunnel, ena
     defaultProvider: config.defaultProvider,
     pluginsRuntime: config.pluginsRuntime,
     run: run || createRunner(config),
+    hooks: enhance,
     // Keep stored built-in failures canonical; each client localizes at its output boundary.
     providerAvailable: (id) => ({ ...providerStates(config, 'zh-CN').find((item) => item.id === id),
       preserveMessage: !isBuiltinAgent(config.pluginsRuntime.agent(id)) }),
   });
+  // 任务存储与板侧链路就绪后，把句柄露给管控插件。
+  enhance.attach({ jobs: store, board: boardLink, themes: () => listThemes(config) });
   const desktop = http.createServer(async (req, res) => {
     try {
       if (![`127.0.0.1:${config.port}`, `localhost:${config.port}`].includes(req.headers.host)) {
@@ -476,7 +482,7 @@ export function createApp(config, { run, transcribe, tunnel: providedTunnel, ena
             throw new Error('插件配置无效');
           }
           const saved = await savePluginSettings(config, payload.id, payload.settings);
-          for (const deviceId of boardLink.deviceIds()) boardLink.connect(deviceId, config.pluginsRuntime, config);
+          for (const deviceId of boardLink.deviceIds()) boardLink.connect(deviceId, config.pluginsRuntime, config, enhance.bridge());
           send(res, 200, saved, false);
           return;
         }
@@ -565,6 +571,11 @@ export function createApp(config, { run, transcribe, tunnel: providedTunnel, ena
       if (requestedLocales.length) deviceLocale = validateLocale(requestedLocales[0]);
       const address = req.socket.remoteAddress || '';
       const authority = normalizedAuthority(req.headers.host);
+      if (process.env.VIBE_DEVICE_TRACE === '1') {
+        console.info('device-trace', JSON.stringify({ at: new Date().toISOString(),
+          method: req.method, path: url.pathname, host: req.headers.host,
+          auth: req.headers.authorization ? 'bearer' : '' }));
+      }
       const usbAuthority = [USB_RECEIVER_AUTHORITY, USB_DIRECT_AUTHORITY].includes(authority);
       const usbForwarded = address === '127.0.0.1' &&
         equalToken(req.headers['x-vibe-usb-forward'], usbForwardSecret) && usbAuthority;
@@ -645,10 +656,21 @@ export function createApp(config, { run, transcribe, tunnel: providedTunnel, ena
           deviceSend(res, 400, { error: '校验请求格式无效' });
           return;
         }
-        const publicUrl = tunnel.summary().status === 'online' ? tunnel.summary().url : null;
-        const publicAuthority = publicUrl ? new URL(publicUrl).host.toLowerCase() : null;
-        if (!authority || (authority !== publicAuthority && !localAuthorities(config.devicePort).has(authority) &&
-            !usbForwarded)) {
+        const tunnelSummary = tunnel.summary();
+        // The configured URL is typed by the user in the workbench, so it stays
+        // authorized even while the built-in tunnel process is off: a
+        // self-hosted reverse proxy (e.g. a published app route) may be the
+        // thing actually fronting the device port. The HMAC challenge in
+        // verifyManual still gates the response on the paired token.
+        const publicAuthorityOf = (value) => {
+          try { return normalizedAuthority(new URL(value).host); } catch { return null; }
+        };
+        const publicAuthorities = new Set(
+          [tunnelSummary.status === 'online' ? tunnelSummary.url : null, tunnelSummary.configuredUrl]
+            .map(publicAuthorityOf)
+            .filter(Boolean));
+        if (!authority || (!publicAuthorities.has(authority) &&
+            !localAuthorities(config.devicePort).has(authority) && !usbForwarded)) {
           deviceSend(res, 403, { error: '接入地址未获桥接器授权' });
           return;
         }
@@ -674,12 +696,12 @@ export function createApp(config, { run, transcribe, tunnel: providedTunnel, ena
       const deviceId = pairing.deviceIdForToken(token);
       if (req.method === 'POST' && url.pathname === '/device/capabilities') {
         boardLink.setCatalog(deviceId, await body(req));
-        boardLink.connect(deviceId, config.pluginsRuntime, config);
+        boardLink.connect(deviceId, config.pluginsRuntime, config, enhance.bridge());
         deviceSend(res, 200, { events: boardLink.subscription(deviceId, config.pluginsRuntime, config) });
         return;
       }
       if (req.method === 'POST' && url.pathname === '/device/events') {
-        await boardLink.handleEvent(deviceId, await body(req), config.pluginsRuntime, config);
+        await boardLink.handleEvent(deviceId, await body(req), config.pluginsRuntime, config, enhance.bridge());
         deviceSend(res, 200, { accepted: true });
         return;
       }

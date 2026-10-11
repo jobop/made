@@ -100,6 +100,52 @@ export interface QueuedBoardCommand extends BoardCommand {
   id: string;
   fields: Record<string, string>;
 }
+/** Bridge handles for board plugins: what an enhancement can reach without a hook. */
+export interface BridgeFacade {
+  /** Enabled coding agents with a probed availability snapshot. */
+  agents(): { id: string; label: string; available: boolean; reason: string; mode: string; capabilities: Capabilities }[];
+  agent(id: string): ReturnType<BridgeFacade['agents']>[number] | undefined;
+  /** Persisted jobs, newest first. */
+  jobs(): Record<string, unknown>[];
+  job(id: string): Record<string, unknown> | undefined;
+  sessions(agentId?: string): Record<string, unknown>[];
+  /** Create a task (waiting_confirmation) for an agent; rate-limited per bridge. */
+  createTask(options: { instruction: string; agentId?: string; projectId?: string; title?: string }): { job: Record<string, unknown>; session: Record<string, unknown> };
+  /** Append a turn to an existing session. */
+  submitTurn(options: { instruction: string; sessionId: string }): Record<string, unknown>;
+  confirmJob(id: string): Record<string, unknown>;
+  cancelJob(id: string): Record<string, unknown>;
+  themes(): { name: string; title: string; sound: boolean; icon: boolean; background: boolean }[];
+  devices(): string[];
+  /** Enqueue a board command directly; only the board-side catalog constrains the name. */
+  send(deviceId: string, command: BoardCommand, audio?: Uint8Array): QueuedBoardCommand;
+  pending(deviceId: string): QueuedBoardCommand[];
+}
+/** Turn input pipeline: return a new string to override what the agent executes. */
+export interface TurnInputContext {
+  instruction: string;
+  job: Job;
+  agentId: string;
+  config: PluginConfig;
+  bridge: BridgeFacade;
+}
+/** Turn output pipeline: called only when a job completes; a returned string overrides the result. */
+export interface TurnOutputContext {
+  result: string;
+  job: Job;
+  agentId: string;
+  status: 'completed';
+  config: PluginConfig;
+  bridge: BridgeFacade;
+}
+export type JobEventType = 'created' | 'confirmed' | 'started' | 'progress' | 'completed' | 'handed_off' | 'failed' | 'cancelled';
+/** Job lifecycle notification; fire-and-forget, failures never affect the job. */
+export interface JobEventContext {
+  type: JobEventType;
+  job: Job;
+  config: PluginConfig;
+  bridge: BridgeFacade;
+}
 /**
  * Bridge plugin: subscribes to board events. Event delivery and command
  * delivery are separate. Return commands or call send(); both enqueue for a
@@ -119,12 +165,20 @@ export interface BoardPlugin {
     deviceId: string;
     config: PluginConfig;
     send: (command: BoardCommand, audio?: Uint8Array) => QueuedBoardCommand;
+    bridge: BridgeFacade;
   }) => Promise<void> | void;
   onEvent: (context: {
     event: BoardEvent;
     config: PluginConfig;
     deviceId: string;
     send: (command: BoardCommand, audio?: Uint8Array) => QueuedBoardCommand;
+    bridge: BridgeFacade;
   }) => Promise<{ commands?: BoardCommand[] } | void> | { commands?: BoardCommand[] } | void;
+  /** Turn input pipeline: a returned string overrides the instruction actually executed (the stored original stays intact). */
+  onTurnInput?: (context: TurnInputContext) => string | void | Promise<string | void>;
+  /** Turn output pipeline: called only for completed jobs; a returned string overrides the result. */
+  onTurnOutput?: (context: TurnOutputContext) => string | void | Promise<string | void>;
+  /** Job lifecycle notification. Tasks created by plugins do not broadcast 'created'. */
+  onJob?: (context: JobEventContext) => void;
 }
 export type VibePlugin = CodingAgentPlugin | BoardPlugin;
