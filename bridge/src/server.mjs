@@ -304,6 +304,7 @@ export function createApp(config, { run, transcribe, tunnel: providedTunnel, ena
     workspaceRoot: config.workspaceRoot,
     defaultProject: config.defaultProject,
     defaultProvider: config.defaultProvider,
+    maxParallel: config.maxParallelJobs,
     pluginsRuntime: config.pluginsRuntime,
     run: run || createRunner(config),
     hooks: enhance,

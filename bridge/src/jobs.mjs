@@ -11,7 +11,7 @@ function now() {
 }
 
 export class JobStore {
-  constructor({ file, projects, defaultProject, defaultProvider, workspaceRoot, run, providerAvailable, pluginsRuntime, hooks }) {
+  constructor({ file, projects, defaultProject, defaultProvider, workspaceRoot, maxParallel, run, providerAvailable, pluginsRuntime, hooks }) {
     this.agent = pluginsRuntime ? (id) => pluginsRuntime.agent(id) : run.agent || builtinAgent;
     this.hooks = hooks || null;
     this.file = file;
@@ -21,6 +21,11 @@ export class JobStore {
     this.defaultProvider = defaultProvider;
     this.run = run;
     this.providerAvailable = providerAvailable;
+    // 同时执行的会话数。缺省 1 = 完全串行（保持既有语义，便于测试与降级）。
+    const lanes = Number(maxParallel);
+    this.maxParallel = Number.isFinite(lanes) ? Math.min(Math.max(Math.trunc(lanes), 1), 4) : 1;
+    // 正在占用车道的会话 ID。一个会话同时只会有一条指令在跑，所以按会话占位即可。
+    this.lanes = new Set();
     this.sessions = new SessionStore({
       file: path.join(path.dirname(file), 'sessions.json'), projects, defaultProject, defaultProvider, agent: this.agent,
     });
@@ -258,8 +263,28 @@ export class JobStore {
     if (this.pumping) return;
     this.pumping = true;
     try {
+      // 派活：每个会话占一条车道。会话之间可以并行，同一会话仍然串行——编程工具按
+      // 会话线程加写锁，两个进程写同一线程必然冲突，所以并行的粒度只能是"会话"。
+      for (const sessionId of this.jobs.map((item) => item.vibeSessionId)) {
+        if (this.lanes.size >= this.maxParallel) break;
+        if (this.lanes.has(sessionId)) continue;
+        if (!this.jobs.some((item) => item.status === 'queued' && item.vibeSessionId === sessionId)) continue;
+        this.lanes.add(sessionId);
+        void this.lane(sessionId).catch(() => {}).finally(() => {
+          this.lanes.delete(sessionId);
+          void this.pump();
+        });
+      }
+    } finally {
+      this.pumping = false;
+    }
+  }
+
+  /** 单条车道：把这个会话里排队的指令依次跑完。 */
+  async lane(sessionId) {
+    try {
       while (true) {
-        const job = this.jobs.find((item) => item.status === 'queued');
+        const job = this.jobs.find((item) => item.status === 'queued' && item.vibeSessionId === sessionId);
         if (!job) break;
         const controller = new AbortController();
         this.controllers.set(job.id, controller);
@@ -337,7 +362,8 @@ export class JobStore {
         }
       }
     } finally {
-      this.pumping = false;
+      this.lanes.delete(sessionId);
+      void this.pump();
     }
   }
 }

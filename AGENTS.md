@@ -103,6 +103,27 @@ npm start
 
 这会转到 `bridge/` 里的 `node src/server.mjs`。配置文件是 `bridge/config.local.json`，没有就从 `bridge/config.example.json` 复制。工作台是 `http://127.0.0.1:8787`，设备 API 是 `8788`，局域网发现是 UDP `8789`。测试也在仓库根执行 `npm test`。
 
+#### 启动环境：别从沙箱会话里拉起桥接器
+
+WorkBuddy / 沙箱会话的 shell 会往环境里塞**会话级的本地代理**
+（`HTTP_PROXY=HTTPS_PROXY=http://127.0.0.1:<随机端口>`）和一堆 shim 变量，而桥接器用
+`spawn(..., { env: process.env })` 把它们**原样转发给子 CLI**。codex 是 Rust reqwest，认
+`HTTPS_PROXY`：请求全发给一个早已消失的端口后会**无限重试**（进程活着、0% CPU、
+一个 socket 都没有），任务永远停在「正在分析任务」。Node 写的助手不认这个变量，所以自身
+没事，但会被卡住的那条车道堵在后面——看起来像「所有助手都卡」。
+
+从会话里启动桥接器时，必须先剔除 `HTTP_PROXY`/`HTTPS_PROXY`/`ALL_PROXY`/`NO_PROXY`
+（大小写都要）、`NODE_OPTIONS`、`PYTHONPATH`、`BASH_ENV` 和 `CODEBUDDY_*`。
+排查口诀：`ps eww -p <桥接器 PID>` 看它环境里有没有代理；`lsof -a -p <CLI PID> -i`
+为空就说明不是网络在等。
+
+#### 任务车道
+
+`bridge/src/jobs.mjs` 的 `pump()` 按**会话**分车道：会话之间可以并行，同一会话恒为串行
+（编程工具按会话线程加写锁，同会话并行必然冲突，`submit()` 也会直接拒绝同一会话的
+第二条并发指令）。同时执行的会话数默认 2，用 `bridge/config.local.json` 的
+`maxParallelJobs` 或环境变量 `VIBE_MAX_PARALLEL` 调整，取值 1–4。
+
 码得锁屏不连接桥接器、不上报心跳。烧录重启后大盘显示离线是预期现象，上滑解锁后才会重新上线。
 
 ### 认板再烧

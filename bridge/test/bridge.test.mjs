@@ -26,7 +26,7 @@ function sampleWav() {
   return wav;
 }
 
-function fixture(run = async () => ({ status: 'completed', result: '完成' })) {
+function fixture(run = async () => ({ status: 'completed', result: '完成' }), options = {}) {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'vibe-bridge-'));
   const projects = [{ id: 'demo', label: '演示项目', path: directory }];
   const config = { projects, defaultProject: 'demo', defaultProvider: 'codex' };
@@ -37,6 +37,7 @@ function fixture(run = async () => ({ status: 'completed', result: '完成' })) 
     defaultProvider: 'codex',
     run,
     providerAvailable: () => ({ available: true }),
+    ...options,
   });
   return { store, config, directory };
 }
@@ -126,6 +127,61 @@ test('任务只在确认后运行，状态会保存', async () => {
   await until(() => job.status === 'completed');
   assert.equal(calls, 1);
   assert.equal(JSON.parse(fs.readFileSync(path.join(directory, 'jobs.json')))[0].status, 'completed');
+});
+
+test('不同会话可以并行执行，超出并发上限的会话排队等待', async () => {
+  const started = [];
+  const release = new Map();
+  const { store } = fixture(async (job) => {
+    started.push(job.instruction);
+    await new Promise((resolve) => release.set(job.instruction, resolve));
+    return { status: 'completed', result: '完成' };
+  }, { maxParallel: 2 });
+
+  const first = submit(store, { instruction: '会话甲：第一条' });
+  const second = submit(store, { instruction: '会话乙：第一条' });
+  const third = submit(store, { instruction: '会话丙：第一条' });
+  store.confirm(first.id);
+  store.confirm(second.id);
+  store.confirm(third.id);
+
+  await until(() => started.length >= 2);
+  assert.equal(started.includes('会话丙：第一条'), false);
+  assert.equal(first.status, 'running');
+  assert.equal(second.status, 'running');
+  assert.equal(third.status, 'queued');
+
+  // 任意一条车道空出来，排队的会话立刻顶上。
+  release.get('会话甲：第一条')();
+  await until(() => third.status === 'running');
+  assert.equal(first.status, 'completed');
+
+  release.get('会话乙：第一条')();
+  release.get('会话丙：第一条')();
+  await until(() => third.status === 'completed');
+  assert.equal(second.status, 'completed');
+});
+
+test('同一会话恒为串行，并发上限放宽也不允许两条指令同时在跑', async () => {
+  let concurrent = 0;
+  let peak = 0;
+  const { store } = fixture(async () => {
+    concurrent += 1;
+    peak = Math.max(peak, concurrent);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    concurrent -= 1;
+    return { status: 'completed', result: '完成' };
+  }, { maxParallel: 4 });
+
+  const session = store.createSession({ provider: 'codex' });
+  const first = store.submit({ instruction: '会话甲：第一条', sessionId: session.id });
+  assert.throws(
+    () => store.submit({ instruction: '会话甲：第二条', sessionId: session.id }),
+    /请先完成或取消当前任务的上一条指令/,
+  );
+  store.confirm(first.id);
+  await until(() => first.status === 'completed');
+  assert.equal(peak, 1);
 });
 
 test('确认前取消不会运行；运行中取消会传递中断信号', async () => {

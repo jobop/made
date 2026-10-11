@@ -81,6 +81,12 @@ export function loadConfig(env = process.env) {
   if (![port, devicePort].every((p) => Number.isInteger(p) && p > 0 && p < 65536)) {
     throw new Error('端口号必须在 1 到 65535 之间');
   }
+  // 同时执行的会话数。同一会话恒为串行（编程工具按会话线程加写锁，并行必然冲突），
+  // 所以这里限制的是"能同时跑几个会话"，不是"一个会话里能同时跑几条指令"。
+  const maxParallelJobs = Number(env.VIBE_MAX_PARALLEL || raw.maxParallelJobs || 2);
+  if (!Number.isInteger(maxParallelJobs) || maxParallelJobs < 1 || maxParallelJobs > 4) {
+    throw new Error('并行任务数必须是 1 到 4 之间的整数');
+  }
   const stateDir = path.resolve(env.VIBE_STATE_DIR || path.join(ROOT, 'state'));
   const usbPort = validateUsbPort(env.VIBE_USB_PORT || '');
   const models = { ...validateModelSettings({
@@ -110,6 +116,7 @@ export function loadConfig(env = process.env) {
     defaultProvider,
     port,
     devicePort,
+    maxParallelJobs,
     codexModel: models.codex,
     models,
     asrMode,
