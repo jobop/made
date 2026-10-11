@@ -1,15 +1,50 @@
 {
-  "name": "esp32-vibe-coding-agent",
-  "version": "0.1.0",
-  "private": true,
+  "name": "made-bridge",
+  "version": "0.2.1",
+  "description": "码得（made）独立语音编程设备的电脑侧桥接器：工作台 API、设备接口、任务调度与插件运行时。一条命令启动，配合 ESP32 固件使用，源码在 github.com/jobop/made。",
   "type": "module",
-  "description": "码得（made）独立语音编程设备的电脑侧桥接客户端",
+  "license": "MIT",
+  "engines": {
+    "node": ">=22"
+  },
+  "bin": {
+    "made-bridge": "src/server.mjs"
+  },
+  "files": [
+    "src/",
+    "public/",
+    "builtin/",
+    "config.example.json",
+    "demo-project/",
+    "README.md",
+    "LICENSE"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/jobop/made.git",
+    "directory": "bridge"
+  },
+  "homepage": "https://github.com/jobop/made/tree/main/bridge#readme",
+  "bugs": {
+    "url": "https://github.com/jobop/made/issues"
+  },
+  "keywords": [
+    "made",
+    "码得",
+    "esp32",
+    "bridge",
+    "voice-coding",
+    "agent",
+    "codex",
+    "plugin"
+  ],
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  },
   "scripts": {
     "start": "node src/server.mjs",
     "doctor": "node src/server.mjs --doctor",
     "test": "node --test --experimental-test-isolation=none --test-concurrency=1"
-  },
-  "engines": {
-    "node": ">=22"
   }
 }

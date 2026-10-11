@@ -1,3 +1,4 @@
+#!/usr/bin/env node
 import fs from 'node:fs';
 import path from 'node:path';
 import http from 'node:http';
@@ -6,7 +7,7 @@ import os from 'node:os';
 import { isIP } from 'node:net';
 import { randomUUID, timingSafeEqual } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
-import { loadConfig, packageRoots, ROOT } from './config.mjs';
+import { loadConfig, packageRoots, ROOT, ensureUserConfig } from './config.mjs';
 import { JobStore } from './jobs.mjs';
 import { VIBE_SESSION_ID } from './sessions.mjs';
 import { createRunner, providerStates, isBuiltinAgent } from './providers.mjs';
@@ -902,12 +903,30 @@ export function createApp(config, { run, transcribe, tunnel: providedTunnel, ena
   };
 }
 
-if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+// 入口判断要用 realpath：npm bin / npx 通过 node_modules/.bin 里的符号链接调过来，
+// argv[1] 是链接路径，直接和本文件路径比永远不相等——表现为静默退出、什么都不干。
+const isEntry = (() => {
+  if (!process.argv[1]) return false;
+  try {
+    return fs.realpathSync(process.argv[1]) === fs.realpathSync(fileURLToPath(import.meta.url));
+  } catch {
+    return false;
+  }
+})();
+
+if (isEntry) {
   if (process.argv.includes('--doctor')) {
     // 自检只做检查并打印，不监听任何端口；有阻断性缺项时退出码为 1。
     const { runDoctor } = await import('./doctor.mjs');
     process.exitCode = await runDoctor();
   } else {
+    // 首次运行（npx / 全局安装）：把示例配置落到 ~/.made-bridge/，开箱即得一份
+    // 持久可编辑的配置；源码仓库运行（有 ROOT/config.local.json）不受影响。
+    const seeded = ensureUserConfig();
+    if (seeded.created) {
+      console.error(`已创建配置文件：${seeded.path}`);
+      console.error('编辑 projects 指向你自己的代码仓库后重启；当前先用示例项目（demo-project）运行。');
+    }
     const config = loadConfig();
     config.pluginsRuntime = await loadConfiguredPlugins(config);
     const app = createApp(config, { enableUsb: true });

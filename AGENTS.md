@@ -101,7 +101,7 @@ npm run flash -- receiver-c3-usb --build   # 先构建再烧
 npm start
 ```
 
-这会转到 `bridge/` 里的 `node src/server.mjs`。配置文件是 `bridge/config.local.json`，没有就从 `bridge/config.example.json` 复制。工作台是 `http://127.0.0.1:8787`，设备 API 是 `8788`，局域网发现是 UDP `8789`。测试也在仓库根执行 `npm test`。
+这会转到 `bridge/` 里的 `node src/server.mjs`。配置文件是 `bridge/config.local.json`，没有就从 `bridge/config.example.json` 复制。桥接器也发了 npm（包名 `made-bridge`）：任何机器 `npx made-bridge` 一条命令启动，首次运行在 `~/.made-bridge/` 生成配置与状态（代码目录只读，可写数据全在用户目录；`VIBE_CONFIG` / `VIBE_STATE_DIR` / `VIBE_DATA_DIR` 可覆盖）。工作台是 `http://127.0.0.1:8787`，设备 API 是 `8788`，局域网发现是 UDP `8789`。测试也在仓库根执行 `npm test`。
 
 #### 启动环境：别从沙箱会话里拉起桥接器
 
