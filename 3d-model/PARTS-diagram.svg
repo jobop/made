@@ -1,0 +1,79 @@
+<svg viewBox="0 0 680 470" width="1400" height="967" role="img" xmlns="http://www.w3.org/2000/svg" font-family="-apple-system, 'PingFang SC', 'Helvetica Neue', Arial, sans-serif">
+  <title>外壳部位标注图（后壳俯视）</title>
+  <desc>后壳俯视（内腔朝上），标注定位母柱、喇叭格栅、按键柱、USB-C 开槽等部位及脚本变量名</desc>
+  <rect x="0" y="0" width="680" height="470" fill="#FFFFFF"/>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M2 1L8 5L2 9" fill="none" stroke="context-stroke" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+    </marker>
+  </defs>
+
+  <text x="190" y="105" font-size="15" font-weight="500" fill="#2C2C2A">后壳 back（俯视，内腔朝上）</text>
+  <text x="190" y="138" font-size="13" fill="#888780">← MIC 端（x=0）</text>
+  <text x="552" y="138" font-size="13" fill="#888780" text-anchor="end">USB 端（x=OUT_L）→</text>
+
+  <rect x="190" y="150" width="362" height="219" fill="#D3D1C7" stroke="#5F5E5A" stroke-width="0.5"/>
+  <rect x="198" y="158" width="346" height="203" fill="#F1EFE8" stroke="#B4B2A9" stroke-width="0.5"/>
+
+  <text x="371" y="182" font-size="13" fill="#888780" text-anchor="middle">板仓 back_cavity</text>
+
+  <g>
+    <circle cx="213.6" cy="173.6" r="12" fill="#B5D4F4" stroke="#185FA5" stroke-width="0.5"/>
+    <circle cx="213.6" cy="173.6" r="5" fill="#FFFFFF" stroke="#185FA5" stroke-width="0.5"/>
+    <circle cx="542.8" cy="173.6" r="12" fill="#B5D4F4" stroke="#185FA5" stroke-width="0.5"/>
+    <circle cx="542.8" cy="173.6" r="5" fill="#FFFFFF" stroke="#185FA5" stroke-width="0.5"/>
+    <circle cx="213.6" cy="345.6" r="12" fill="#B5D4F4" stroke="#185FA5" stroke-width="0.5"/>
+    <circle cx="213.6" cy="345.6" r="5" fill="#FFFFFF" stroke="#185FA5" stroke-width="0.5"/>
+    <circle cx="542.8" cy="345.6" r="12" fill="#B5D4F4" stroke="#185FA5" stroke-width="0.5"/>
+    <circle cx="542.8" cy="345.6" r="5" fill="#FFFFFF" stroke="#185FA5" stroke-width="0.5"/>
+  </g>
+
+  <g fill="#FFFFFF" stroke="#B4B2A9" stroke-width="0.5">
+    <rect x="295.6" y="223.6" width="152" height="5.6"/>
+    <rect x="295.6" y="236.4" width="152" height="5.6"/>
+    <rect x="295.6" y="249.2" width="152" height="5.6"/>
+    <rect x="295.6" y="262.0" width="152" height="5.6"/>
+    <rect x="295.6" y="274.8" width="152" height="5.6"/>
+    <rect x="295.6" y="287.6" width="152" height="5.6"/>
+    <rect x="295.6" y="300.4" width="152" height="5.6"/>
+    <rect x="295.6" y="313.2" width="152" height="5.6"/>
+  </g>
+
+  <g>
+    <circle cx="532.2" cy="209.4" r="12.2" fill="#FAC775" stroke="#854F0B" stroke-width="0.5"/>
+    <circle cx="532.2" cy="209.4" r="8" fill="#FFFFFF" stroke="#854F0B" stroke-width="0.5"/>
+    <circle cx="532.2" cy="313.8" r="12.2" fill="#FAC775" stroke="#854F0B" stroke-width="0.5"/>
+    <circle cx="532.2" cy="313.8" r="8" fill="#FFFFFF" stroke="#854F0B" stroke-width="0.5"/>
+  </g>
+
+  <rect x="548" y="240.8" width="10" height="14" fill="#FFFFFF" stroke="#5F5E5A" stroke-width="0.5"/>
+
+  <text x="371" y="348" font-size="13" fill="#888780" text-anchor="middle">壁厚 WALL=2.0 · 底厚 FLOOR=2.0</text>
+
+  <line x1="120" y1="142" x2="210" y2="167" stroke="#B4B2A9" stroke-width="0.5" stroke-dasharray="3 3" fill="none"/>
+  <text x="48" y="100" font-size="15" font-weight="500" fill="#2C2C2A">定位母柱 ×4</text>
+  <text x="48" y="118" font-size="13" fill="#888780">pin_boss_i / pin_sock_i</text>
+  <text x="48" y="134" font-size="13" fill="#888780">Ø6 柱 + Ø2.55 盲孔</text>
+
+  <line x1="140" y1="277" x2="292" y2="262" stroke="#B4B2A9" stroke-width="0.5" stroke-dasharray="3 3" fill="none"/>
+  <text x="48" y="272" font-size="15" font-weight="500" fill="#2C2C2A">喇叭格栅</text>
+  <text x="48" y="290" font-size="13" fill="#888780">slots，x 24–62 / y 16–42</text>
+
+  <line x1="588" y1="247" x2="560" y2="247" stroke="#B4B2A9" stroke-width="0.5" stroke-dasharray="3 3" fill="none"/>
+  <text x="638" y="225" font-size="15" font-weight="500" fill="#2C2C2A" text-anchor="end">USB-C</text>
+  <text x="638" y="243" font-size="13" fill="#888780" text-anchor="end">usb_back</text>
+
+  <line x1="582" y1="308" x2="546" y2="308" stroke="#B4B2A9" stroke-width="0.5" stroke-dasharray="3 3" fill="none"/>
+  <text x="638" y="300" font-size="15" font-weight="500" fill="#2C2C2A" text-anchor="end">按键柱</text>
+  <text x="638" y="318" font-size="13" fill="#888780" text-anchor="end">boss/btn_hole</text>
+
+  <line x1="190" y1="382" x2="552" y2="382" stroke="#B4B2A9" stroke-width="0.5" fill="none"/>
+  <line x1="190" y1="377" x2="190" y2="387" stroke="#B4B2A9" stroke-width="0.5" fill="none"/>
+  <line x1="552" y1="377" x2="552" y2="387" stroke="#B4B2A9" stroke-width="0.5" fill="none"/>
+  <text x="371" y="402" font-size="13" fill="#888780" text-anchor="middle">外形 90.6 × 54.8 mm（OUT_L × OUT_W）</text>
+
+  <text x="48" y="432" font-size="15" font-weight="500" fill="#2C2C2A">前框 front（另一打印件）</text>
+  <text x="48" y="450" font-size="13" fill="#888780">屏窗 glass_pocket · 定位柱 peg Ø2.3 · USB 豁口 usb_front</text>
+  <text x="420" y="432" font-size="15" font-weight="500" fill="#2C2C2A">柱塞 ×2（独立打印）</text>
+  <text x="420" y="450" font-size="13" fill="#888780">boot_button / reset_button</text>
+</svg>
