@@ -53,6 +53,9 @@ void bindLabel(lv_obj_t *label, const char *key) {
 constexpr size_t MAX_RESPONSE_BYTES = 32 * 1024;
 constexpr uint32_t POLL_INTERVAL_MS = 2200;
 constexpr uint64_t HEARTBEAT_INTERVAL_MS = 12000;
+// 公网隧道（HTTPS）的一次往返远慢于局域网：握手本身常常就要数秒，
+// 默认 5 秒预算会被握手吃光。局域网/USB 仍保留调用方给的短超时。
+constexpr int REMOTE_REQUEST_TIMEOUT_MS = 15000;
 constexpr char BUTTON_TAG[] = "vibe_boot";
 
 constexpr App::Config vibePhoneConfig()
@@ -3461,7 +3464,8 @@ bool VibeCoding::request(const std::string &path, bool post, std::string &respon
         if (url.rfind("https://", 0) == 0) config.crt_bundle_attach = esp_crt_bundle_attach;
         config.event_handler = httpEvent;
         config.user_data = &capture;
-        config.timeout_ms = timeout_ms;
+        config.timeout_ms = url.rfind("https://", 0) == 0 && timeout_ms < REMOTE_REQUEST_TIMEOUT_MS
+                                ? REMOTE_REQUEST_TIMEOUT_MS : timeout_ms;
         config.buffer_size = 1024;
         esp_http_client_handle_t client = esp_http_client_init(&config);
         if (!client) return false;

@@ -44,6 +44,10 @@ constexpr size_t kResponseLimit = 2048;
 constexpr int64_t kRetryMs = 5000;
 constexpr int64_t kPairLifetimeMs = 120000;
 constexpr int64_t kClockWaitMs = 15000;
+// 公网隧道（HTTPS）的一次往返远慢于局域网：TLS 握手本身常常就要数秒，
+// 局域网用的 4.5 秒预算会把公网请求掐死在响应到达之前。
+constexpr int kLocalHttpTimeoutMs = 4500;
+constexpr int kRemoteHttpTimeoutMs = 15000;
 
 std::mutex state_mutex;
 Snapshot state;
@@ -668,7 +672,7 @@ bool http_json(const std::string &url, const char *post_body, int &status, std::
                                  {}, post_body ? "application/json" : "",
                                  reinterpret_cast<const uint8_t *>(post_body),
                                  post_body ? std::strlen(post_body) : 0,
-                                 response, status, kResponseLimit, 4500) == ESP_OK && current_tick_valid();
+                                 response, status, kResponseLimit, kLocalHttpTimeoutMs) == ESP_OK && current_tick_valid();
     }
     const std::string receiver_prefix = vibe_usb::kReceiverUrl;
     if (url == receiver_prefix || url.rfind(receiver_prefix + "/", 0) == 0) {
@@ -679,17 +683,18 @@ bool http_json(const std::string &url, const char *post_body, int &status, std::
                                            post_body ? "application/json" : "",
                                            reinterpret_cast<const uint8_t *>(post_body),
                                            post_body ? std::strlen(post_body) : 0,
-                                           response, status, kResponseLimit, 4500) == ESP_OK &&
+                                           response, status, kResponseLimit, kLocalHttpTimeoutMs) == ESP_OK &&
                current_tick_valid();
     }
     // A pending mode switch must never route the USB authority through DNS.
     if (tick_mode == AccessMode::UsbDirect || !current_tick_valid()) return false;
-    if (secure_url(url) && !tls_time_ready()) return false;
+    const bool secure = secure_url(url);
+    if (secure && !tls_time_ready()) return false;
     esp_http_client_config_t config = {};
     config.url = url.c_str();
     config.disable_auto_redirect = true;
-    if (secure_url(url)) config.crt_bundle_attach = esp_crt_bundle_attach;
-    config.timeout_ms = 4500;
+    if (secure) config.crt_bundle_attach = esp_crt_bundle_attach;
+    config.timeout_ms = secure ? kRemoteHttpTimeoutMs : kLocalHttpTimeoutMs;
     config.event_handler = on_http;
     config.user_data = &response;
     esp_http_client_handle_t client = esp_http_client_init(&config);

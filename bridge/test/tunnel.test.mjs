@@ -365,6 +365,32 @@ test('公网开关只在本机桌面 API 且持有本机操作令牌时可用', 
   assert.equal((await fetch(`http://127.0.0.1:${config.devicePort}/api/session`)).status, 401);
 });
 
+test('工作台配置的固定地址在内置隧道未启动时也通过校验地址白名单', async (t) => {
+  const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), 'vibe-tunnel-named-'));
+  // Written the way TunnelManager.loadSettings reads it back: the user typed
+  // this URL into the workbench, but the built-in tunnel process never ran —
+  // a self-hosted reverse proxy fronts the device port instead.
+  fs.writeFileSync(path.join(stateDir, 'tunnel-settings.json'),
+    JSON.stringify({ mode: 'named', configuredUrl: 'https://brage.example.com', ngrokConfiguredUrl: null }));
+  const tunnel = new TunnelManager({ devicePort: 8788, stateDir, spawnProcess: () => fakeChild() });
+  assert.equal(tunnel.summary().status, 'off');
+  assert.equal(tunnel.summary().configuredUrl, 'https://brage.example.com');
+  const config = {
+    stateDir, port: await freeTcpPort(), devicePort: await freeTcpPort(), discoveryPort: await freeUdpPort(),
+    projects: [{ id: 'demo', label: '演示项目', path: stateDir }], defaultProject: 'demo', defaultProvider: 'codex',
+    workbuddy: { allowUnscopedDispatch: false }, asrMode: 'off',
+  };
+  const app = createApp(config, { tunnel, run: async () => ({ status: 'completed', result: '完成' }) });
+  t.after(async () => { await app.close(); fs.rmSync(stateDir, { recursive: true, force: true }); });
+  await app.listen();
+  const deviceId = '0123456789ab';
+  const nonce = '12'.repeat(16);
+  // The configured host passes the authority whitelist; with no paired device
+  // the verify itself answers 404 instead of the host rejection 403.
+  assert.equal((await verifyWithHost(config.devicePort, 'brage.example.com', deviceId, nonce)).status, 404);
+  assert.equal((await verifyWithHost(config.devicePort, 'attacker.example.com', deviceId, nonce)).status, 403);
+});
+
 test('花生壳只授权已核验的设备域名，映射开关与公网探针接入桌面 API', async (t) => {
   const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), 'vibe-oray-api-'));
   const config = {
