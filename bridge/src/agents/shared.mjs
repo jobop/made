@@ -3,25 +3,27 @@ import { translateKnownMessage } from '../i18n.mjs';
 import path from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
+import { findCommand, isWindows, windowsCommandLine } from '../plugin-runtime.mjs';
 
 const authenticationCache = new Map();
 
+/**
+ * 每轮任务都要带上的权限边界。CLI 助手拥有桥接器进程的权限，这条约束是设备侧
+ * 唯一的护栏，不能只在某几个适配器里各写一遍，所以统一在 runCli 里拼。
+ */
+const GUARD_INSTRUCTION = '请只修改当前仓库中的文件；不要提交、推送、发布或删除仓库。完成后说明改动与已运行的验证。';
+
 export function probeCli(command, loginArgs) {
-  let found;
-  for (const directory of (process.env.PATH || '').split(path.delimiter)) {
-    const candidate = path.join(directory || '.', command);
-    try {
-      fs.accessSync(candidate, fs.constants.X_OK);
-      if (fs.statSync(candidate).isFile()) { found = candidate; break; }
-    } catch { /* Try the next PATH entry. */ }
-  }
+  // 命令查找走共享的跨平台实现：Windows 上要按 PATHEXT 补 .cmd/.exe，
+  // 且 X_OK 在那里没有意义，自己写一遍最容易漏。
+  const found = findCommand(command);
   let authenticated = !loginArgs;
   if (found && loginArgs) {
     const key = `${found}:${loginArgs.join(' ')}`;
     const cached = authenticationCache.get(key);
     if (cached && cached.until > Date.now()) authenticated = cached.value;
     else {
-      const check = spawnSync(found, loginArgs, { encoding: 'utf8', timeout: 3000 });
+      const check = spawnCommandSync(found, loginArgs, { encoding: 'utf8', timeout: 3000 });
       authenticated = check.status === 0 && !/not logged in|not authenticated|login required/i.test(`${check.stdout || ''} ${check.stderr || ''}`);
       authenticationCache.set(key, { value: authenticated, until: Date.now() + 60000 });
     }
@@ -29,6 +31,13 @@ export function probeCli(command, loginArgs) {
   const available = Boolean(found && authenticated);
   return { available, mode: 'local_cli', reason: available ? '' : found
     ? `请先在本机登录 ${command}` : `本机未找到 ${command} 命令` };
+}
+
+/** 同步启动一个已解析到绝对路径的命令：.cmd/.bat 经 cmd.exe，其余直连。 */
+function spawnCommandSync(resolved, args, options) {
+  return isWindows && /\.(?:cmd|bat)$/i.test(resolved)
+    ? spawnSync(windowsCommandLine([resolved, ...args]), { ...options, shell: true })
+    : spawnSync(resolved, args, options);
 }
 
 export function gitState(cwd) {
@@ -62,7 +71,13 @@ export function gitState(cwd) {
     if (stat.isFile() && stat.size <= 4 * 1024 * 1024) hash.update(fs.readFileSync(filename));
     else hash.update(`${stat.size}:${stat.mtimeMs}`);
   }
-  return { dirty: status.stdout.length > 0, snapshot: hash.digest('hex') };
+  return {
+    dirty: status.stdout.length > 0,
+    snapshot: hash.digest('hex'),
+    // 改动清单直接从上面这次 `git status --porcelain -z` 里取，收尾时不必再跑一次 git：
+    // 少一个子进程，也少一分超时风险。porcelain 的条目本身就是「 XY 路径」这种可读形状。
+    changed: status.stdout.toString('utf8').split('\0').filter(Boolean).slice(0, 40).join('\n'),
+  };
 }
 
 function repositorySnapshot(cwd) {
@@ -86,26 +101,36 @@ function repositorySnapshot(cwd) {
   return gitState(cwd).snapshot;
 }
 
-function gitChangeSummary(cwd) {
-  const result = spawnSync('git', ['status', '--short'], {
-    cwd, encoding: 'utf8', timeout: 5000,
-  });
-  return result.status === 0 ? result.stdout.trim().slice(0, 4000) : '';
+/** 收尾附上本轮改了什么：有改动就列出文件，没有就明说，别让用户去猜。 */
+function changeFooter(state, message) {
+  return state.changed ? `${message('改动文件：')}\n${state.changed}` : message('没有检测到代码改动。');
 }
 
 export function runCli({ job, project, signal, onProgress, onSession, config, model }, adapter) {
   const startingGitSnapshot = repositorySnapshot(project.path);
   const message = (value) => translateKnownMessage(value, config.locale);
-  const prompt = job.instruction;
+  // 每轮都拼上权限边界：用户原文一字不改，边界文案按界面语言翻译。
+  const prompt = `${job.instruction}\n\n${message(GUARD_INSTRUCTION)}`;
   const spec = adapter.command({ cwd: project.path, instruction: prompt, config, model, sessionId: job.sessionId });
   return new Promise((resolve, reject) => {
     const events = adapter.createEvents(onProgress, onSession);
-    const child = spawn(spec.command, spec.args, {
-      cwd: project.path,
-      stdio: ['pipe', 'pipe', 'pipe'],
-      detached: process.platform !== 'win32',
-      env: process.env,
-    });
+    // 命令先解析成绝对路径：Windows 上 codex/cursor 这类 CLI 实际是 .cmd，
+    // 直接 spawn 会 EINVAL；经 cmd.exe 启动，并自己把参数引号拼好。
+    const resolved = findCommand(spec.command) || spec.command;
+    const viaCmd = isWindows && /\.(?:cmd|bat)$/i.test(resolved);
+    const child = viaCmd
+      ? spawn(process.env.ComSpec || 'cmd.exe', ['/d', '/s', '/c', `"${windowsCommandLine([resolved, ...spec.args])}"`], {
+        cwd: project.path,
+        stdio: ['pipe', 'pipe', 'pipe'],
+        windowsVerbatimArguments: true,
+        env: process.env,
+      })
+      : spawn(resolved, spec.args, {
+        cwd: project.path,
+        stdio: ['pipe', 'pipe', 'pipe'],
+        detached: process.platform !== 'win32',
+        env: process.env,
+      });
     let stderr = '';
     let settled = false;
     let timer;
@@ -153,10 +178,11 @@ export function runCli({ job, project, signal, onProgress, onSession, config, mo
       }
       if (output.error) return finish(new Error(`${adapter.label}：${output.error}`));
       const summary = output.hasAssistantText === false ? message(output.result) : output.result;
+      const state = gitState(project.path);
       finish(null, {
         status: 'completed',
-        result: String(summary).slice(-12000),
-        gitSnapshot: gitState(project.path).snapshot,
+        result: `${String(summary).slice(-12000)}\n\n${changeFooter(state, message)}`,
+        gitSnapshot: state.snapshot,
       });
       } catch (error) { finish(error); }
     });

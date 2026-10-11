@@ -880,23 +880,29 @@ export function createApp(config, { run, transcribe, tunnel: providedTunnel, ena
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  const config = loadConfig();
-  config.pluginsRuntime = await loadConfiguredPlugins(config);
-  const app = createApp(config, { enableUsb: true });
-  let shuttingDown = false;
-  const shutdown = () => {
-    if (shuttingDown) return;
-    shuttingDown = true;
-    app.close().then(() => { process.exitCode = 0; }).catch((error) => {
+  if (process.argv.includes('--doctor')) {
+    // 自检只做检查并打印，不监听任何端口；有阻断性缺项时退出码为 1。
+    const { runDoctor } = await import('./doctor.mjs');
+    process.exitCode = await runDoctor();
+  } else {
+    const config = loadConfig();
+    config.pluginsRuntime = await loadConfiguredPlugins(config);
+    const app = createApp(config, { enableUsb: true });
+    let shuttingDown = false;
+    const shutdown = () => {
+      if (shuttingDown) return;
+      shuttingDown = true;
+      app.close().then(() => { process.exitCode = 0; }).catch((error) => {
+        console.error(error.message);
+        process.exitCode = 1;
+      });
+    };
+    process.once('SIGINT', shutdown);
+    process.once('SIGTERM', shutdown);
+    process.once('exit', () => { try { app.tunnel.process?.kill('SIGTERM'); } catch { /* Already exited. */ } });
+    app.listen().catch((error) => {
       console.error(error.message);
       process.exitCode = 1;
     });
-  };
-  process.once('SIGINT', shutdown);
-  process.once('SIGTERM', shutdown);
-  process.once('exit', () => { try { app.tunnel.process?.kill('SIGTERM'); } catch { /* Already exited. */ } });
-  app.listen().catch((error) => {
-    console.error(error.message);
-    process.exitCode = 1;
-  });
+  }
 }

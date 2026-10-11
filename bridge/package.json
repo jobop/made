@@ -6,6 +6,7 @@
   "description": "码得（made）独立语音编程设备的电脑侧桥接客户端",
   "scripts": {
     "start": "node src/server.mjs",
+    "doctor": "node src/server.mjs --doctor",
     "test": "node --test --experimental-test-isolation=none --test-concurrency=1"
   },
   "engines": {

@@ -100,13 +100,25 @@ S3 上码得与 S3 接收器靠 PSRAM 容量区分；容量读不到时，再看
 
 板子已硬复位。桥接器在运行会自动重新握手，否则在仓库根 `npm start`。接收器正常时会持续看到 `hello: mode=receiver`。码得锁屏不连桥接器、不上报心跳，大盘短暂显示离线是正常的，上滑解锁后才会重新上线。
 
+## 平台差异
+
+| 能力 | macOS / Linux | Windows |
+| --- | --- | --- |
+| 端口扫描 | 扫 `/dev` 下的 `cu.usbmodem`、`wchusbserial`、`ttyUSB` 等 | 走 PowerShell 的 `SerialPort.GetPortNames()`，失败退回注册表；`COM10` 及以上自动写成 `\\.\COMNN` |
+| esptool 定位 | 先试 IDF 的 `~/.espressif/python_env`，再常见路径与 PATH，最后 `<python> -m esptool` | 先试 PATH 里的 `esptool.exe`/`esptool.py`，再各 Python 安装器的 `Scripts` 目录，最后 `py -m esptool` |
+| 占用检测 | 用 `lsof` 打印占用进程与 pid | 不可用（没有 lsof），端口被占用时由 esptool 报 `Access is denied`，**刷前务必先停桥接器** |
+| `--build` | 自己激活 IDF 环境（`export.sh`，并绕开 Python shim） | 需从「ESP-IDF PowerShell」或「ESP-IDF Command Prompt」里运行，工具不代为激活 |
+
+端口依赖 USB VID/PID 的自动识别只用于桥接器侧的连接（`303a:1001`、`1a86:55d3`），刷机工具的端口扫描不按 VID 过滤，所以两端行为不同不是 bug。各平台接入方式的完整可用性见[平台支持](PLATFORMS.md)。
+
 ## 排错
 
 | 现象 | 处理 |
 | --- | --- |
-| 串口打不开 / resource busy | 桥接器正占着串口，先停掉它（工具会打印占用进程与 pid） |
+| 串口打不开 / resource busy | 桥接器正占着串口，先停掉它（macOS / Linux 会打印占用进程与 pid；Windows 上没有 lsof，直接确认桥接器已停） |
 | 串口没响应 | 按住 BOOT 再插一次 USB，重试 |
 | 找不到 esptool | 装 ESP-IDF 工具链，或把 esptool 放进 PATH |
+| Windows 上找不到 idf.py | 用 ESP-IDF 安装器生成的快捷方式打开终端再跑 `--build`；或去掉 `--build`，先在 IDF 环境里手动 `idf.py build` |
 | 找不到镜像目录 | 先构建：`npm run flash -- <目标> --build` |
 | 芯片不匹配 | 确认目标选对；跨型号确有需要才加 `--force` |
 | 提示不是交互终端 | 把目标与参数一次给全，如 `npm run flash -- made -p <端口> -y` |

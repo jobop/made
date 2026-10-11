@@ -30,6 +30,9 @@ import crypto from 'node:crypto'
 import readline from 'node:readline/promises'
 import { spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
+// 命令查找复用桥接器的跨平台实现：Windows 上要按 PATHEXT 补 .exe/.cmd，
+// 且 X_OK 在那里没有意义。自己再抄一遍最容易漏。
+import { findCommand, isWindows } from '../bridge/src/plugin-runtime.mjs'
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 
@@ -149,14 +152,42 @@ function die(msg) {
 // ── esptool 定位 ───────────────────────────────────────────────────────────
 // 本机 esptool 在 ESP-IDF 的 python 环境里，且该环境是 py3.9（不是 py3.13）。
 // 直接调用它的 python，避开 export.sh 的版本探测。
-function findEsptool() {
+//
+// 平台差异：macOS / Linux 上 IDF 的 python_env 在 ~/.espressif，优先用它；
+// Windows 上 IDF 安装器把 esptool 放进 Python 的 Scripts 目录，PATH 里就有，
+// 所以先前试 PATH 与各 Python 安装器的常见位置。最后都补一条 <python> -m esptool，
+// 覆盖「装了 esptool 但没有独立可执行文件」的情况。
+function esptoolCandidates() {
   const candidates = []
+
+  if (isWindows) {
+    for (const name of ['esptool.exe', 'esptool.py']) {
+      const hit = findCommand(name)
+      if (hit) candidates.push({ cmd: hit, prefix: [], from: 'PATH' })
+    }
+    const programs = path.join(process.env.LOCALAPPDATA || '', 'Programs', 'Python')
+    if (process.env.LOCALAPPDATA && fs.existsSync(programs)) {
+      for (const version of fs.readdirSync(programs).sort().reverse()) {
+        for (const name of ['esptool.exe', 'esptool.py']) {
+          const p = path.join(programs, version, 'Scripts', name)
+          if (fs.existsSync(p)) candidates.push({ cmd: p, prefix: [], from: p })
+        }
+      }
+    }
+    for (const py of ['py', 'python']) {
+      const hit = findCommand(py)
+      if (hit) candidates.push({ cmd: hit, prefix: ['-m', 'esptool'], from: `${py} -m esptool` })
+    }
+    return candidates
+  }
 
   const idfEnv = path.join(os.homedir(), '.espressif', 'python_env')
   if (fs.existsSync(idfEnv)) {
     for (const name of fs.readdirSync(idfEnv).sort()) {
-      const py = path.join(idfEnv, name, 'bin', 'python')
-      if (fs.existsSync(py)) candidates.push({ cmd: py, prefix: ['-m', 'esptool'], from: name })
+      for (const bin of ['python', 'python3']) {
+        const py = path.join(idfEnv, name, 'bin', bin)
+        if (fs.existsSync(py)) candidates.push({ cmd: py, prefix: ['-m', 'esptool'], from: name })
+      }
     }
   }
 
@@ -164,16 +195,24 @@ function findEsptool() {
     path.join(os.homedir(), '.workbuddy', 'binaries', 'python', 'envs', 'default', 'bin', 'esptool'),
     '/opt/homebrew/bin/esptool',
     '/usr/local/bin/esptool',
+    path.join(os.homedir(), '.local', 'bin', 'esptool'),
   ]) {
     if (fs.existsSync(p)) candidates.push({ cmd: p, prefix: [], from: p })
   }
 
-  const onPath = run('/usr/bin/which', ['esptool'])
-  if (onPath.code === 0 && onPath.out.trim()) {
-    candidates.push({ cmd: onPath.out.trim(), prefix: [], from: 'PATH' })
+  const onPath = findCommand('esptool')
+  if (onPath) candidates.push({ cmd: onPath, prefix: [], from: 'PATH' })
+  for (const py of ['python3', 'python']) {
+    const hit = findCommand(py)
+    if (hit) candidates.push({ cmd: hit, prefix: ['-m', 'esptool'], from: `${py} -m esptool` })
   }
 
-  for (const c of candidates) {
+  return candidates
+}
+
+function findEsptool() {
+  for (const c of esptoolCandidates()) {
+    if (!c.cmd) continue
     const probe = run(c.cmd, [...c.prefix, 'version'])
     const m = /esptool(?:\.py)?\s+v?(\d+\.\d+[.\d]*)/i.exec(probe.out)
     if (probe.code === 0 && m) return { ...c, version: m[1] }
@@ -190,7 +229,39 @@ function esptoolRun(tool, args, { live = false } = {}) {
 }
 
 // ── 串口扫描 ───────────────────────────────────────────────────────────────
+/**
+ * Windows 没有 /dev。先问系统要端口名（.NET 的 SerialPort.GetPortNames 最准，
+ * 不依赖 WMI），拿不到再退回注册表；两条路都只认 COM<n>。
+ */
+/**
+ * 从两条 Windows 命令的输出里取 COM 口名。PowerShell 的 GetPortNames 更准，
+ * 有结果就只信它；为空（没有 PowerShell 或没有端口）才退回注册表。
+ * 抽成纯函数是为了能直接测：端口名到设备路径的转换最容易出错。
+ */
+export function parseWindowsPortNames(powerShellOut, registryOut) {
+  const fromPs = [...new Set(String(powerShellOut || '')
+    .split(/\r?\n/).map((s) => s.trim()).filter((s) => /^COM\d+$/i.test(s)))]
+  if (fromPs.length) return fromPs.map(windowsPortName)
+  const fromReg = [...new Set([...String(registryOut || '').matchAll(/\bCOM\d+\b/gi)]
+    .map((m) => m[0].toUpperCase()))]
+  return fromReg.sort().map(windowsPortName)
+}
+
+function scanWindowsPorts() {
+  const ps = run('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command',
+    '[System.IO.Ports.SerialPort]::GetPortNames() | Sort-Object'])
+  const reg = run('reg.exe', ['query', 'HKLM\\HARDWARE\\DEVICEMAP\\SERIALCOMM'])
+  return parseWindowsPortNames(ps.code === 0 ? ps.out : '', reg.out)
+}
+
+/** COM10 及以上必须写成 \\.\COM10 才打得开；前 9 个用常见写法即可。 */
+function windowsPortName(name) {
+  return Number(/\d+/.exec(name)?.[0] || 0) >= 10 ? `\\\\.\\${name}` : name
+}
+
 function scanPorts() {
+  if (isWindows) return scanWindowsPorts()
+
   const devDir = '/dev'
   if (!fs.existsSync(devDir)) return []
   let names = []
@@ -210,9 +281,11 @@ function scanPorts() {
     .sort()
 }
 
-// 谁占着这个串口（多半是桥接器）
+// 谁占着这个串口（多半是桥接器）。Windows 上没有 lsof：占用检测交给 esptool
+// 自己报的错（它会说 Access is denied），不在这里假装能查。
+const PORT_HOLDER_PLATFORMS = new Set(['darwin', 'linux'])
 function portHolder(port) {
-  if (process.platform === 'darwin' || process.platform === 'linux') {
+  if (PORT_HOLDER_PLATFORMS.has(process.platform)) {
     const r = run('/usr/sbin/lsof', ['-F', 'pcu', port])
     if (r.code !== 0 && !r.out.trim()) {
       const r2 = run('/usr/bin/lsof', ['-F', 'pcu', port])
@@ -364,6 +437,24 @@ function printPlan(target, info, plan) {
 
 // ── 构建 ───────────────────────────────────────────────────────────────────
 function buildFirmware(target) {
+  console.log(dim(`  $ cd ${target.buildDir} && idf.py ${target.buildArgs.join(' ')} build`))
+
+  if (isWindows) {
+    // Windows 上没有 zsh，也没有 IDF 的 export.sh。要求从 ESP-IDF 安装器生成的
+    // 「ESP-IDF PowerShell / Command Prompt」里运行本工具——那里 idf.py 与工具链
+    // 已在 PATH 上。找不到就明说怎么做，不要静默跑一半。
+    const idf = findCommand('idf.py')
+    if (!idf) {
+      die('Windows 上找不到 idf.py。请用 ESP-IDF 安装器生成的「ESP-IDF PowerShell」或\n' +
+        '  「ESP-IDF Command Prompt」打开本目录再运行本工具；或去掉 --build，\n' +
+        '  先在 IDF 环境里手动执行 idf.py build。')
+    }
+    const r = spawnSync(idf, [...target.buildArgs, 'build'], { stdio: 'inherit', cwd: abs(target.buildDir) })
+    if (r.status !== 0) die(`构建失败（退出码 ${r.status}）。`)
+    ok('构建完成')
+    return
+  }
+
   const cmds = []
   cmds.push('export PATH="/usr/bin:$PATH"')
   cmds.push('# WorkBuddy 的 python shim 会让 idf.py 的 os.mkdir(build/log) 抛 PermissionError(EEXIST)')
@@ -373,7 +464,6 @@ function buildFirmware(target) {
   cmds.push(`idf.py ${target.buildArgs.map(shq).join(' ')} build`)
   const script = cmds.join('\n')
 
-  console.log(dim(`  $ cd ${target.buildDir} && idf.py ${target.buildArgs.join(' ')} build`))
   const r = spawnSync('/bin/zsh', ['-c', script], { stdio: 'inherit' })
   if (r.status !== 0) die(`构建失败（退出码 ${r.status}）。`)
   ok('构建完成')
@@ -507,6 +597,13 @@ ${bold('选项')}
       --dry-run       只显示将执行的命令，不实际写入
       --force         芯片型号不匹配时仍然继续（危险）
   -h, --help          本帮助
+
+${bold('平台说明')}
+  macOS / Linux  自动扫描 /dev 下的 usbmodem、wchusbserial、ttyUSB 等端口。
+  Windows        自动列出 COM 口（走 PowerShell，失败退回注册表）；
+                 COM10 及以上自动写成 \\\\.\\COMNN。占用检测不可用（没有 lsof），
+                 端口被占用时由 esptool 报错。--build 需要从 ESP-IDF 安装器生成的
+                 「ESP-IDF PowerShell」或「ESP-IDF Command Prompt」里运行。
 `)
 }
 
@@ -558,12 +655,16 @@ async function main() {
   // 串口
   let ports = scanPorts()
   if (opts.port) {
-    if (!fs.existsSync(opts.port)) die(`串口不存在：${opts.port}`)
+    // Windows 的 \\.\COM10 这类设备路径探测不到，交给 esptool 自己去报错。
+    if (!isWindows && !fs.existsSync(opts.port)) die(`串口不存在：${opts.port}`)
     ports = [opts.port]
   }
 
   if (ports.length === 0) {
-    die('没有找到串口。插上板子后重试（macOS 端口形如 /dev/cu.usbmodem*）。')
+    die(`没有找到串口。插上板子后重试。\n${
+      isWindows
+        ? '  Windows 端口形如 COM3，设备管理器里能看到端口号，也可以用 -p COM3 直接指定。'
+        : '  macOS 端口形如 /dev/cu.usbmodem*，Linux 形如 /dev/ttyUSB*。'}`)
   }
 
   // 只认板
@@ -682,4 +783,7 @@ async function main() {
   }
 }
 
-main().catch((e) => die(e?.message || String(e)))
+// 只有直接运行时才跑主流程；被 import（测试）时只取纯函数。
+const invokedDirectly = process.argv[1]
+  && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)
+if (invokedDirectly) main().catch((e) => die(e?.message || String(e)))

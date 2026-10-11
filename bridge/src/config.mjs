@@ -4,6 +4,7 @@ import { loadLanguageSettings } from './language-settings.mjs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { loadOpenAIKey } from './openai-key.mjs';
+import { pluginRuntime } from './plugin-runtime.mjs';
 import { DEFAULT_CODEX_MODEL, loadModelSettings, validateModelSettings, validateStoredModels } from './model-settings.mjs';
 import { DEFAULT_TRANSCRIBE_MODEL, DEFAULT_TRANSCRIBE_URL, loadVoiceSettings, validateTranscribeModel, validateTranscribeUrl } from './voice-settings.mjs';
 
@@ -30,6 +31,23 @@ export function packagesHome(config = {}) {
  */
 export function packageRoots(config = {}) {
   return [BUILTIN_ROOT, packagesHome(config)];
+}
+
+/**
+ * 校验 VIBE_USB_PORT。允许两类写法：绝对路径（/dev/cu.usbmodem1101、
+ * \\.\COM10），以及 Windows 上用户真正会写的 COM 端口名（COM3）。
+ *
+ * 为什么要特判 COM3：Windows 上「COM3」既没有盘符也没有 UNC 根，
+ * path.isAbsolute 判 false，只用绝对路径规则会把 Windows 唯一的手动兜底
+ * 直接拦掉，而那个兜底正是 USB 在这套系统上唯一能走的路。
+ */
+export function validateUsbPort(value, platform = process.platform) {
+  const port = String(value || '');
+  if (!port) return '';
+  if (/[\r\n\x00]/.test(port)) throw new Error('VIBE_USB_PORT 不能包含控制字符');
+  if (path.isAbsolute(port)) return port;
+  if (platform === 'win32' && /^\\{0,2}(?:\.\\)?COM\d+$/i.test(port)) return port;
+  throw new Error('VIBE_USB_PORT 必须是 USB 串口的绝对路径，或 Windows 上的 COM 端口名');
 }
 
 export function loadConfig(env = process.env) {
@@ -64,10 +82,7 @@ export function loadConfig(env = process.env) {
     throw new Error('端口号必须在 1 到 65535 之间');
   }
   const stateDir = path.resolve(env.VIBE_STATE_DIR || path.join(ROOT, 'state'));
-  const usbPort = env.VIBE_USB_PORT || '';
-  if (usbPort && (!path.isAbsolute(usbPort) || /[\r\n\x00]/.test(usbPort))) {
-    throw new Error('VIBE_USB_PORT 必须是 USB 串口的绝对路径');
-  }
+  const usbPort = validateUsbPort(env.VIBE_USB_PORT || '');
   const models = { ...validateModelSettings({
     codex: env.VIBE_CODEX_MODEL || raw.codexModel || DEFAULT_CODEX_MODEL,
     cursor: env.VIBE_CURSOR_MODEL || raw.cursorModel || '',
@@ -112,5 +127,7 @@ export function loadConfig(env = process.env) {
     stateDir,
     usbPort,
     configFile: selected,
+    // 插件可用的跨平台助手（命令查找、子进程、npm）。见 plugin-runtime.mjs。
+    runtime: pluginRuntime,
   };
 }

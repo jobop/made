@@ -35,6 +35,26 @@
 - `signal`：取消时立即停止网络、子进程和后续写入；取消不得仅隐藏界面。桥接器不会自动赋予插件任何执行审批权限。
 - `model`：本轮启动时固定的模型值，来自助手页面；配置改变只影响之后启动的轮次。
 
+## 跨平台助手（config.runtime）
+
+插件要包一层第三方 CLI 或 npm 包时，平台差异集中在 `config.runtime`，不要自己拼 PATH、也不要直接 `execFileSync('npm')`：
+
+```js
+const { runNpm, findCommand, hasCommand, runCommand } = config.runtime;
+const globalRoot = runNpm(['root', '-g']).trim();   // 本机没装 npm 会抛 ENOENT
+const esptool = findCommand('esptool');             // 找不到返回空串
+if (!hasCommand('git')) throw new Error('本机未找到 git');
+const probe = runCommand('esptool', ['version']);   // {status, stdout, stderr, resolved, notFound}
+```
+
+这些差异正是自己写最容易漏的：
+
+- **Windows 上 npm 是 `npm.cmd`**，Node 20 起不允许直接 spawn `.cmd`/`.bat`（报 `EINVAL`），必须经 `cmd.exe`；而 Node 在 shell 模式下只是把命令和参数用空格拼起来，含空格的路径（`C:\Users\John Doe\…`）会被拆开，引号得自己加。`runNpm` 优先用 `node` 直接跑 npm 的 JS 入口绕开这条，实在不行才经 `cmd.exe` 并自己拼引号。
+- **PATH 探测在 Windows 上要按 `PATHEXT` 补扩展名**（`.CMD`/`.EXE`/…），而且 `X_OK` 在 Windows 上没有意义，只能按「能不能读到文件」判。
+- **「本机没装」和「装了但执行失败」是两类错误**，提示要分开写，否则排查会被带偏：没装是 `code === 'ENOENT'`、`notFound === true`；执行失败是 `code === 'ENPMFAIL'`，message 里带最后几行输出。
+
+`config.runtime` 从当前版本起由桥接器注入。插件面向旧版桥接器时按可选处理，例如 `const runNpm = config.runtime?.runNpm ?? fallback`。
+
 能力字段：
 
 - `session: 'native'` 表示可以恢复单独任务上下文；`external_unscoped` 表示外部应用接收任务但无法隔离项目/会话，界面会明确提示这一限制。

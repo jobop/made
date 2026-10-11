@@ -27,12 +27,34 @@ export interface Job {
   [key: string]: unknown;
 }
 export interface Project { id: string; label: string; path: string }
+/**
+ * Cross-platform helpers the bridge hands to every plugin. Use these instead of
+ * hand-rolling PATH lookups or spawning npm: on Windows npm is npm.cmd, which
+ * Node 20+ refuses to spawn without a shell, and PATH lookups must walk PATHEXT.
+ */
+export interface PluginRuntime {
+  /** process.platform of the bridge, e.g. 'darwin' | 'linux' | 'win32'. */
+  platform: string;
+  isWindows: boolean;
+  /** Absolute path of a command on PATH, or '' when it is not installed. */
+  findCommand: (command: string, options?: { env?: NodeJS.ProcessEnv }) => string;
+  /** Whether a command is installed. */
+  hasCommand: (command: string, options?: { env?: NodeJS.ProcessEnv }) => boolean;
+  /** Sync spawn that returns {status, stdout, stderr, resolved, notFound}. */
+  runCommand: (command: string, args?: string[], options?: Record<string, unknown>) => {
+    status: number | null; stdout: string; stderr: string; resolved: string; notFound: boolean;
+  };
+  /** Sync npm run; returns stdout. Throws ENOENT when npm is missing. */
+  runNpm: (args?: string[], options?: Record<string, unknown>) => string;
+}
 export interface PluginConfig {
   locale?: 'zh-CN' | 'en';
   stateDir: string;
   models?: Record<string, string>;
   /** Values for one plugin. A packaged plugin declares the keys in plugin.json; the bridge fills this from that package's settings.json. */
   pluginSettings?: Record<string, Record<string, string>>;
+  /** Cross-platform helpers; prefer these over hand-rolled spawn/npm calls. */
+  runtime?: PluginRuntime;
   [key: string]: unknown;
 }
 export interface RunContext {
