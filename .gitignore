@@ -24,3 +24,17 @@ receiver/build*/
 
 # 用户包目录已移出仓库：插件与主题装在 ~/made/{plugins,themes}（可用 MADE_HOME 覆盖），
 # 桥接器启动时自动扫描。随代码发布的内置包在 bridge/builtin/，需要入库。
+
+# 外壳建模的临时备份（Blender 自动备份与手工快照）
+3d-model/*.blend1
+3d-model/*_backup*
+3d-model/*_bak*
+3d-model/*_prev*
+3d-model/*_old*
+
+# 外壳建模的临时备份（Blender 自动备份与手工快照）
+3d-model/*.blend1
+3d-model/*_backup*
+3d-model/*_bak*
+3d-model/*_prev*
+3d-model/*_old*
