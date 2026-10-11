@@ -79,8 +79,8 @@ export async function collectDoctor({ config: provided } = {}) {
   if (isWindows) {
     // Windows 侧没有 /dev，也没有 VID/PID 枚举，实话实说。
     add('warn', 'USB 线直连 / 接收器转发：不能自动发现串口',
-      '需手动设 VIBE_USB_PORT=<COM 口>（设备管理器里可查）；原生 USB 变体可用，'
-      + 'WCH 转串口变体因为不设波特率大概率不通');
+      '需手动设 VIBE_USB_PORT=<COM 口>（设备管理器里可查）；接收器只支持原生 USB 变体，'
+      + 'WCH 转串口变体在 Windows 上不支持（不设波特率），请用 macOS / Linux');
   } else if (ports.length) {
     add('ok', `USB 线直连 / 接收器转发：已发现串口 ${ports.join('、')}`);
   } else {

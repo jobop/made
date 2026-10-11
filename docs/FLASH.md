@@ -19,7 +19,7 @@ npm run flash
 | `receiver-c3` | 接收器c3、c3、rx-c3、c3-uart | ESP32-C3 | 4MB | `receiver/release-esp32c3`（固定地址表） |
 | `receiver-c3-usb` | 接收器c3usb、c3usb、c3-usb | ESP32-C3 | 4MB | `receiver/build-c3-usb`（读 `flasher_args.json`） |
 
-`receiver-c3` 与 `receiver-c3-usb` 是同一块芯片的两套固件，区别在传输方式：前者走 UART（WCH 转串口板，`sdkconfig.c3uart`），后者走原生 USB（`sdkconfig.c3usb`）。**刷错变体桥接器收不到数据**，认板会按 USB 模式自动区分。
+`receiver-c3` 与 `receiver-c3-usb` 是同一块芯片的两套固件，区别在传输方式：前者走 UART（WCH 转串口板，`sdkconfig.c3uart`），后者走原生 USB（`sdkconfig.c3usb`）。**刷错变体桥接器收不到数据**，认板会按 USB 模式自动区分。**Windows 用户注意：桥接器在 Windows 上只支持原生 USB 变体**（见[平台支持](PLATFORMS.md)），Windows 上请用 `receiver-c3-usb`；WCH 转串口变体请用 macOS / Linux。刷机本身不受影响（esptool 自己设波特率），两个变体都能烧。
 
 ## 用法
 
@@ -108,6 +108,7 @@ S3 上码得与 S3 接收器靠 PSRAM 容量区分；容量读不到时，再看
 | esptool 定位 | 先试 IDF 的 `~/.espressif/python_env`，再常见路径与 PATH，最后 `<python> -m esptool` | 先试 PATH 里的 `esptool.exe`/`esptool.py`，再各 Python 安装器的 `Scripts` 目录，最后 `py -m esptool` |
 | 占用检测 | 用 `lsof` 打印占用进程与 pid | 不可用（没有 lsof），端口被占用时由 esptool 报 `Access is denied`，**刷前务必先停桥接器** |
 | `--build` | 自己激活 IDF 环境（`export.sh`，并绕开 Python shim） | 需从「ESP-IDF PowerShell」或「ESP-IDF Command Prompt」里运行，工具不代为激活 |
+| 接收器变体 | `receiver-c3` 与 `receiver-c3-usb` 都可用 | 只支持 `receiver-c3-usb`（原生 USB）；`receiver-c3` 烧得进但桥接器连不上，见[平台支持](PLATFORMS.md) |
 
 端口依赖 USB VID/PID 的自动识别只用于桥接器侧的连接（`303a:1001`、`1a86:55d3`），刷机工具的端口扫描不按 VID 过滤，所以两端行为不同不是 bug。各平台接入方式的完整可用性见[平台支持](PLATFORMS.md)。
 

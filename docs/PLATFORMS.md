@@ -1,6 +1,6 @@
 # 平台支持
 
-一句话：**macOS 完整，Linux 基本完整，Windows 三条网络链路可用、USB 要手动指定端口、刷机要 ESP-IDF 环境。**
+一句话：**macOS 完整，Linux 基本完整，Windows 三条网络链路可用、USB 要手动指定端口、接收器只支持原生 USB 变体、刷机要 ESP-IDF 环境。**
 
 不用靠猜——在目标机器上跑一次自检，它会按当前平台逐项报告结论：
 
@@ -39,10 +39,10 @@ $env:VIBE_USB_PORT='COM3'         # PowerShell
 
 ### 串口参数只在 macOS / Linux 设置
 
-`configureSerial()` 用 `stty` 设 921600 8N1 raw，只在 macOS / Linux 生效；Windows 上没有 `stty`，这一步被跳过。后果分两种：
+`configureSerial()` 用 `stty` 设 921600 8N1 raw，只在 macOS / Linux 生效；Windows 上没有 `stty`，这一步被跳过。**已拍板的结论：Windows 上接收器只支持原生 USB 变体。**
 
-- 接收器的**原生 USB** 变体不依赖波特率，Windows 上仍可用；
-- **WCH 转串口**变体依赖波特率设置，Windows 上大概率不通。这是已知缺口，不是配置问题。
+- 接收器的**原生 USB** 变体不依赖波特率，Windows 上可用；
+- **WCH 转串口**变体依赖波特率设置，在 Windows 上**不支持**——要么补 `serialport` 依赖调 `SetCommState`（决定不做，不为一个变体加原生依赖），要么用 macOS / Linux。这是明确的功能边界，不是 bug，也不打算改。
 
 ### 占用检测只在 macOS / Linux
 
@@ -60,7 +60,7 @@ $env:VIBE_USB_PORT='COM3'         # PowerShell
 
 ## 已知缺口（未做）
 
-- Windows 上不设置串口波特率 → 只支持接收器的原生 USB 变体。要么在文档里写死这条，要么引入 `serialport` 依赖补上 `SetCommState`，属于需要拍板的技术选型。
+- Windows 上不设置串口波特率 → 接收器**只支持原生 USB 变体**（已拍板：不引入 `serialport` 依赖补 `SetCommState`，WCH 转串口变体的 Windows 用户请换 macOS / Linux）。
 - Windows 上没有串口占用检测。
 - Windows 上的 `--build` 依赖外部 IDF 环境，本工具不代为激活。
 
