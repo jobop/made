@@ -325,7 +325,9 @@ export class TunnelManager {
         return this.summary();
       }
     }
-    const args = this.mode === 'named' ? ['tunnel', 'run', '--token-file', this.tokenFile] :
+    // QUIC (UDP) is heavily degraded on some international links; force the
+    // TCP-based HTTP/2 transport so the managed connector stays reachable.
+    const args = this.mode === 'named' ? ['tunnel', 'run', '--protocol', 'http2', '--token-file', this.tokenFile] :
       this.mode === 'tailscale' ? ['funnel', '--https=443', `http://127.0.0.1:${this.devicePort}`] :
         this.mode === 'ngrok' ? ['http', `http://127.0.0.1:${this.devicePort}`, '--config', this.ngrokRuntimeFile,
           '--inspect=false', ...(this.ngrokConfiguredUrl ? ['--url', this.ngrokConfiguredUrl] : [])] :

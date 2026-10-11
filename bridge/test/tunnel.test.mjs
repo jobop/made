@@ -92,7 +92,7 @@ test('固定域名模式保存私有令牌文件，只把文件路径交给 clou
   assert.equal(reloaded.summary().tokenConfigured, true);
   assert.equal(reloaded.summary().status, 'off');
   assert.equal((await tunnel.start()).status, 'starting');
-  assert.deepEqual(called.args, ['tunnel', 'run', '--token-file', tokenFile]);
+  assert.deepEqual(called.args, ['tunnel', 'run', '--protocol', 'http2', '--token-file', tokenFile]);
   assert.equal(JSON.stringify(called).includes(secret), false);
   assert.throws(() => tunnel.configure({ mode: 'quick' }), /关闭当前穿透/);
   child.stderr.write('Registered tunnel connection connIndex=0\n');
