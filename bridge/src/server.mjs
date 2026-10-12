@@ -796,7 +796,7 @@ export function createApp(config, { run, transcribe, tunnel: providedTunnel, ena
         // picker lives on the desktop. Keep room for twelve bounded bitmaps.
         const payload = {
           locale: config.locale,
-          providers: providerStates(config, deviceLocale).map(({ id, label, available, reason, icon, capabilities }) => ({ id, label, available, reason: devicePreview(reason, 120), icon, capabilities })),
+          providers: providerStates(config, deviceLocale).map(({ id, label, available, reason, icon, capabilities, sprite }) => ({ id, label, available, reason: devicePreview(reason, 120), icon, capabilities, sprite })),
           projects: config.projects.filter(({ id }) => id === config.defaultProject).map(({ id, label }) => ({ id, label: devicePreview(label, 64) })),
           defaultProject: config.defaultProject,
           voice: { mode: voice.mode, available: voice.available },

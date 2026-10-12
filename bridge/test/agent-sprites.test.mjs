@@ -1,6 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import net from 'node:net';
+import dgram from 'node:dgram';
 import os from 'node:os';
 import path from 'node:path';
 import { readSprite, spriteChunk, SPRITE_MAX_TOTAL_BYTES, SPRITE_MAX_CHUNK } from '../src/agent-sprites.mjs';
@@ -102,3 +104,91 @@ test('spriteChunk 按偏移切片、收敛越界并拒绝未知文件', () => {
   assert.equal(spriteChunk(sprite, 'missing.png', 0), null);
   assert.equal(spriteChunk(null, 'body.png', 0), null);
 });
+
+test('设备端全链路：/device/config 暴露 sprite 清单，manifest 与分片可拉取', async (t) => {
+  const { loadConfig } = await import('../src/config.mjs');
+  const { loadConfiguredPlugins } = await import('../src/plugins/registry.mjs');
+  const { createApp } = await import('../src/server.mjs');
+
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'sprite-http-'));
+  const packageDir = path.join(directory, 'demo_sprite');
+  fs.mkdirSync(packageDir);
+  const body = Buffer.alloc(700, 9);
+  // 独立插件模块 + sprite/（直接落到包目录，不经 makePackage——makePackage 只生成 sprite/）。
+  fs.writeFileSync(path.join(packageDir, 'plugin.mjs'), `export default {
+    apiVersion: 1, kind: 'coding-agent', id: 'demo_sprite', label: '演示',
+    capabilities: { session: 'native', model: true, cancel: true, progress: true },
+    probe: () => ({ available: true, reason: '测试' }),
+    run: async () => ({ status: 'completed', result: 'ok' }),
+  };\n`);
+  fs.writeFileSync(path.join(packageDir, 'plugin.json'), JSON.stringify({ id: 'demo_sprite' }));
+  fs.mkdirSync(path.join(packageDir, 'sprite'));
+  fs.writeFileSync(path.join(packageDir, 'sprite/manifest.json'), JSON.stringify(validManifest()));
+  for (const [name, data] of Object.entries({ 'body.png': body, 'eyes-open.png': PNG_1PX, 'eyes-closed.png': PNG_1PX })) {
+    fs.writeFileSync(path.join(packageDir, 'sprite', name), data);
+  }
+
+  const configPath = path.join(directory, 'config.json');
+  fs.writeFileSync(configPath, JSON.stringify({ projects: [{ id: 'demo', path: directory }], plugins: [path.join(packageDir, 'plugin.mjs')] }));
+  const config = loadConfig({ VIBE_CONFIG: configPath, VIBE_STATE_DIR: path.join(directory, 'state'), VIBE_ASR_MODE: 'off' });
+  config.pluginsRuntime = await loadConfiguredPlugins(config);
+  config.port = await freeTcpPort();
+  do { config.devicePort = await freeTcpPort(); } while (config.port === config.devicePort);
+  config.discoveryPort = await freeUdpPort();
+  const app = createApp(config);
+  await app.listen();
+  t.after(() => app.close());
+  const device = `http://127.0.0.1:${config.devicePort}`;
+  const deviceId = 'aabbccddeeff';
+  const nonce = 'c'.repeat(32);
+  app.pairing.open();
+  app.pairing.request({ deviceId, deviceName: '测试', code: '123456', nonce }, '127.0.0.1', `127.0.0.1:${config.devicePort}`);
+  app.pairing.decide(deviceId, nonce, 'confirm');
+  const headers = { Authorization: `Bearer ${app.pairing.paired.get(deviceId).token}` };
+
+  // 1) config 里 sprite 清单完整（回归：字段重建曾把 sprite 丢掉）。
+  const cfg = await (await fetch(`${device}/device/config`, { headers })).json();
+  const provider = cfg.providers.find((item) => item.id === 'demo_sprite');
+  assert.ok(provider, 'config 应包含 demo_sprite');
+  assert.equal(provider.sprite.version, 1);
+  assert.ok(provider.sprite.files.some((file) => file.file === 'body.png' && file.bytes === 700));
+
+  // 2) manifest.json 直接可拉。
+  const manifest = await (await fetch(`${device}/device/sprite/demo_sprite/manifest.json`, { headers })).json();
+  assert.equal(manifest.version, 1);
+  assert.equal(manifest.layers.length, 2);
+
+  // 3) 分片拉 body.png 重组后与清单哈希一致。
+  const meta = provider.sprite.files.find((file) => file.file === 'body.png');
+  const chunks = [];
+  for (let offset = 0; ; offset += chunks.at(-1)?.length || 0) {
+    const response = await fetch(`${device}/device/sprite/demo_sprite/body.png?offset=${offset}&len=300`, { headers });
+    assert.equal(response.status, 200);
+    const buffer = Buffer.from(await response.arrayBuffer());
+    if (buffer.length === 0) break;
+    chunks.push(buffer);
+    if (buffer.length < 300) break;
+  }
+  const reassembled = Buffer.concat(chunks);
+  const { createHash } = await import('node:crypto');
+  assert.equal(createHash('sha256').update(reassembled).digest('hex'), meta.sha256);
+  assert.equal(reassembled.length, 700);
+
+  // 4) 未知文件与未知助手都是 404。
+  assert.equal((await fetch(`${device}/device/sprite/demo_sprite/nope.png`, { headers })).status, 404);
+  assert.equal((await fetch(`${device}/device/sprite/other_agent/manifest.json`, { headers })).status, 404);
+});
+
+async function freeTcpPort() {
+  const server = net.createServer();
+  const port = await new Promise((resolve) => server.listen(0, '127.0.0.1', () => resolve(server.address().port)));
+  await new Promise((resolve) => server.close(resolve));
+  return port;
+}
+
+async function freeUdpPort() {
+  const socket = dgram.createSocket('udp4');
+  const port = await new Promise((resolve) => socket.bind(0, '127.0.0.1', () => resolve(socket.address().port)));
+  await new Promise((resolve) => socket.close(resolve));
+  return port;
+}

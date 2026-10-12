@@ -133,7 +133,9 @@ export function loadConfig(env = process.env) {
   }
   const port = Number(raw.port || 8787);
   const devicePort = Number(raw.devicePort || 8788);
-  if (![port, devicePort].every((p) => Number.isInteger(p) && p > 0 && p < 65536)) {
+  // UDP 发现端口：默认与官方端口一致；跑第二个实例（开发/测试）时必须错开。
+  const discoveryPort = Number(env.VIBE_DISCOVERY_PORT || raw.discoveryPort || 8789);
+  if (![port, devicePort, discoveryPort].every((p) => Number.isInteger(p) && p > 0 && p < 65536)) {
     throw new Error('端口号必须在 1 到 65535 之间');
   }
   // 同时执行的会话数。同一会话恒为串行（编程工具按会话线程加写锁，并行必然冲突），
@@ -172,6 +174,7 @@ export function loadConfig(env = process.env) {
     defaultProvider,
     port,
     devicePort,
+    discoveryPort,
     maxParallelJobs,
     codexModel: models.codex,
     models,
