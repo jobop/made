@@ -188,6 +188,8 @@ private:
     void queueDeleteSessionId(const std::string &id);
     void startThemeApply(const std::string &name);
     void startScreenshotUpload();
+    void handleUiSwipe(const std::string &direction);
+    void handleUiTap(const std::string &x_text, const std::string &y_text);
     void setConnectionError(std::string error);
     void queueActionForId(const char *verb, const std::string &task_id);
     void queueSubmittedVoiceCancel(const std::string &task_id);
@@ -261,6 +263,8 @@ private:
         std::string direction;
         std::string level;
         std::string theme;
+        std::string x;
+        std::string y;
         std::string audio;
     };
     std::vector<RemoteCommand> inbound_commands_; // Protected by model_mutex_.

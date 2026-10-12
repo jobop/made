@@ -3777,7 +3777,9 @@ void VibeCoding::announceBoardCatalog()
         "{\"name\":\"voice.start\"},"
         "{\"name\":\"task.confirm\"},"
         "{\"name\":\"task.cancel\"},"
-        "{\"name\":\"debug.screenshot\"}"
+        "{\"name\":\"debug.screenshot\"},"
+        "{\"name\":\"ui.swipe\"},"
+        "{\"name\":\"ui.tap\"}"
         "]}";
     std::string response;
     int status = 0;
@@ -3842,7 +3844,24 @@ bool validThemeName(const std::string &name)
 
 bool validDirection(const std::string &direction)
 {
-    return direction == "next" || direction == "prev";
+    return direction == "next" || direction == "prev" ||
+           direction == "left" || direction == "right" ||
+           direction == "up" || direction == "down";
+}
+
+// ui.tap 命中测试：返回 (x,y) 处最深的可见可点击对象（顶层子对象优先），无则空。
+lv_obj_t *findClickableAt(lv_obj_t *obj, const lv_point_t &point)
+{
+    if (!obj || lv_obj_has_flag(obj, LV_OBJ_FLAG_HIDDEN) || !lv_obj_is_visible(obj)) return nullptr;
+    lv_area_t coords;
+    lv_obj_get_coords(obj, &coords);
+    if (point.x < coords.x1 || point.x > coords.x2 || point.y < coords.y1 || point.y > coords.y2) return nullptr;
+    const int32_t count = lv_obj_get_child_count(obj);
+    for (int32_t i = count - 1; i >= 0; --i) {
+        lv_obj_t *hit = findClickableAt(lv_obj_get_child(obj, i), point);
+        if (hit) return hit;
+    }
+    return lv_obj_has_flag(obj, LV_OBJ_FLAG_CLICKABLE) ? obj : nullptr;
 }
 }
 
@@ -4043,6 +4062,39 @@ void VibeCoding::startScreenshotUpload()
     }
 }
 
+// ui.swipe：语义化手势，动作与真实手势一致（left/right 切助手，up 开抽屉，down 收抽屉）。
+void VibeCoding::handleUiSwipe(const std::string &direction)
+{
+    if (!canOperate() || settings_open_.load()) return;
+    if (direction == "left") {
+        chooseProvider(1);
+    } else if (direction == "right") {
+        chooseProvider(-1);
+    } else if (direction == "up") {
+        if (!drawer_open_.load()) showDrawer(true);
+    } else if (direction == "down") {
+        if (drawer_open_.load()) showDrawer(false);
+    }
+}
+
+// ui.tap：命中 (x,y) 处最深可见可点击对象并派发 CLICKED（本应用全部点击回调都挂该事件）。
+// 调试/插件自动化用途；不做按下-抬起全流程模拟。
+void VibeCoding::handleUiTap(const std::string &x_text, const std::string &y_text)
+{
+    if (!canOperate() || settings_open_.load()) return;
+    if (x_text.empty() || x_text.size() > 4 || y_text.empty() || y_text.size() > 4) return;
+    for (const char c : x_text + y_text) {
+        if (c < '0' || c > '9') return;
+    }
+    const int x = atoi(x_text.c_str());
+    const int y = atoi(y_text.c_str());
+    lv_obj_t *screen = lv_screen_active();
+    if (!screen || x < 0 || y < 0) return;
+    const lv_point_t point{x, y};
+    lv_obj_t *target = findClickableAt(screen, point);
+    if (target) lv_obj_send_event(target, LV_EVENT_CLICKED, nullptr);
+}
+
 void VibeCoding::applyRemoteCommands()
 {
     std::vector<RemoteCommand> batch;
@@ -4094,6 +4146,10 @@ void VibeCoding::applyRemoteCommands()
             }
         } else if (command.name == "debug.screenshot") {
             startScreenshotUpload();
+        } else if (command.name == "ui.swipe") {
+            handleUiSwipe(command.direction);
+        } else if (command.name == "ui.tap") {
+            handleUiTap(command.x, command.y);
         }
     }
 }
@@ -4147,6 +4203,8 @@ void VibeCoding::pullBoardCommands()
             next.direction = commandField(command, "direction");
             next.level = commandField(command, "level");
             next.theme = commandField(command, "name");
+            next.x = commandField(command, "x");
+            next.y = commandField(command, "y");
             if (!validDirection(next.direction)) next.direction.clear();
             const cJSON *audio = cJSON_GetObjectItemCaseSensitive(command, "audio");
             if (cJSON_IsTrue(audio)) {
