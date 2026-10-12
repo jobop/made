@@ -25,6 +25,7 @@ import { createPluginRegistry, loadConfiguredPlugins } from './plugins/registry.
 import { createEnhancement } from './plugins/enhance.mjs';
 import { listInstalled, listThemes, removePlugin, removeTheme, savePluginSettings, setPluginEnabled, themeExists } from './installed.mjs';
 import { createBoardLink } from './board-link.mjs';
+import { spriteChunk } from './agent-sprites.mjs';
 import { initializeSpeechSettings, saveSpeechSettings } from './speech-settings.mjs';
 import { builtinSpeechRecognizers } from './speech/index.mjs';
 const PAIRED_DISCOVERY_REQUEST = /^VIBE_DISCOVER_PAIRED_V2 ([0-9a-f]{12}) ([0-9a-f]{32})$/;
@@ -803,6 +804,28 @@ export function createApp(config, { run, transcribe, tunnel: providedTunnel, ena
         };
         if (Buffer.byteLength(JSON.stringify(payload)) > 32 * 1024) throw new Error('码得配置超过 32 KB，请检查助手元数据');
         deviceSend(res, 200, payload);
+        return;
+      }
+      // 形象素材分片拉取：单次 ≤192KB，兼容 USB 帧转发 256KB 上限（docs/SPRITES.md）。
+      const spriteMatch = req.method === 'GET' &&
+        url.pathname.match(/^\/device\/sprite\/([a-z0-9][a-z0-9_-]{0,39})\/([A-Za-z0-9_-]+\.png)$/);
+      if (spriteMatch) {
+        const plugin = config.pluginsRuntime.agent(spriteMatch[1]);
+        const chunk = plugin?.sprite ? spriteChunk(plugin.sprite, spriteMatch[2],
+          Number(url.searchParams.get('offset')) || 0,
+          url.searchParams.has('len') ? Number(url.searchParams.get('len')) : undefined) : null;
+        if (!chunk) {
+          deviceSend(res, 404, { error: '素材不存在' });
+          return;
+        }
+        res.writeHead(200, {
+          'Content-Type': 'application/octet-stream',
+          'Content-Length': chunk.length,
+          'X-Sprite-Total': plugin.sprite.files.find((file) => file.file === spriteMatch[2])?.bytes ?? 0,
+          'Cache-Control': 'no-store',
+          'X-Content-Type-Options': 'nosniff',
+        });
+        res.end(chunk);
         return;
       }
       if (req.method === 'POST' && url.pathname === '/device/voice') {

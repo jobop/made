@@ -6,6 +6,7 @@ import { isPackageEntry, packageDirectories, readPackageSettings } from '../plug
 import { MODEL_ID } from '../model-settings.mjs';
 import { builtinAgents } from '../agents/index.mjs';
 import { normalizeAgentIcon } from '../agent-icons.mjs';
+import { readSprite } from '../agent-sprites.mjs';
 import { builtinSpeechRecognizers } from '../speech/index.mjs';
 
 export const PLUGIN_API_VERSION = 1;
@@ -95,8 +96,16 @@ export async function loadConfiguredPlugins(config) {
     const exported = (await import(pathToFileURL(filename).href)).default;
     const bundle = Array.isArray(exported) ? exported : [exported];
     const pack = isPackageEntry(filename) ? readPackageSettings(path.dirname(filename)) : null;
+    const packageDir = isPackageEntry(filename) ? path.dirname(filename) : null;
     for (const p of bundle) {
       validatePlugin(p);
+      // 素材挂包目录：sprite/ 校验失败只降级（该助手用固件兜底形象），不阻断插件加载。
+      if (packageDir && p.kind === 'coding-agent') {
+        try { p.sprite = readSprite(packageDir) || undefined; } catch (error) {
+          console.warn(`插件 ${p.id}：${error.message}，改用内置兜底形象`);
+          p.sprite = undefined;
+        }
+      }
       if (p.kind !== 'coding-agent' && p.kind !== 'board-plugin') throw new Error(`插件 ${p.id}：外部插件仅支持 coding-agent；语音识别请配置兼容接口的 URL、API Key 和模型名`);
       if (pack) {
         const mismatch = pack.id && pack.id !== p.id;

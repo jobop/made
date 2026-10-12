@@ -39,6 +39,8 @@ export function providerStates(config, locale = config.locale) {
       },
       model: plugin.capabilities.model && plugin.model
         ? { default: plugin.model.default, required: plugin.model.required } : null,
+      // 形象素材清单：码得按 version 决定是否分片重拉（docs/SPRITES.md）。
+      sprite: plugin.sprite ? { version: plugin.sprite.version, files: plugin.sprite.files } : null,
       canCancelRunning: plugin.capabilities.cancel,
     };
   });
