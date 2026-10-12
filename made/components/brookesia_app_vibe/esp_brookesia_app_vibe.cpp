@@ -12,6 +12,7 @@
 #include "boot_click_gesture.hpp"
 #include "made_layout.hpp"
 #include "made_sprite.hpp"
+#include "made_sprite_cache.hpp"
 #include "new_message_chime.hpp"
 #include "cJSON.h"
 #include "bsp/display.h"
@@ -1056,6 +1057,14 @@ bool VibeCoding::close()
     }
     localized_labels.clear();
     sprite_stage_ = nullptr;
+    artwork_applied_.clear();
+    artwork_seen_provider_.clear();
+    artwork_dirty_.store(false);
+    artwork_request_.store(false);
+    {
+        std::lock_guard<std::mutex> lock(artwork_mutex_);
+        artwork_attempted_ = false;  // 重新进入后允许再校验一轮缓存
+    }
     drawer_ = nullptr;
     drawer_grip_ = nullptr;
     drawer_hint_ = nullptr;
@@ -3113,11 +3122,19 @@ void VibeCoding::render()
     if (sprite_stage_) {
         std::string task_status;
         std::string connection_error;
+        std::string selected_provider;
         {
             std::lock_guard<std::mutex> lock(model_mutex_);
             connection_error = model_.connection_error;
             if (!model_.tasks.empty()) task_status = model_.tasks.front().status;
+            selected_provider = selectedProviderLocked().id;
         }
+        // 助手切换即刻反映到素材（撤旧、请求 worker 下载新的）。
+        if (artwork_seen_provider_ != selected_provider) {
+            artwork_seen_provider_ = selected_provider;
+            artwork_request_.store(true);
+        }
+        maybeApplyArtwork(selected_provider);
         int mood = made_sprite::Mood::kIdle;
         if (!connection_error.empty()) mood = made_sprite::Mood::kOffline;
         else if (voice.phase == vibe_voice::Phase::Recording || voice.phase == vibe_voice::Phase::Uploading)
@@ -3574,6 +3591,73 @@ void VibeCoding::showProviderIcon(const vibe_provider::Icon &icon)
     lv_obj_remove_flag(provider_image_, LV_OBJ_FLAG_HIDDEN);
     lv_obj_add_flag(icon_placeholder_, LV_OBJ_FLAG_HIDDEN);
     lv_obj_invalidate(provider_image_);
+}
+
+// 形象素材下载（worker 线程）。目标与最近一次尝试一致且成功过就不再动网络；
+// 待确认任务在屏上等 BOOT 时也跳过，避免分片下载拖慢确认链路。
+void VibeCoding::syncArtwork()
+{
+    std::string provider;
+    vibe_provider::SpriteInfo sprite;
+    bool waiting = false;
+    {
+        std::lock_guard<std::mutex> lock(model_mutex_);
+        const auto &selected = selectedProviderLocked();
+        provider = selected.id;
+        sprite = selected.sprite;
+        waiting = !model_.tasks.empty() && model_.tasks.front().status == "waiting_confirmation";
+    }
+    if (waiting) return;
+    {
+        std::lock_guard<std::mutex> lock(artwork_mutex_);
+        if (artwork_attempted_ && artwork_target_ == provider &&
+            artwork_target_version_ == (sprite.valid() ? sprite.version : 0)) return;
+        artwork_target_ = provider;
+        artwork_target_version_ = sprite.valid() ? sprite.version : 0;
+        artwork_attempted_ = true;
+    }
+    if (!sprite.valid()) {
+        std::lock_guard<std::mutex> lock(artwork_mutex_);
+        artwork_ready_provider_.clear();
+        artwork_dirty_.store(true);
+        return;
+    }
+    const auto fetch = [this](const std::string &path, std::string &out, int &status) {
+        return request(path, false, out, status, "", 200 * 1024, 30000);
+    };
+    const bool ok = made_sprite_cache::ensure(provider, sprite, fetch);
+    ESP_LOGI(BUTTON_TAG, "[sprite] provider=%s version=%u ok=%d", provider.c_str(), sprite.version, ok);
+    std::lock_guard<std::mutex> lock(artwork_mutex_);
+    artwork_ready_provider_ = ok ? provider : std::string();
+    artwork_dirty_.store(true);
+}
+
+// 素材应用与清理（LVGL 线程）。provider 切走时立刻撤下旧素材；
+// 下载完成的素材在下一帧淡入（这里是直接换，圆屏上视觉上就是一次闪切）。
+void VibeCoding::maybeApplyArtwork(const std::string &selected_provider)
+{
+    if (!sprite_stage_) return;
+    bool dirty = false;
+    std::string ready;
+    {
+        std::lock_guard<std::mutex> lock(artwork_mutex_);
+        dirty = artwork_dirty_.exchange(false);
+        ready = artwork_ready_provider_;
+    }
+    if (artwork_applied_ != selected_provider &&
+        (dirty || made_sprite::artworkActive(sprite_stage_))) {
+        made_sprite::clearArtwork(sprite_stage_);
+        artwork_applied_.clear();
+    }
+    if (!dirty || ready.empty() || ready != selected_provider || artwork_applied_ == ready) return;
+    std::string manifest;
+    if (made_sprite_cache::loadManifest(selected_provider, manifest) &&
+        made_sprite::applyArtwork(sprite_stage_, manifest, made_sprite_cache::baseDir(selected_provider))) {
+        artwork_applied_ = selected_provider;
+    } else {
+        made_sprite::clearArtwork(sprite_stage_);
+        artwork_applied_.clear();
+    }
 }
 
 void VibeCoding::refreshConfig()
@@ -4591,6 +4675,7 @@ void VibeCoding::workerLoop()
             (language_refresh_pending_.exchange(false) || (active_cycles++ % 14) == 0 || !config_loaded_.load() || !voice_available_.load())) {
             refreshConfig();
         }
+        if (canOperate() && artwork_request_.exchange(false)) syncArtwork();
         PendingAction action;
         {
             std::lock_guard<std::mutex> lock(model_mutex_);

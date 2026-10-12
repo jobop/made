@@ -2,6 +2,7 @@
 #pragma once
 
 #include <cstdint>
+#include <string>
 #include "lvgl.h"
 
 namespace made_sprite {
@@ -24,5 +25,17 @@ lv_obj_t *create(lv_obj_t *parent);
 
 // elapsed_ms is time since the stage became visible. Call at ~50 ms from render().
 void update(lv_obj_t *root, uint32_t elapsed_ms, int mood);
+
+// 分层素材模式（docs/SPRITES.md）。manifest_json 是桥接器 sprite 端点下发的
+// manifest.json 原文；base_dir 是素材 PNG 所在目录（含尾部斜杠可省）。
+// 解码在 LVGL 线程进行（数百毫秒级，一次性）；失败返回 false 并保持现状。
+// 成功后程序化占位形象隐藏，动效由 update() 按素材层的 blink/talk/alert 驱动。
+bool applyArtwork(lv_obj_t *root, const std::string &manifest_json, const std::string &base_dir);
+
+// 回到程序化占位形象并释放素材位图（PSRAM）。
+void clearArtwork(lv_obj_t *root);
+
+// 当前是否处于分层素材模式。
+bool artworkActive(lv_obj_t *root);
 
 } // namespace made_sprite

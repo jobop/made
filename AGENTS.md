@@ -73,6 +73,8 @@ npx made-market info <包 ID>             # 查看版本、校验和与安装位
 
 接口类型真源是 `bridge/src/plugins/contracts.d.ts`，用法与完整示例在 `docs/PLUGINS.md`。能力归线的判断标准：板子上有没有这个命令/事件（固件的事），还是桥接器内存里有没有这个句柄（桥接器的事）——前者刷固件，后者改桥接器，插件永远只是清单的消费者。
 
+**助手形象素材**：agent 插件包可选携带 `sprite/` 目录（分层 PNG + manifest），随包下发到码得的近全屏小精灵，换形象不需要刷固件。格式、动效语义与分片拉取协议见 [docs/SPRITES.md](docs/SPRITES.md)；脚手架 `npx made-market init --kind agent` 自带模板，改素材必须递增 manifest 的 `version`。
+
 ## 启动与烧录
 
 目录是 `made/`（码得固件）、`receiver/`（接收器固件）、`bridge/`（桥接器）。不要再从仓库根执行 `node src/server.mjs`，也不要增量编译仍指向 `firmware-brookesia` 或 `receiver-firmware` 的旧构建目录。

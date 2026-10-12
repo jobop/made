@@ -13,12 +13,25 @@
 namespace vibe_provider {
 constexpr size_t MAX_PROVIDERS = 12;
 constexpr size_t MAX_LABEL_BYTES = 64;
+// 形象素材清单（/device/config 里 provider.sprite 的快照，见 docs/SPRITES.md）。
+// 只带版本与文件清单；分片拉取与布局 manifest 由固件另行下载。
+struct SpriteFile {
+    std::string file;
+    uint32_t bytes = 0;
+    std::string sha256;
+};
+struct SpriteInfo {
+    uint32_t version = 0;
+    std::vector<SpriteFile> files;
+    bool valid() const { return version > 0 && !files.empty(); }
+};
 struct Provider {
     std::string id;
     std::string label;
     bool available = false;
     std::string reason;
     Icon icon;
+    SpriteInfo sprite;
     bool external_unscoped = true;
     bool model = false;
     bool cancel = false;
@@ -30,6 +43,31 @@ inline std::string text(const cJSON *item, const char *key)
 {
     const auto *value = cJSON_GetObjectItemCaseSensitive(item, key);
     return cJSON_IsString(value) && value->valuestring ? value->valuestring : "";
+}
+
+inline SpriteInfo parseSprite(const cJSON *sprite)
+{
+    SpriteInfo info;
+    if (!cJSON_IsObject(sprite)) return info;
+    const auto *version = cJSON_GetObjectItemCaseSensitive(sprite, "version");
+    if (!cJSON_IsNumber(version) || version->valueint <= 0) return info;
+    const auto *files = cJSON_GetObjectItemCaseSensitive(sprite, "files");
+    if (!cJSON_IsArray(files)) return info;
+    info.version = static_cast<uint32_t>(version->valueint);
+    const cJSON *entry = nullptr;
+    cJSON_ArrayForEach(entry, files) {
+        if (!cJSON_IsObject(entry) || info.files.size() >= 16) break;
+        const auto file = text(entry, "file");
+        const auto *bytes = cJSON_GetObjectItemCaseSensitive(entry, "bytes");
+        const auto sha = text(entry, "sha256");
+        // 文件名在 SPIFFS 平铺缓存里拼在 "sp_<hash8>_" 前后，必须收得很紧。
+        if (file.size() < 5 || file.size() > 20 || file.rfind(".png") != file.size() - 4 ||
+            file.find_first_not_of("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-.") != std::string::npos ||
+            sha.size() != 64 || !cJSON_IsNumber(bytes) || bytes->valueint <= 0) continue;
+        info.files.push_back({file, static_cast<uint32_t>(bytes->valueint), sha});
+    }
+    if (info.files.empty()) info.version = 0;
+    return info;
 }
 
 inline bool validId(const std::string &id)
@@ -70,6 +108,7 @@ inline bool parse(const cJSON *items, std::vector<Provider> &result)
         provider.available = cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(item, "available"));
         provider.reason = boundedText(text(item, "reason"), 240);
         provider.icon = parseIcon(cJSON_GetObjectItemCaseSensitive(item, "icon"));
+        provider.sprite = parseSprite(cJSON_GetObjectItemCaseSensitive(item, "sprite"));
         const auto *capabilities = cJSON_GetObjectItemCaseSensitive(item, "capabilities");
         if (cJSON_IsObject(capabilities)) {
             // Unknown/missing session guarantees are treated conservatively.

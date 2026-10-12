@@ -168,6 +168,8 @@ private:
     void refreshSessions();
     void refreshTasks();
     void refreshConfig();
+    void syncArtwork();
+    void maybeApplyArtwork(const std::string &selected_provider);
     void invalidateCatalog(bool clear = false);
     void showProviderIcon(const vibe_provider::Icon &icon);
     void sendHeartbeat();
@@ -194,6 +196,17 @@ private:
     void layoutReadableText();
 
     std::mutex model_mutex_;
+    // 形象素材同步状态：worker 线程负责下载（syncArtwork），LVGL 线程负责
+    // 解码与显示（maybeApplyArtwork）；两边只通过 artwork_dirty_ 握手。
+    std::mutex artwork_mutex_;
+    std::string artwork_target_;
+    uint32_t artwork_target_version_ = 0;
+    bool artwork_attempted_ = false;
+    std::string artwork_ready_provider_;
+    std::atomic<bool> artwork_dirty_{false};
+    std::atomic<bool> artwork_request_{false};
+    std::string artwork_applied_;  // 仅 LVGL 线程访问
+    std::string artwork_seen_provider_;  // 仅 LVGL 线程访问
     std::mutex voice_action_mutex_; // Serializes BOOT/touch voice actions with app pause/close.
     Snapshot model_;
     PendingAction pending_action_;

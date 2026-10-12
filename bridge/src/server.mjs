@@ -808,9 +808,20 @@ export function createApp(config, { run, transcribe, tunnel: providedTunnel, ena
       }
       // 形象素材分片拉取：单次 ≤192KB，兼容 USB 帧转发 256KB 上限（docs/SPRITES.md）。
       const spriteMatch = req.method === 'GET' &&
-        url.pathname.match(/^\/device\/sprite\/([a-z0-9][a-z0-9_-]{0,39})\/([A-Za-z0-9_-]+\.png)$/);
+        url.pathname.match(/^\/device\/sprite\/([a-z0-9][a-z0-9_-]{0,39})\/([A-Za-z0-9_-]+\.png|manifest\.json)$/);
       if (spriteMatch) {
         const plugin = config.pluginsRuntime.agent(spriteMatch[1]);
+        if (spriteMatch[2] === 'manifest.json') {
+          if (!plugin?.sprite) {
+            deviceSend(res, 404, { error: '素材不存在' });
+            return;
+          }
+          deviceSend(res, 200, {
+            version: plugin.sprite.version, canvas: plugin.sprite.canvas,
+            layers: plugin.sprite.layers, ...(plugin.sprite.motion ? { motion: plugin.sprite.motion } : {}),
+          });
+          return;
+        }
         const chunk = plugin?.sprite ? spriteChunk(plugin.sprite, spriteMatch[2],
           Number(url.searchParams.get('offset')) || 0,
           url.searchParams.has('len') ? Number(url.searchParams.get('len')) : undefined) : null;

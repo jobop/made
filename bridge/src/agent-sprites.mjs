@@ -18,7 +18,8 @@ export const SPRITE_MAX_FILE_BYTES = 256 * 1024;
 const MANIFEST_MAX_BYTES = 16 * 1024;
 const MAX_LAYERS = 8;
 const MAX_FRAMES = 4;
-const FILE_NAME = /^[A-Za-z0-9_-]+\.png$/i;
+// ≤20 字符：固件 SPIFFS 平铺缓存对象名上限 32 字符（"sp_" + 8 位哈希 + "_" + 文件名）。
+const FILE_NAME = /^[A-Za-z0-9_-]{1,16}\.png$/i;
 const LAYER_ID = /^[A-Za-z][A-Za-z0-9_]{0,15}$/;
 const RESERVED_IDS = new Set(['__proto__', 'constructor', 'prototype']);
 
