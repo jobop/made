@@ -31,6 +31,16 @@ inline int made_oy()
 inline int made_x(int value) { return made_ox() + made_s(value); }
 inline int made_y(int value) { return made_oy() + made_s(value); }
 
+// 主页精灵带：矩形竖屏上把 360 设计带垂直居中（别的整页用 made_page_* 全高铺，
+// 精灵页要的是「居中构图」而不是「顶头铺满」）。圆屏/方屏行为与 made_y 一致。
+inline int made_home_oy()
+{
+    if (!made_rect()) return made_oy();
+    const int extra = made_screen_h() - made_s(made_design);
+    return extra > 0 ? extra / 2 : 0;
+}
+inline int made_home_y(int value) { return made_home_oy() + made_s(value); }
+
 // 整页（设置、确认框、列表、键盘）按 360 画布的比例铺到真实屏幕高度，
 // 原来在方屏里居中的内容，在更高的屏上仍然居中，底下不再空一截。
 inline int made_page_x(int value) { return made_x(value); }

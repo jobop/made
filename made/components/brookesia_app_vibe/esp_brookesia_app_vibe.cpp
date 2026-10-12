@@ -339,7 +339,7 @@ bool VibeCoding::run()
     // image is expanded; the other entries retain their bounded packed pixels.
     // 顶部的助手图标徽章：精灵旁唯一保留的助手标识。
     animal_halo_ = lv_obj_create(screen);
-    lv_obj_set_pos(animal_halo_, made_x(156), made_y(14));
+    lv_obj_set_pos(animal_halo_, made_x(156), made_home_y(14));
     lv_obj_set_size(animal_halo_, made_s(48), made_s(48));
     lv_obj_set_style_bg_color(animal_halo_, lv_color_hex(0x263B59), 0);
     lv_obj_set_style_border_width(animal_halo_, 1, 0);
@@ -361,7 +361,7 @@ bool VibeCoding::run()
 
     page_label_ = lv_label_create(screen);
     // 助手页底部：名字之下的页码（左右滑切精灵的指示）。
-    lv_obj_set_pos(page_label_, made_x(150), made_y(338));
+    lv_obj_set_pos(page_label_, made_x(150), made_home_y(338));
     lv_obj_set_width(page_label_, made_s(60));
     lv_obj_set_style_text_align(page_label_, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_set_style_text_color(page_label_, lv_color_hex(VT(text_hint)), 0);
@@ -730,7 +730,7 @@ bool VibeCoding::run()
     lv_obj_add_flag(phone_setup_panel_, LV_OBJ_FLAG_HIDDEN);
 
     provider_label_ = lv_label_create(screen);
-    lv_obj_set_pos(provider_label_, made_x(70), made_y(302));
+    lv_obj_set_pos(provider_label_, made_x(70), made_home_y(302));
     lv_obj_set_style_text_align(provider_label_, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_set_style_text_color(provider_label_, lv_color_hex(VT(text_primary)), 0);
     lv_obj_set_style_text_font(provider_label_, &lv_font_montserrat_26, 0);
@@ -802,7 +802,6 @@ bool VibeCoding::run()
         // Stack them at the real font height so 16 px text stays sharp and apart.
         const int margin = 6;
         const int width = made_screen_w() - margin * 2;
-        const lv_font_t *title_font = &lv_font_montserrat_16;
         int y = made_y(28) + made_s(74) + 6;
         auto place = [&](lv_obj_t *label, const lv_font_t *font, int gap) {
             lv_obj_set_style_text_font(label, font, 0);
@@ -812,7 +811,9 @@ bool VibeCoding::run()
             lv_obj_set_style_transform_scale_y(label, 256, 0);
             y += lv_font_get_line_height(font) + gap;
         };
-        place(provider_label_, title_font, 2);
+        // provider_label_ 是主页精灵脚下的名字，不进这套抽屉控件堆叠
+        // （旧版曾把它排到精灵身上，长屏上直接压脸）。字体仍适配小屏。
+        lv_obj_set_style_text_font(provider_label_, &lv_font_montserrat_20, 0);
         place(position_label_, text_font, 2);
         lv_obj_set_pos(session_title_tap_, margin, y - lv_font_get_line_height(text_font) - 2);
         lv_obj_set_size(session_title_tap_, width, lv_font_get_line_height(text_font) + 4);
@@ -902,27 +903,28 @@ bool VibeCoding::run()
     lv_obj_clear_flag(drawer_hint_, LV_OBJ_FLAG_CLICKABLE);
 
     // 把平铺在主页的任务/回显/会话/设置控件整体搬进抽屉，重排为抽屉版式。
+    // 纵向用 made_page_y 全高映射：矩形竖屏上内容铺满屏，不再挤在上半截。
     lv_obj_set_parent(instruction_label_, drawer_);
-    lv_obj_set_pos(instruction_label_, made_x(24), made_y(42));
+    lv_obj_set_pos(instruction_label_, made_x(24), made_page_y(42));
     lv_obj_set_width(instruction_label_, made_s(312));
     lv_obj_set_parent(position_label_, drawer_);
-    lv_obj_set_pos(position_label_, made_x(24), made_y(68));
+    lv_obj_set_pos(position_label_, made_x(24), made_page_y(68));
     lv_obj_set_width(position_label_, made_s(312));
     lv_obj_set_parent(session_title_tap_, drawer_);
-    lv_obj_set_pos(session_title_tap_, made_x(24), made_y(64));
+    lv_obj_set_pos(session_title_tap_, made_x(24), made_page_y(64));
     lv_obj_set_size(session_title_tap_, made_s(312), made_s(30));
     lv_obj_set_parent(answer_area_, drawer_);
-    lv_obj_set_pos(answer_area_, made_x(24), made_y(100));
-    lv_obj_set_size(answer_area_, made_s(312), made_s(158));
+    lv_obj_set_pos(answer_area_, made_x(24), made_page_y(100));
+    lv_obj_set_size(answer_area_, made_s(312), made_page_h(158));
     lv_obj_set_parent(meta_label_, drawer_);
-    lv_obj_set_pos(meta_label_, made_x(30), made_y(262));
+    lv_obj_set_pos(meta_label_, made_x(30), made_page_y(262));
     lv_obj_set_width(meta_label_, made_s(300));
     lv_obj_set_parent(new_session_button_, drawer_);
-    lv_obj_set_pos(new_session_button_, made_x(270), made_y(296));
+    lv_obj_set_pos(new_session_button_, made_x(270), made_page_y(296));
     lv_obj_set_parent(delete_session_button_, drawer_);
-    lv_obj_set_pos(delete_session_button_, made_x(157), made_y(296));
+    lv_obj_set_pos(delete_session_button_, made_x(157), made_page_y(296));
     lv_obj_set_parent(settings_button_, drawer_);
-    lv_obj_set_pos(settings_button_, made_x(44), made_y(296));
+    lv_obj_set_pos(settings_button_, made_x(44), made_page_y(296));
 
     delete_dialog_ = lv_obj_create(screen);
     lv_obj_set_pos(delete_dialog_, made_s(0), made_s(0));
@@ -3219,8 +3221,8 @@ void VibeCoding::render()
         if (!drawer_open_.load()) showDrawer(true);
         if (!showing_pairing_layout_) {
             lv_obj_remove_flag(meta_label_, LV_OBJ_FLAG_HIDDEN);
-            lv_obj_set_pos(answer_area_, made_x(24), made_y(196));
-            lv_obj_set_size(answer_area_, made_s(312), made_s(58));
+            lv_obj_set_pos(answer_area_, made_x(24), made_page_y(196));
+            lv_obj_set_size(answer_area_, made_s(312), made_page_h(58));
             lv_obj_set_style_text_align(result_label_, LV_TEXT_ALIGN_CENTER, 0);
             showing_pairing_layout_ = true;
         }
@@ -3253,8 +3255,8 @@ void VibeCoding::render()
     if (catalog_ready && provider_count) lv_obj_remove_flag(new_session_button_, LV_OBJ_FLAG_HIDDEN);
     if (showing_pairing_layout_) {
         lv_obj_add_flag(meta_label_, LV_OBJ_FLAG_HIDDEN);
-        lv_obj_set_pos(answer_area_, made_x(24), made_y(100));
-        lv_obj_set_size(answer_area_, made_s(312), made_s(158));
+        lv_obj_set_pos(answer_area_, made_x(24), made_page_y(100));
+        lv_obj_set_size(answer_area_, made_s(312), made_page_h(158));
         lv_obj_set_style_text_align(result_label_, LV_TEXT_ALIGN_LEFT, 0);
         showing_pairing_layout_ = false;
     }

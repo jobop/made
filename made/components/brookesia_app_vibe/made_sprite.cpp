@@ -25,6 +25,8 @@ struct Parts {
     lv_obj_t *halo = nullptr;      // 舞台底盘
     lv_obj_t *body = nullptr;      // 圆形裁切的身体
     lv_obj_t *image = nullptr;     // 吉祥物图（后续换分层素材）
+    lv_obj_t *lid_left = nullptr;  // 眼皮：眨眼时盖住眼睛（脸部同色）
+    lv_obj_t *lid_right = nullptr;
     lv_obj_t *shadow = nullptr;
     lv_obj_t *left_arm = nullptr;
     lv_obj_t *right_arm = nullptr;
@@ -33,6 +35,7 @@ struct Parts {
     lv_obj_t *spark[3]{};
     lv_point_precise_t left_points[3]{};
     lv_point_precise_t right_points[3]{};
+    int image_base_scale = 256;    // 素材铺满身体圆的基础缩放（呼吸在其上波动）
     int last_mood = -1;
     bool frozen = false;
 
@@ -81,7 +84,7 @@ lv_obj_t *shape(lv_obj_t *parent, int x, int y, int width, int height,
     auto *object = lv_obj_create(parent);
     lv_obj_remove_style_all(object);
     passive(object);
-    lv_obj_set_pos(object, made_x(x), made_y(y));
+    lv_obj_set_pos(object, made_x(x), made_home_y(y));
     lv_obj_set_size(object, made_s(width), made_s(height));
     lv_obj_set_style_radius(object, LV_RADIUS_CIRCLE, 0);
     lv_obj_set_style_bg_color(object, lv_color_hex(color), 0);
@@ -160,7 +163,7 @@ void artUpdate(Parts *parts, uint32_t elapsed_ms, int mood) {
     if (mood == Mood::kOffline) elapsed_ms = 900;  // 与占位形象一致：静止在中间帧
     const int sway = wave(elapsed_ms, art.sway_period, art.sway_amp);
     const int bounce = (wave(elapsed_ms, art.sway_period / 2, art.bounce_amp, 270) + art.bounce_amp) / 2;
-    lv_obj_set_pos(art.container, made_x(sway), made_y(-bounce));
+    lv_obj_set_pos(art.container, made_x(sway), made_home_y(-bounce));
     const int breath_delta = wave(elapsed_ms, art.breath_period,
                                   (art.breath_pct - 100) * 256 / 100);
     for (auto &layer : art.layers) {
@@ -216,21 +219,37 @@ lv_obj_t *create(lv_obj_t *parent) {
     parts->left_foot = shape(root, 138, 266, 22, 10, kLime);
     parts->right_foot = shape(root, 196, 266, 22, 10, kLime);
 
-    // 圆形裁切放大豆豆图：锁屏 136px 舞台的约 1.6 倍。
+    // 圆形裁切放大豆豆图：136px 锁屏舞台的约 1.6 倍。图片与身体都用屏幕缩放，
+    // 矩形屏上不再裁脸（此前图未乘屏幕缩放，长屏只剩一张放大的脸）。
     parts->body = shape(root, 100, 62, 160, 160, 0x102629);
-    lv_obj_set_size(parts->body, 160, 160);  // 设计像素，矩形屏再经 transform 缩放
-    lv_obj_set_style_transform_pivot_x(parts->body, 0, 0);
-    lv_obj_set_style_transform_pivot_y(parts->body, 0, 0);
-    lv_obj_set_style_transform_scale_x(parts->body, made_lv_scale(), 0);
-    lv_obj_set_style_transform_scale_y(parts->body, made_lv_scale(), 0);
     lv_obj_set_style_clip_corner(parts->body, true, 0);
     parts->image = lv_image_create(parts->body);
     passive(parts->image);
     lv_image_set_src(parts->image, &img_app_vibe);
-    lv_obj_set_pos(parts->image, -8, -8);  // 112px 图放大到 ~172px，居中进 160px 圆
+    const int show = made_s(172);  // 112px 素材铺到 172 设计像素，超出圆被裁掉
+    parts->image_base_scale = show * LV_SCALE_NONE / 112;
+    lv_image_set_scale(parts->image, parts->image_base_scale);
+    lv_obj_set_pos(parts->image, (made_s(160) - show) / 2, (made_s(160) - show) / 2);
     lv_image_set_pivot(parts->image, 56, 56);
-    lv_image_set_scale(parts->image, 172 * LV_SCALE_NONE / 112);
     lv_image_set_antialias(parts->image, true);
+
+    // 眼皮：脸部同色圆盘，平时透明，眨眼时短暂盖住眼睛。眼睛中心从素材网格图
+    // 实测：112px 图上左眼 (39,50)、右眼 (68,46)；图片以 172 设计像素铺入
+    // 160 圆（原点 -6、系数 1.536）→ 设计坐标约 (54,71) / (98,65)。
+    constexpr uint32_t kFace = 0xE2F57F;
+    auto makeLid = [&parts](int eye_x, int eye_y) {
+        lv_obj_t *lid = lv_obj_create(parts->body);
+        lv_obj_remove_style_all(lid);
+        passive(lid);
+        lv_obj_set_size(lid, made_s(34), made_s(34));
+        lv_obj_set_pos(lid, made_s(eye_x - 17), made_s(eye_y - 17));
+        lv_obj_set_style_radius(lid, LV_RADIUS_CIRCLE, 0);
+        lv_obj_set_style_bg_color(lid, lv_color_hex(kFace), 0);
+        lv_obj_set_style_bg_opa(lid, LV_OPA_TRANSP, 0);
+        return lid;
+    };
+    parts->lid_left = makeLid(54, 71);
+    parts->lid_right = makeLid(98, 65);
 
     parts->spark[0] = shape(root, 64, 132, 5, 5, kLime, 160);
     parts->spark[1] = shape(root, 272, 108, 5, 5, kLime, 190);
@@ -275,23 +294,30 @@ void update(lv_obj_t *root, uint32_t elapsed_ms, int mood) {
     const int sway = wave(elapsed_ms, sway_period, sway_amp);
     const int bounce = (wave(elapsed_ms, bounce_period, bounce_amp, 270) + bounce_amp) / 2;
     const int step = wave(elapsed_ms, step_period, step_amp);
-    lv_obj_set_pos(parts->body, made_x(100 + sway), made_y(62 - bounce));
+    lv_obj_set_pos(parts->body, made_x(100 + sway), made_home_y(62 - bounce));
     const int angle = wave(elapsed_ms, sway_period, angle_amp);
     lv_image_set_rotation(parts->image, angle < 0 ? angle + 3600 : angle);
+    // 呼吸：整体轻微缩放（±1.6%），与蹦跳的相位错开，待机时也能看出「活着」。
+    const int breath = wave(elapsed_ms, 3200, 4);
+    lv_image_set_scale(parts->image, parts->image_base_scale + breath);
+    // 眨眼：每 ~4.2s 闭一次（约 130ms）；离线冻结时不眨。
+    const bool blink = mood != Mood::kOffline && (elapsed_ms % 4200) < 130;
+    lv_obj_set_style_bg_opa(parts->lid_left, blink ? LV_OPA_COVER : LV_OPA_TRANSP, 0);
+    lv_obj_set_style_bg_opa(parts->lid_right, blink ? LV_OPA_COVER : LV_OPA_TRANSP, 0);
     lv_obj_set_width(parts->shadow, made_s(128 - bounce * 2));
     lv_obj_set_x(parts->shadow, made_x(116 + bounce + sway / 2));
     lv_obj_set_style_bg_opa(parts->shadow, 55 - bounce * 2, 0);
 
-    parts->left_points[0] = {made_x(120 + sway), made_y(186 - bounce)};
-    parts->left_points[1] = {made_x(88 + sway), made_y(168 - bounce)};
-    parts->left_points[2] = {made_x(74 + sway), made_y(132 - step * 2 - bounce)};
-    parts->right_points[0] = {made_x(240 + sway), made_y(182 - bounce)};
-    parts->right_points[1] = {made_x(268 + sway), made_y(166 - bounce)};
-    parts->right_points[2] = {made_x(282 + sway), made_y(134 + step * 2 - bounce)};
+    parts->left_points[0] = {made_x(120 + sway), made_home_y(186 - bounce)};
+    parts->left_points[1] = {made_x(88 + sway), made_home_y(168 - bounce)};
+    parts->left_points[2] = {made_x(74 + sway), made_home_y(132 - step * 2 - bounce)};
+    parts->right_points[0] = {made_x(240 + sway), made_home_y(182 - bounce)};
+    parts->right_points[1] = {made_x(268 + sway), made_home_y(166 - bounce)};
+    parts->right_points[2] = {made_x(282 + sway), made_home_y(134 + step * 2 - bounce)};
     lv_line_set_points(parts->left_arm, parts->left_points, 3);
     lv_line_set_points(parts->right_arm, parts->right_points, 3);
-    lv_obj_set_pos(parts->left_foot, made_x(138 + sway - step), made_y(266 - std::max(0, step) - bounce / 2));
-    lv_obj_set_pos(parts->right_foot, made_x(196 + sway - step), made_y(266 - std::max(0, -step) - bounce / 2));
+    lv_obj_set_pos(parts->left_foot, made_x(138 + sway - step), made_home_y(266 - std::max(0, step) - bounce / 2));
+    lv_obj_set_pos(parts->right_foot, made_x(196 + sway - step), made_home_y(266 - std::max(0, -step) - bounce / 2));
     for (int i = 0; i < 3; ++i)
         lv_obj_set_style_bg_opa(parts->spark[i], 135 + wave(elapsed_ms, 2100, 50, i * 100), 0);
 
@@ -314,7 +340,6 @@ bool applyArtwork(lv_obj_t *root, const std::string &manifest_json, const std::s
     if (!root) return false;
     auto *parts = static_cast<Parts *>(lv_obj_get_user_data(root));
     if (!parts || !parts->body) return false;
-    if (!made_rect() || made_fit() >= made_design) return false;  // 仅设计尺寸屏用素材
     cJSON *manifest = cJSON_Parse(manifest_json.c_str());
     if (!manifest) return false;
     const cJSON *canvas = cJSON_GetObjectItemCaseSensitive(manifest, "canvas");
@@ -421,7 +446,7 @@ bool applyArtwork(lv_obj_t *root, const std::string &manifest_json, const std::s
             auto *object = lv_image_create(container);
             passive(object);
             lv_image_set_src(object, &art_layer.frames.front().dsc);
-            lv_obj_set_pos(object, made_x(x->valueint), made_y(y->valueint));
+            lv_obj_set_pos(object, made_x(x->valueint), made_home_y(y->valueint));
             art_layer.base_scale = made_lv_scale();
             lv_image_set_scale(object, art_layer.base_scale);
             lv_image_set_antialias(object, true);
