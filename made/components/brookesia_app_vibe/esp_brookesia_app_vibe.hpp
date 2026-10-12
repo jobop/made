@@ -74,11 +74,8 @@ private:
 
     static VibeCoding *_instance;
     static void timerCallback(lv_timer_t *timer);
-    static void lockSwipeCallback(lv_event_t *event);
-    void enterLockScreen();
-    void unlockScreen();
     void openForeground();
-    bool canOperate() const { return active_.load() && !locked_.load() && !exit_requested_.load(); }
+    bool canOperate() const { return active_.load() && !exit_requested_.load(); }
     static void displayDiagnostic(lv_event_t *event);
     static void providerSwipeCallback(lv_event_t *event);
     static void sessionSwipeCallback(lv_event_t *event);
@@ -159,6 +156,8 @@ private:
     void deleteSession(const std::string &provider_id, const std::string &session_id);
     void showDeleteSessionDialog(bool visible);
     void showSettings(bool visible);
+    void showDrawer(bool visible);
+    static void drawerSwipeCallback(lv_event_t *event);
     void showAccess(bool visible);
     void showLanguage(bool visible);
     void updateAccessModeButtons();
@@ -209,7 +208,6 @@ private:
     std::string delete_dialog_provider_id_; // LVGL task only.
     std::string delete_dialog_session_id_; // LVGL task only.
     std::atomic<bool> active_{false};
-    std::atomic<bool> locked_{true};
     std::atomic<bool> worker_started_{false};
     std::atomic<bool> button_started_{false};
     std::atomic<uint32_t> button_epoch_{0};
@@ -220,6 +218,7 @@ private:
     std::atomic<uint32_t> catalog_epoch_{0};
     std::atomic<bool> exit_requested_{false};
     std::atomic<bool> settings_open_{false};
+    std::atomic<bool> drawer_open_{false};
     std::atomic<bool> phone_setup_requested_{false};
     std::atomic<uint32_t> phone_setup_epoch_{0};
     std::atomic<uint32_t> phone_setup_ready_epoch_{UINT32_MAX};
@@ -258,10 +257,11 @@ private:
     std::string catalog_identity_; // Protected by model_mutex_; URL + authenticated token.
 
     // LVGL objects are accessed exclusively from the LVGL task.
-    lv_obj_t *lock_screen_ = nullptr;
-    uint32_t lock_started_ms_ = 0;
-    lv_point_t lock_touch_origin_{};
-    bool lock_touch_tracking_ = false;
+    lv_obj_t *sprite_stage_ = nullptr;
+    uint32_t sprite_started_ms_ = 0;
+    lv_obj_t *drawer_ = nullptr;
+    lv_obj_t *drawer_grip_ = nullptr;
+    lv_obj_t *drawer_hint_ = nullptr;
     lv_obj_t *provider_label_ = nullptr;
     lv_obj_t *animal_halo_ = nullptr;
     lv_obj_t *provider_image_ = nullptr;

@@ -10,8 +10,8 @@
 
 #include "board_voice_audio.h"
 #include "boot_click_gesture.hpp"
-#include "made_lock_screen.hpp"
 #include "made_layout.hpp"
+#include "made_sprite.hpp"
 #include "new_message_chime.hpp"
 #include "cJSON.h"
 #include "bsp/display.h"
@@ -327,18 +327,22 @@ bool VibeCoding::run()
     lv_obj_set_style_bg_color(screen, lv_color_hex(VT(bg_page)), 0);
     lv_obj_set_style_bg_opa(screen, LV_OPA_COVER, 0);
     lv_obj_add_event_cb(screen, providerSwipeCallback, LV_EVENT_GESTURE, this);
-    // Vertical swipes on the header browse sessions. The answer area below owns
-    // its own vertical scrolling and does not bubble gestures to the screen.
-    lv_obj_add_event_cb(screen, sessionSwipeCallback, LV_EVENT_GESTURE, this);
+    // 主页上滑拉出抽屉；任务切换手势收进抽屉内部处理。
+    lv_obj_add_event_cb(screen, drawerSwipeCallback, LV_EVENT_GESTURE, this);
+
+    // 近全屏小精灵：主页的绝对主角（docs/SPRITES.md 的素材机制接入前用程序化形象）。
+    sprite_stage_ = made_sprite::create(screen);
+    sprite_started_ms_ = lv_tick_get();
 
     // Artwork arrives with the authorized bridge catalog. Only the selected
     // image is expanded; the other entries retain their bounded packed pixels.
+    // 顶部的助手图标徽章：精灵旁唯一保留的助手标识。
     animal_halo_ = lv_obj_create(screen);
-    lv_obj_set_pos(animal_halo_, made_x(143), made_y(28));
-    lv_obj_set_size(animal_halo_, made_s(74), made_s(74));
+    lv_obj_set_pos(animal_halo_, made_x(156), made_y(14));
+    lv_obj_set_size(animal_halo_, made_s(48), made_s(48));
     lv_obj_set_style_bg_color(animal_halo_, lv_color_hex(0x263B59), 0);
-    lv_obj_set_style_border_width(animal_halo_, 2, 0);
-    lv_obj_set_style_radius(animal_halo_, 37, 0);
+    lv_obj_set_style_border_width(animal_halo_, 1, 0);
+    lv_obj_set_style_radius(animal_halo_, 24, 0);
     lv_obj_set_style_pad_all(animal_halo_, 0, 0);
     lv_obj_clear_flag(animal_halo_, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_clear_flag(animal_halo_, LV_OBJ_FLAG_SCROLLABLE);
@@ -355,7 +359,8 @@ bool VibeCoding::run()
     rendered_catalog_ready_ = false;
 
     page_label_ = lv_label_create(screen);
-    lv_obj_set_pos(page_label_, made_x(246), made_y(122));
+    // 助手页底部：名字之下的页码（左右滑切精灵的指示）。
+    lv_obj_set_pos(page_label_, made_x(150), made_y(338));
     lv_obj_set_width(page_label_, made_s(60));
     lv_obj_set_style_text_align(page_label_, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_set_style_text_color(page_label_, lv_color_hex(VT(text_hint)), 0);
@@ -724,11 +729,11 @@ bool VibeCoding::run()
     lv_obj_add_flag(phone_setup_panel_, LV_OBJ_FLAG_HIDDEN);
 
     provider_label_ = lv_label_create(screen);
-    lv_obj_set_pos(provider_label_, made_x(50), made_y(122));
+    lv_obj_set_pos(provider_label_, made_x(70), made_y(302));
     lv_obj_set_style_text_align(provider_label_, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_set_style_text_color(provider_label_, lv_color_hex(VT(text_primary)), 0);
     lv_obj_set_style_text_font(provider_label_, &lv_font_montserrat_26, 0);
-    made_text(provider_label_, 260, false);
+    made_text(provider_label_, 220, false);
 
     position_label_ = lv_label_create(screen);
     lv_obj_set_pos(position_label_, made_x(50), made_y(154));
@@ -861,6 +866,63 @@ bool VibeCoding::run()
     bridge_list_revision_ = UINT32_MAX;
     bridge_rows_.clear();
 
+    // 抽屉：任务管理、文字回显、会话与设置都收在这里。主页上滑唤出，
+    // 抽屉内下拉或返回键收起。创建在 delete_dialog_ 之前，保证弹窗永远更高。
+    drawer_ = lv_obj_create(screen);
+    lv_obj_set_pos(drawer_, made_s(0), made_s(0));
+    lv_obj_set_size(drawer_, made_screen_w(), made_screen_h());
+    markPage(drawer_);
+    lv_obj_set_style_bg_color(drawer_, lv_color_hex(VT(bg_page)), 0);
+    lv_obj_set_style_bg_opa(drawer_, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(drawer_, 0, 0);
+    lv_obj_set_style_pad_all(drawer_, 0, 0);
+    lv_obj_remove_flag(drawer_, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_remove_flag(drawer_, LV_OBJ_FLAG_GESTURE_BUBBLE);
+    lv_obj_add_flag(drawer_, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_event_cb(drawer_, drawerSwipeCallback, LV_EVENT_GESTURE, this);
+    lv_obj_add_flag(drawer_, LV_OBJ_FLAG_HIDDEN);
+
+    // 顶部把手与提示：告知抽屉可下拉收起。
+    drawer_grip_ = lv_obj_create(drawer_);
+    lv_obj_remove_style_all(drawer_grip_);
+    lv_obj_set_pos(drawer_grip_, made_x(150), made_y(8));
+    lv_obj_set_size(drawer_grip_, made_s(60), made_s(6));
+    lv_obj_set_style_radius(drawer_grip_, 3, 0);
+    lv_obj_set_style_bg_color(drawer_grip_, lv_color_hex(VT(text_hint)), 0);
+    lv_obj_set_style_bg_opa(drawer_grip_, LV_OPA_70, 0);
+    lv_obj_clear_flag(drawer_grip_, LV_OBJ_FLAG_CLICKABLE);
+    drawer_hint_ = lv_label_create(drawer_);
+    lv_label_set_text(drawer_hint_, T("下拉收起 · 上下滑切任务"));
+    lv_obj_set_pos(drawer_hint_, made_x(60), made_y(18));
+    lv_obj_set_width(drawer_hint_, made_s(240));
+    lv_obj_set_style_text_align(drawer_hint_, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_style_text_color(drawer_hint_, lv_color_hex(VT(text_hint)), 0);
+    lv_obj_set_style_text_font(drawer_hint_, text_font, 0);
+    lv_obj_clear_flag(drawer_hint_, LV_OBJ_FLAG_CLICKABLE);
+
+    // 把平铺在主页的任务/回显/会话/设置控件整体搬进抽屉，重排为抽屉版式。
+    lv_obj_set_parent(instruction_label_, drawer_);
+    lv_obj_set_pos(instruction_label_, made_x(24), made_y(42));
+    lv_obj_set_width(instruction_label_, made_s(312));
+    lv_obj_set_parent(position_label_, drawer_);
+    lv_obj_set_pos(position_label_, made_x(24), made_y(68));
+    lv_obj_set_width(position_label_, made_s(312));
+    lv_obj_set_parent(session_title_tap_, drawer_);
+    lv_obj_set_pos(session_title_tap_, made_x(24), made_y(64));
+    lv_obj_set_size(session_title_tap_, made_s(312), made_s(30));
+    lv_obj_set_parent(answer_area_, drawer_);
+    lv_obj_set_pos(answer_area_, made_x(24), made_y(100));
+    lv_obj_set_size(answer_area_, made_s(312), made_s(158));
+    lv_obj_set_parent(meta_label_, drawer_);
+    lv_obj_set_pos(meta_label_, made_x(30), made_y(262));
+    lv_obj_set_width(meta_label_, made_s(300));
+    lv_obj_set_parent(new_session_button_, drawer_);
+    lv_obj_set_pos(new_session_button_, made_x(270), made_y(296));
+    lv_obj_set_parent(delete_session_button_, drawer_);
+    lv_obj_set_pos(delete_session_button_, made_x(157), made_y(296));
+    lv_obj_set_parent(settings_button_, drawer_);
+    lv_obj_set_pos(settings_button_, made_x(44), made_y(296));
+
     delete_dialog_ = lv_obj_create(screen);
     lv_obj_set_pos(delete_dialog_, made_s(0), made_s(0));
     lv_obj_set_size(delete_dialog_, made_screen_w(), made_screen_h());
@@ -879,13 +941,8 @@ bool VibeCoding::run()
     touchButton(delete_dialog_, 192, 292, 120, 36, T("删除"), deleteSessionConfirmCallback, this, VT(danger));
     lv_obj_add_flag(delete_dialog_, LV_OBJ_FLAG_HIDDEN);
 
-    lock_screen_ = made_lock_screen::create(screen, lockSwipeCallback, this);
-    if (!lock_screen_) {
-        active_ = false;
-        ESP_LOGE(BUTTON_TAG, "Cannot create Made lock screen");
-        return false;
-    }
-    enterLockScreen();
+    // 开机直达助手页：不再有锁屏，前台连接立即开始。
+    openForeground();
     // Brookesia records timers created during run() and removes them on close.
     if (!lv_timer_create(timerCallback, 50, this)) {
         active_ = false;
@@ -893,7 +950,7 @@ bool VibeCoding::run()
         return false;
     }
     render();
-    ESP_LOGI(BUTTON_TAG, "Made lock screen ready; swipe up to connect");
+    ESP_LOGI(BUTTON_TAG, "Made assistant page ready");
 
     ensureWorkerStarted();
     bool expected = false;
@@ -910,6 +967,10 @@ bool VibeCoding::back()
 {
     if (delete_dialog_open_.load()) {
         showDeleteSessionDialog(false);
+        return true;
+    }
+    if (drawer_open_.load()) {
+        showDrawer(false);
         return true;
     }
     if (settings_open_.load()) {
@@ -936,8 +997,10 @@ bool VibeCoding::pause()
     vibe_pairing::suspend_foreground();
     restore_station_pending_ = true;
     settings_open_ = false;
+    drawer_open_ = false;
     delete_dialog_open_ = false;
     if (settings_overlay_) lv_obj_add_flag(settings_overlay_, LV_OBJ_FLAG_HIDDEN);
+    if (drawer_) lv_obj_add_flag(drawer_, LV_OBJ_FLAG_HIDDEN);
     if (delete_dialog_) lv_obj_add_flag(delete_dialog_, LV_OBJ_FLAG_HIDDEN);
     button_epoch_.fetch_add(1);
     {
@@ -958,8 +1021,7 @@ bool VibeCoding::resume()
 {
     vibe_i18n::initialize();
     active_ = true;
-    if (lock_screen_) enterLockScreen();
-    else openForeground();
+    openForeground();
     invalidateCatalog(true);
     button_epoch_.fetch_add(1);
     active_ = true;
@@ -993,7 +1055,10 @@ bool VibeCoding::close()
         pending_delete_session_ = false;
     }
     localized_labels.clear();
-    lock_screen_ = nullptr;
+    sprite_stage_ = nullptr;
+    drawer_ = nullptr;
+    drawer_grip_ = nullptr;
+    drawer_hint_ = nullptr;
     language_panel_ = nullptr;
     language_zh_button_ = nullptr;
     language_en_button_ = nullptr;
@@ -1150,7 +1215,7 @@ void VibeCoding::buttonLoop()
                         std::lock_guard<std::mutex> lock(voice_action_mutex_);
                         vibe_voice::cancel();
                     }
-                } else if (locked_.load() || settings_open_.load() || delete_dialog_open_.load()) {
+                } else if (settings_open_.load() || delete_dialog_open_.load()) {
                     // The settings keyboard owns touch input; no task action
                     // should be triggered by a stray BOOT click while editing.
                 } else if (decision == BootClickGesture::Decision::Voice) {
@@ -1182,7 +1247,7 @@ void VibeCoding::buttonLoop()
                                          armed_task_id);
                     }
                 }
-                if (!locked_.load() && !settings_open_.load() && !delete_dialog_open_.load()) {
+                if (!settings_open_.load() && !delete_dialog_open_.load()) {
                     const char *board_event = nullptr;
                     if (decision == BootClickGesture::Decision::Home) board_event = "boot.long";
                     else if (decision == BootClickGesture::Decision::Voice) board_event = "boot.click";
@@ -1239,89 +1304,7 @@ void VibeCoding::openForeground()
 {
     vibe_pairing::begin_foreground_connection();
     foreground_network_pending_.store(true);
-    locked_.store(false);
-    lock_touch_tracking_ = false;
     drawn_revision_ = UINT32_MAX;
-}
-
-void VibeCoding::enterLockScreen()
-{
-    locked_.store(true);
-    foreground_network_pending_.store(false);
-    vibe_usb::set_active(false);
-    vibe_pairing::suspend_foreground();
-    button_epoch_.fetch_add(1);
-    {
-        std::lock_guard<std::mutex> lock(voice_action_mutex_);
-        vibe_voice::cancel();
-    }
-    {
-        std::lock_guard<std::mutex> lock(model_mutex_);
-        pending_action_ = {};
-        pending_create_session_ = false;
-        pending_delete_session_ = false;
-        model_.action_in_flight = false;
-        visible_task_id_.clear();
-        voice_session_id_.clear();
-    }
-    lock_started_ms_ = lv_tick_get();
-    lock_touch_tracking_ = false;
-    if (lock_screen_) {
-        lv_obj_remove_flag(lock_screen_, LV_OBJ_FLAG_HIDDEN);
-        lv_obj_move_foreground(lock_screen_);
-        made_lock_screen::update(lock_screen_, 0, vibe_i18n::locale() == vibe_i18n::Locale::English);
-    }
-}
-
-void VibeCoding::unlockScreen()
-{
-    if (!active_.load() || !locked_.load() || exit_requested_.load()) return;
-    // Prepare transport before opening the worker gate. No bridge discovery,
-    // heartbeat, or receiver Wi-Fi switch happens on the boot lock screen.
-    vibe_pairing::begin_foreground_connection();
-    foreground_network_pending_.store(true);
-    button_epoch_.fetch_add(1);
-    locked_.store(false);
-    lock_touch_tracking_ = false;
-    if (lock_screen_) lv_obj_add_flag(lock_screen_, LV_OBJ_FLAG_HIDDEN);
-    drawn_revision_ = UINT32_MAX;
-    ESP_LOGI(BUTTON_TAG, "Made unlocked by upward swipe");
-    render();
-}
-
-void VibeCoding::lockSwipeCallback(lv_event_t *event)
-{
-    auto *self = static_cast<VibeCoding *>(lv_event_get_user_data(event));
-    if (!self || !self->active_.load() || !self->locked_.load()) return;
-    lv_event_stop_bubbling(event);
-    lv_indev_t *input = lv_indev_active();
-    if (!input) return;
-    const auto code = lv_event_get_code(event);
-    if (code == LV_EVENT_PRESSED) {
-        lv_indev_get_point(input, &self->lock_touch_origin_);
-        self->lock_touch_tracking_ = true;
-        return;
-    }
-    if (code == LV_EVENT_PRESS_LOST) {
-        self->lock_touch_tracking_ = false;
-        return;
-    }
-    if (code == LV_EVENT_RELEASED) {
-        if (!self->lock_touch_tracking_) return;
-        self->lock_touch_tracking_ = false;
-        lv_point_t end{};
-        lv_indev_get_point(input, &end);
-        const int upward = self->lock_touch_origin_.y - end.y;
-        const int sideways = std::abs(end.x - self->lock_touch_origin_.x);
-        // Also accept a deliberate slow upward drag; LVGL's velocity threshold
-        // can otherwise discard it when touch samples briefly stop moving.
-        if (upward < 50 || upward * 2 <= sideways * 3) return;
-    } else if (code != LV_EVENT_GESTURE || lv_indev_get_gesture_dir(input) != LV_DIR_TOP) {
-        return;
-    }
-    // Consume the whole gesture; the page underneath must not also switch tasks.
-    lv_indev_wait_release(input);
-    self->unlockScreen();
 }
 
 void VibeCoding::providerSwipeCallback(lv_event_t *event)
@@ -1438,6 +1421,31 @@ void VibeCoding::showDeleteSessionDialog(bool visible)
         delete_dialog_provider_id_.clear();
         delete_dialog_session_id_.clear();
     }
+}
+
+void VibeCoding::showDrawer(bool visible)
+{
+    if (!drawer_) return;
+    drawer_open_ = visible;
+    button_epoch_.fetch_add(1);
+    if (visible) {
+        lv_obj_remove_flag(drawer_, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_move_foreground(drawer_);
+    } else {
+        lv_obj_add_flag(drawer_, LV_OBJ_FLAG_HIDDEN);
+    }
+}
+
+void VibeCoding::drawerSwipeCallback(lv_event_t *event)
+{
+    auto *self = static_cast<VibeCoding *>(lv_event_get_user_data(event));
+    if (!self || !self->canOperate() || self->settings_open_.load()) return;
+    lv_indev_t *indev = lv_indev_active();
+    if (!indev) return;
+    const lv_dir_t direction = lv_indev_get_gesture_dir(indev);
+    // 主页上滑拉出抽屉；抽屉内下拉收起（同一回调挂在两个对象上）。
+    if (direction == LV_DIR_TOP && !self->drawer_open_.load()) self->showDrawer(true);
+    else if (direction == LV_DIR_BOTTOM && self->drawer_open_.load()) self->showDrawer(false);
 }
 
 void VibeCoding::deleteSessionCallback(lv_event_t *event)
@@ -3099,13 +3107,25 @@ void VibeCoding::render()
         const uint32_t inactive = lv_display_get_inactive_time(NULL);
         if (inactive > screen_off_timeout_s_ * 1000U) applyScreenOff(true);
     }
-    if (locked_.load()) {
-        if (lock_screen_) made_lock_screen::update(lock_screen_, lv_tick_get() - lock_started_ms_,
-            vibe_i18n::locale() == vibe_i18n::Locale::English);
-        return;
-    }
     if (!instruction_label_) return;
     const auto voice = vibe_voice::status();
+    // 精灵动效按回合驱动；必须放在 revision 提前返回之前，否则空闲时动画冻结。
+    if (sprite_stage_) {
+        std::string task_status;
+        std::string connection_error;
+        {
+            std::lock_guard<std::mutex> lock(model_mutex_);
+            connection_error = model_.connection_error;
+            if (!model_.tasks.empty()) task_status = model_.tasks.front().status;
+        }
+        int mood = made_sprite::Mood::kIdle;
+        if (!connection_error.empty()) mood = made_sprite::Mood::kOffline;
+        else if (voice.phase == vibe_voice::Phase::Recording || voice.phase == vibe_voice::Phase::Uploading)
+            mood = made_sprite::Mood::kTalking;
+        else if (task_status == "waiting_confirmation") mood = made_sprite::Mood::kWaitingConfirm;
+        else if (task_status == "running" || task_status == "queued") mood = made_sprite::Mood::kRunning;
+        made_sprite::update(sprite_stage_, lv_tick_get() - sprite_started_ms_, mood);
+    }
     ui_stage_.store(3);
     const auto pairing = vibe_pairing::snapshot();
     ui_stage_.store(4);
@@ -3178,10 +3198,12 @@ void VibeCoding::render()
         lv_obj_add_flag(new_session_button_, LV_OBJ_FLAG_HIDDEN);
         lv_obj_add_flag(delete_session_button_, LV_OBJ_FLAG_HIDDEN);
         displayed_task_id_.clear();
+        // 配对码显示在抽屉里：未配对期间保持抽屉拉开，用户随时能看到六位码。
+        if (!drawer_open_.load()) showDrawer(true);
         if (!showing_pairing_layout_) {
             lv_obj_remove_flag(meta_label_, LV_OBJ_FLAG_HIDDEN);
-            lv_obj_set_pos(answer_area_, made_x(64), made_y(245));
-            lv_obj_set_size(answer_area_, made_s(232), made_s(74));
+            lv_obj_set_pos(answer_area_, made_x(24), made_y(196));
+            lv_obj_set_size(answer_area_, made_s(312), made_s(58));
             lv_obj_set_style_text_align(result_label_, LV_TEXT_ALIGN_CENTER, 0);
             showing_pairing_layout_ = true;
         }
@@ -3214,8 +3236,8 @@ void VibeCoding::render()
     if (catalog_ready && provider_count) lv_obj_remove_flag(new_session_button_, LV_OBJ_FLAG_HIDDEN);
     if (showing_pairing_layout_) {
         lv_obj_add_flag(meta_label_, LV_OBJ_FLAG_HIDDEN);
-        lv_obj_set_pos(answer_area_, made_x(64), made_y(191));
-        lv_obj_set_size(answer_area_, made_s(232), made_s(127));
+        lv_obj_set_pos(answer_area_, made_x(24), made_y(100));
+        lv_obj_set_size(answer_area_, made_s(312), made_s(158));
         lv_obj_set_style_text_align(result_label_, LV_TEXT_ALIGN_LEFT, 0);
         showing_pairing_layout_ = false;
     }
@@ -3256,7 +3278,7 @@ void VibeCoding::render()
     if (selected_session == snapshot.sessions.end()) {
         displayed_task_id_.clear();
         lv_label_set_text(position_label_, T("暂无任务"));
-        lv_label_set_text(instruction_label_, !snapshot.session_notice.empty() ? own_session_notice.c_str() : T("点右上角 + 创建任务"));
+        lv_label_set_text(instruction_label_, !snapshot.session_notice.empty() ? own_session_notice.c_str() : T("上滑拉出抽屉，点 + 创建任务"));
         const std::string empty_message = !snapshot.connection_error.empty() ? own_error :
             !snapshot.session_notice.empty() ? own_session_notice :
             !provider_ready ? (provider.reason.empty() ? T("请先在电脑端启用此助手") : provider.reason) :
@@ -3308,8 +3330,8 @@ void VibeCoding::render()
             voice.phase == vibe_voice::Phase::Recording ? T("说完后稍等，会自动发送。") :
             voice.phase == vibe_voice::Phase::Uploading ? T("正在识别语音…") :
             !voice_notice.empty() ? voice_notice :
-            provider.external_unscoped ? T("此助手任务隔离受限，请在电脑端核对。顶部上下滑切任务。") :
-            T("顶部上下滑切任务，点标题也可切换。左右滑切助手。");
+            provider.external_unscoped ? T("此助手任务隔离受限，请在电脑端核对。") :
+            T("上滑拉出抽屉查看任务与回显。左右滑切助手。");
         showAnswer(selected_session_id + "/empty", result);
     } else {
         // The bridge returns newest first. Show only the latest exchange.
@@ -3364,6 +3386,8 @@ void VibeCoding::layoutReadableText()
 {
     if (!made_rect() || made_fit() >= made_design || !provider_label_ || !position_label_ ||
         !instruction_label_ || !answer_area_ || !result_label_) return;
+    // 这些标签已搬进抽屉时按抽屉版式显示，不再套主页坐标。
+    if (drawer_ && lv_obj_get_parent(position_label_) == drawer_) return;
     const int margin = 8;
     const int width = made_screen_w() - margin * 2;
     const int line = lv_font_get_line_height(text_font);
@@ -3428,7 +3452,6 @@ esp_err_t VibeCoding::httpEvent(esp_http_client_event_t *event)
 bool VibeCoding::request(const std::string &path, bool post, std::string &response, int &status,
                          const std::string &json_body, size_t response_limit, int timeout_ms)
 {
-    if (locked_.load()) return false;
     if (!post && receiverVoiceUploading()) return false;
     const auto pairing = vibe_pairing::snapshot();
     std::string base = pairing.url;
@@ -3546,7 +3569,7 @@ void VibeCoding::showProviderIcon(const vibe_provider::Icon &icon)
     provider_image_descriptor_.data_size = provider_image_pixels_.size();
     provider_image_descriptor_.data = provider_image_pixels_.data();
     lv_image_set_src(provider_image_, &provider_image_descriptor_);
-    lv_image_set_scale(provider_image_, 64 * LV_SCALE_NONE / vibe_provider::MAX_ICON_SIDE);
+    lv_image_set_scale(provider_image_, 44 * LV_SCALE_NONE / vibe_provider::MAX_ICON_SIDE);
     lv_obj_center(provider_image_);
     lv_obj_remove_flag(provider_image_, LV_OBJ_FLAG_HIDDEN);
     lv_obj_add_flag(icon_placeholder_, LV_OBJ_FLAG_HIDDEN);
@@ -4397,7 +4420,7 @@ void VibeCoding::workerLoop()
                 continue;
             }
         }
-        if (restore_station_pending_.load() && (!active_.load() || locked_.load()) &&
+        if (restore_station_pending_.load() && !active_.load() &&
             (!vibe_wifi::receiver_active() || vibe_wifi::restore_station() == ESP_OK))
             restore_station_pending_.store(false);
         if (want_phone) {
@@ -4470,7 +4493,7 @@ void VibeCoding::workerLoop()
             vTaskDelay(pdMS_TO_TICKS(100));
             continue;
         }
-        if (locked_.load() || (!foreground && !has_pending_action)) {
+        if (!foreground && !has_pending_action) {
             last_heartbeat_ms = 0; // Re-entering Vibe sends the first heartbeat immediately.
             vTaskDelay(pdMS_TO_TICKS(500));
             continue;
@@ -4552,7 +4575,6 @@ void VibeCoding::workerLoop()
             vTaskDelay(pdMS_TO_TICKS(POLL_INTERVAL_MS));
             continue;
         }
-        if (locked_.load()) continue;
         if (!active_.load()) {
             // Finish an already requested confirmation/cancellation, then go idle.
             PendingAction action;
