@@ -154,6 +154,17 @@ idf.py -B build-s3 -p /dev/cu.usbmodemXXXX flash
 
 `idf.py flash` 按该目录的 `flasher_args.json` 写入 bootloader（`0x0`）、分区表（`0x8000`）、factory 应用 `01_factory.bin`（`0x20000`）、`ota_data_initial.bin`（`0xd000`）、`assets.bin`（`0xac0000`）和 `srmodels.bin`（`0xec0000`）。分区没变、只改了应用时，可以只写 `0x20000`；界面缺字体或语音模型时再补 assets 和 srmodels。只写应用、不写 assets，屏幕字体会缺。
 
+### 板端截屏调试
+
+不用拿手机拍屏幕：固件支持 `debug.screenshot` 命令（LVGL 线程内 `lv_snapshot` 渲染当前画面，以 RGB565 裸帧 POST `/device/screenshot`），桥接器转 PNG 落到 `stateDir/screenshots/` 并保留最近 20 张。
+
+```sh
+npm run shot                    # 截图存到 state/last-shot.png，打印路径
+npm run shot -- /tmp/shot.png   # 指定输出
+```
+
+前提：板子已配对、桥接器在线、固件能力清单里声明了 `debug.screenshot`（旧固件会报「命令不在板侧清单」，需刷新版；固件还要求 `CONFIG_LV_USE_SNAPSHOT=y`，已写进 sdkconfig.defaults）。实现在 `bridge/src/board-screenshot.mjs`（PNG 编码 + 存储）与 `esp_brookesia_app_vibe.cpp` 的 `startScreenshotUpload()`。桌面工作台也可直接 `POST /api/screenshot`（带会话令牌）拿 PNG。
+
 ### 烧录接收器
 
 当前这块 C3 走原生 USB。`receiver/build-c3usb` 的 CMake 缓存仍写着 `receiver-firmware`，不要增量编译它。`receiver/release/` 是 ESP32-S3 接收器镜像，不能刷到这块 C3 上，也不能刷到码得主机上。新建构建目录：

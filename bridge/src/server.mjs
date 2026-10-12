@@ -26,6 +26,7 @@ import { createEnhancement } from './plugins/enhance.mjs';
 import { listInstalled, listThemes, removePlugin, removeTheme, savePluginSettings, setPluginEnabled, themeExists } from './installed.mjs';
 import { createBoardLink } from './board-link.mjs';
 import { spriteChunk } from './agent-sprites.mjs';
+import { createScreenshotStore, rgb565ToPng, validateScreenshotParams, MAX_UPLOAD } from './board-screenshot.mjs';
 import { initializeSpeechSettings, saveSpeechSettings } from './speech-settings.mjs';
 import { builtinSpeechRecognizers } from './speech/index.mjs';
 const PAIRED_DISCOVERY_REQUEST = /^VIBE_DISCOVER_PAIRED_V2 ([0-9a-f]{12}) ([0-9a-f]{32})$/;
@@ -254,6 +255,7 @@ export function createApp(config, { run, transcribe, tunnel: providedTunnel, ena
   const usbForwardSecret = randomUUID();
   const pairing = new PairingStore(config.stateDir);
   const boardLink = createBoardLink();
+  const screenshots = createScreenshotStore(path.join(config.stateDir, 'screenshots'));
   // 增强运行时：回合管道与生命周期通知给 JobStore 用，bridge 句柄给插件上下文用。
   const enhance = createEnhancement(config);
   const tunnel = providedTunnel || new TunnelManager({
@@ -545,6 +547,41 @@ export function createApp(config, { run, transcribe, tunnel: providedTunnel, ena
           }
           send(res, 200, { command: boardLink.send(named, { name: payload.name, fields: payload.fields }) });
           return;
+        }
+        // 板端截屏触发：向在线的码得下发 debug.screenshot 命令，等待固件回传并返回 PNG。
+        if (url.pathname === '/api/screenshot') {
+          const online = boardLink.deviceIds();
+          if (!online.length) throw new Error('码得未连接（板侧能力清单未上报）');
+          const before = Date.now() - 1500;
+          let queued = 0;
+          let lastError = '';
+          for (const deviceId of online) {
+            try {
+              boardLink.send(deviceId, { name: 'debug.screenshot' });
+              queued += 1;
+            } catch (error) {
+              lastError = error.message;
+            }
+          }
+          if (!queued) throw new Error(lastError || '命令未能下发');
+          const deadline = Date.now() + 15000;
+          while (Date.now() < deadline) {
+            const file = screenshots.latest(before);
+            if (file) {
+              const png = fs.readFileSync(file);
+              res.writeHead(200, {
+                'Content-Type': 'image/png',
+                'Content-Length': png.length,
+                'X-Screenshot-File': path.basename(file),
+                'Cache-Control': 'no-store',
+                'X-Content-Type-Options': 'nosniff',
+              });
+              res.end(png);
+              return;
+            }
+            await new Promise((resolve) => setTimeout(resolve, 250));
+          }
+          throw new Error('码得未在 15 秒内回传截图（固件需要更新到支持 debug.screenshot 的版本）');
         }
         const pairAction = url.pathname.match(/^\/api\/pair\/([0-9a-f]{12})\/(confirm|reject)$/);
         if (pairAction) {
@@ -886,6 +923,15 @@ export function createApp(config, { run, transcribe, tunnel: providedTunnel, ena
       const match = url.pathname.match(/^\/device\/tasks\/([a-z0-9-]+)\/(confirm|cancel)$/);
       if (req.method === 'POST' && match) {
         deviceSend(res, 200, publicJob(match[2] === 'confirm' ? store.confirm(match[1]) : store.cancel(match[1]), deviceLocale));
+        return;
+      }
+      // 板端截屏回传：固件把当前画面以 RGB565 裸帧 POST 上来（tools/shot.mjs 触发）。
+      if (req.method === 'POST' && url.pathname === '/device/screenshot') {
+        const { width, height, stride } = validateScreenshotParams(url.searchParams);
+        const raw = await binaryBody(req, MAX_UPLOAD);
+        const png = rgb565ToPng(width, height, raw, stride);
+        const saved = screenshots.save(deviceId, png);
+        deviceSend(res, 201, { saved: path.basename(saved) }, false);
         return;
       }
       deviceSend(res, 404, { error: '未找到接口' });

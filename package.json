@@ -7,7 +7,8 @@
     "start": "npm --prefix bridge start",
     "doctor": "npm --prefix bridge run doctor",
     "test": "npm --prefix bridge test",
-    "flash": "node tools/flash.mjs"
+    "flash": "node tools/flash.mjs",
+    "shot": "node tools/shot.mjs"
   },
   "engines": {
     "node": ">=22"

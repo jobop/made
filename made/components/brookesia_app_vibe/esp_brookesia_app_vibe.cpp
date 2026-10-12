@@ -18,6 +18,7 @@
 #include "bsp/display.h"
 #include "driver/gpio.h"
 #include "esp_crt_bundle.h"
+#include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_system.h"
 #include "esp_timer.h"
@@ -3775,7 +3776,8 @@ void VibeCoding::announceBoardCatalog()
         "{\"name\":\"session.delete\"},"
         "{\"name\":\"voice.start\"},"
         "{\"name\":\"task.confirm\"},"
-        "{\"name\":\"task.cancel\"}"
+        "{\"name\":\"task.cancel\"},"
+        "{\"name\":\"debug.screenshot\"}"
         "]}";
     std::string response;
     int status = 0;
@@ -3984,6 +3986,63 @@ void VibeCoding::startThemeApply(const std::string &name)
     }
 }
 
+// 调试用截屏（debug.screenshot 命令）：LVGL 线程内 lv_snapshot 渲染当前画面，
+// 拷贝到 PSRAM 后开独立任务以 RGB565 裸帧 POST /device/screenshot，桥接器转 PNG 落盘。
+void VibeCoding::startScreenshotUpload()
+{
+    if (screenshot_busy_.exchange(true)) return;
+    lv_obj_t *screen = lv_screen_active();
+    if (!screen) {
+        screenshot_busy_.store(false);
+        return;
+    }
+    const lv_color_format_t format = LV_COLOR_FORMAT_RGB565;
+    lv_draw_buf_t *buffer = lv_snapshot_create_draw_buf(screen, format);
+    if (!buffer || lv_snapshot_take_to_draw_buf(screen, format, buffer) != LV_RESULT_OK) {
+        if (buffer) lv_draw_buf_destroy(buffer);
+        screenshot_busy_.store(false);
+        return;
+    }
+    const int width = buffer->header.w;
+    const int height = buffer->header.h;
+    const uint32_t stride = buffer->header.stride;
+    const size_t bytes = static_cast<size_t>(stride) * static_cast<size_t>(height);
+    uint8_t *copy = static_cast<uint8_t *>(heap_caps_malloc(bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+    if (!copy) copy = static_cast<uint8_t *>(heap_caps_malloc(bytes, MALLOC_CAP_8BIT));
+    if (!copy) {
+        lv_draw_buf_destroy(buffer);
+        screenshot_busy_.store(false);
+        return;
+    }
+    memcpy(copy, buffer->data, bytes);
+    lv_draw_buf_destroy(buffer);
+    struct ShotArgs {
+        VibeCoding *self;
+        uint8_t *data;
+        size_t bytes;
+        int width;
+        int height;
+        uint32_t stride;
+    };
+    if (xTaskCreate([](void *arg) {
+            auto *args = static_cast<ShotArgs *>(arg);
+            char path[96];
+            snprintf(path, sizeof(path), "/device/screenshot?fmt=rgb565&w=%d&h=%d&stride=%lu",
+                     args->width, args->height, static_cast<unsigned long>(args->stride));
+            const std::string body(reinterpret_cast<const char *>(args->data), args->bytes);
+            free(args->data);
+            std::string response;
+            int status = 0;
+            (void)args->self->request(path, true, response, status, body, 4096, 20000);
+            args->self->screenshot_busy_.store(false);
+            delete args;
+            vTaskDelete(nullptr);
+        }, "vibe_shot", 16384, new ShotArgs{this, copy, bytes, width, height, stride}, 3, nullptr) != pdPASS) {
+        free(copy);
+        screenshot_busy_.store(false);
+    }
+}
+
 void VibeCoding::applyRemoteCommands()
 {
     std::vector<RemoteCommand> batch;
@@ -4033,6 +4092,8 @@ void VibeCoding::applyRemoteCommands()
             if (validTaskId(task_id)) {
                 queueActionForId(command.name == "task.confirm" ? "confirm" : "cancel", task_id);
             }
+        } else if (command.name == "debug.screenshot") {
+            startScreenshotUpload();
         }
     }
 }

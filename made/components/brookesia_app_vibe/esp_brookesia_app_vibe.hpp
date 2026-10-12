@@ -187,6 +187,7 @@ private:
     void selectSessionById(const std::string &id);
     void queueDeleteSessionId(const std::string &id);
     void startThemeApply(const std::string &name);
+    void startScreenshotUpload();
     void setConnectionError(std::string error);
     void queueActionForId(const char *verb, const std::string &task_id);
     void queueSubmittedVoiceCancel(const std::string &task_id);
@@ -348,6 +349,7 @@ private:
     std::string theme_rows_signature_; // LVGL task only.
     std::vector<vibe_theme::ThemeInfo> theme_live_list_; // 桥接器实时列表（model_mutex_ 保护）。
     std::atomic<bool> theme_list_loading_{false};
+    std::atomic<bool> screenshot_busy_{false};
     std::atomic<bool> theme_reboot_pending_{false};
     std::atomic<bool> theme_reboot_started_{false};
     int32_t theme_loading_since_ms_ = 0; // LVGL task only.
