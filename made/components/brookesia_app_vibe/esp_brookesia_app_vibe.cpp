@@ -723,6 +723,28 @@ bool VibeCoding::run()
     lv_obj_set_style_text_font(provider_label_, &lv_font_montserrat_26, 0);
     made_text(provider_label_, 220, false);
 
+    // 顶部状态角标（主页专属，不进抽屉）：左上圆点 = 助手连接/工作状态，
+    // 右上铃铛 = 有新回显还没打开抽屉看过。不拦截触摸与手势。
+    status_dot_ = lv_obj_create(screen);
+    lv_obj_remove_style_all(status_dot_);
+    lv_obj_set_size(status_dot_, made_s(12), made_s(12));
+    lv_obj_set_pos(status_dot_, made_x(22), made_y(14));
+    lv_obj_set_style_radius(status_dot_, LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_style_bg_opa(status_dot_, LV_OPA_COVER, 0);
+    lv_obj_set_style_bg_color(status_dot_, lv_color_hex(0x4CD964), 0);
+    lv_obj_set_style_border_width(status_dot_, 2, 0);
+    lv_obj_set_style_border_color(status_dot_, lv_color_hex(VT(bg_page)), 0);
+    lv_obj_clear_flag(status_dot_, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_flag(status_dot_, LV_OBJ_FLAG_HIDDEN);
+
+    unread_mark_ = lv_label_create(screen);
+    lv_label_set_text(unread_mark_, LV_SYMBOL_BELL);
+    lv_obj_set_pos(unread_mark_, made_x(320), made_y(10));
+    lv_obj_set_style_text_font(unread_mark_, &lv_font_montserrat_16, 0);
+    lv_obj_set_style_text_color(unread_mark_, lv_color_hex(VT(accent)), 0);
+    lv_obj_clear_flag(unread_mark_, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_flag(unread_mark_, LV_OBJ_FLAG_HIDDEN);
+
     position_label_ = lv_label_create(screen);
     lv_obj_set_pos(position_label_, made_x(50), made_y(154));
     lv_label_set_long_mode(position_label_, LV_LABEL_LONG_DOT);
@@ -802,9 +824,12 @@ bool VibeCoding::run()
         // （旧版曾把它排到精灵身上，长屏上直接压脸）。字体仍适配小屏。
         lv_obj_set_style_text_font(provider_label_, &lv_font_montserrat_20, 0);
         place(position_label_, text_font, 2);
+        lv_obj_set_height(position_label_, lv_font_get_line_height(text_font) + 2);
         lv_obj_set_pos(session_title_tap_, margin, y - lv_font_get_line_height(text_font) - 2);
         lv_obj_set_size(session_title_tap_, width, lv_font_get_line_height(text_font) + 4);
         place(instruction_label_, text_font, 4);
+        // 同抽屉：固定行高让 DOT 截断生效，长指令不再换行压进回显区。
+        lv_obj_set_height(instruction_label_, lv_font_get_line_height(text_font) + 2);
         const int bottom = made_screen_h() - 4;
         const int line = lv_font_get_line_height(text_font);
         const int answer_h = bottom > y + line * 2 ? bottom - y : line * 3;
@@ -895,9 +920,13 @@ bool VibeCoding::run()
     lv_obj_set_parent(instruction_label_, drawer_);
     lv_obj_set_pos(instruction_label_, made_x(24), made_page_y(40));
     lv_obj_set_width(instruction_label_, made_s(312));
+    // 提示行固定两行高：LONG_DOT 只在文字高度超过标签固定高度时才截断，
+    // 高度自适应的标签会一直换行压到位置行和回显区（实机叠字 bug）。
+    lv_obj_set_height(instruction_label_, lv_font_get_line_height(text_font) * 2 + 2);
     lv_obj_set_parent(position_label_, drawer_);
     lv_obj_set_pos(position_label_, made_x(24), made_page_y(78));
     lv_obj_set_width(position_label_, made_s(312));
+    lv_obj_set_height(position_label_, lv_font_get_line_height(text_font) + 2);
     lv_obj_set_parent(session_title_tap_, drawer_);
     lv_obj_set_pos(session_title_tap_, made_x(24), made_page_y(75));
     lv_obj_set_size(session_title_tap_, made_s(312), made_s(30));
@@ -1424,6 +1453,9 @@ void VibeCoding::showDrawer(bool visible)
     if (visible) {
         lv_obj_remove_flag(drawer_, LV_OBJ_FLAG_HIDDEN);
         lv_obj_move_foreground(drawer_);
+        // 打开抽屉即算读过回显：铃铛当场熄灭，不寄望下一次 render。
+        unread_reply_ = false;
+        if (unread_mark_) lv_obj_add_flag(unread_mark_, LV_OBJ_FLAG_HIDDEN);
     } else {
         lv_obj_add_flag(drawer_, LV_OBJ_FLAG_HIDDEN);
     }
@@ -3065,15 +3097,45 @@ void VibeCoding::noteComputerReply(const Task &task)
         reply_watch_id_ = task.id;
         reply_saw_pending_ = pending;
         reply_wait_new_ = false;
-        if (arrived && expecting) made_chime_new_message();
+        if (arrived && expecting) {
+            if (!drawer_open_.load()) unread_reply_ = true;
+            made_chime_new_message();
+        }
         return;
     }
     if (pending) reply_saw_pending_ = true;
     else if (arrived && reply_saw_pending_) {
         reply_saw_pending_ = false;
         reply_wait_new_ = false;
+        if (!drawer_open_.load()) unread_reply_ = true;
         made_chime_new_message();
     }
+}
+
+void VibeCoding::updateStatusIndicators(bool provider_ready)
+{
+    if (!status_dot_) return;
+    if (!provider_ready) {
+        lv_obj_add_flag(status_dot_, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_flag(unread_mark_, LV_OBJ_FLAG_HIDDEN);
+        return;
+    }
+    std::string connection_error;
+    std::string task_status;
+    {
+        std::lock_guard<std::mutex> lock(model_mutex_);
+        connection_error = model_.connection_error;
+        if (!model_.tasks.empty()) task_status = model_.tasks.front().status;
+    }
+    // 与精灵情绪同一套判据：离线 > 工作中 > 在线空闲。
+    const bool working = task_status == "running" || task_status == "queued" ||
+                         task_status == "waiting_confirmation";
+    const bool offline = !connection_error.empty();
+    lv_obj_remove_flag(status_dot_, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_set_style_bg_color(status_dot_, lv_color_hex(
+        offline ? 0xE05B5B : working ? 0xFFAE5A : 0x4CD964), 0);
+    if (unread_reply_ && !offline) lv_obj_remove_flag(unread_mark_, LV_OBJ_FLAG_HIDDEN);
+    else lv_obj_add_flag(unread_mark_, LV_OBJ_FLAG_HIDDEN);
 }
 
 void VibeCoding::showAnswer(const std::string &scope, const std::string &text)
@@ -3198,6 +3260,8 @@ void VibeCoding::render()
         lv_obj_set_style_text_font(provider_label_, text_font, 0);
         lv_label_set_text(provider_label_, catalog_ready ? T("暂无助手") : T("连接电脑"));
     }
+    // 顶部状态角标跟目录/连接状态每帧刷新（未配对时 catalog_ready 为假，自动隐藏）。
+    updateStatusIndicators(catalog_ready && provider_count != 0);
 
     if (pairing.phase != vibe_pairing::Phase::Paired ||
         !vibe_pairing::authorized_for_foreground()) {

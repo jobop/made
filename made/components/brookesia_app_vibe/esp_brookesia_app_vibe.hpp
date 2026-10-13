@@ -389,6 +389,10 @@ private:
     lv_obj_t *instruction_label_ = nullptr;
     lv_obj_t *answer_area_ = nullptr;
     lv_obj_t *result_label_ = nullptr;
+    // 助手页顶部角标：左上状态点（绿在线/橙工作中/红离线），右上未读回显铃铛。
+    lv_obj_t *status_dot_ = nullptr;
+    lv_obj_t *unread_mark_ = nullptr;
+    bool unread_reply_ = false;
     std::string answer_scope_;
     std::string answer_text_;
     bool showing_pairing_layout_ = false;
@@ -398,6 +402,7 @@ private:
     bool reply_saw_pending_ = false;
     bool reply_wait_new_ = false;
     void noteComputerReply(const Task &task);
+    void updateStatusIndicators(bool provider_ready);
     std::string rendered_session_id_;
     std::string last_voice_message_;
     int last_voice_phase_ = -1;
