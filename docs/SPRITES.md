@@ -17,6 +17,13 @@
 | 1 | agent 插件包的 `sprite/` | 本文规范的主体；版本号变化即重新拉取 |
 | 2 | 固件内置兜底形象 | 未连接桥接器、包里没带 sprite、或素材拉取失败时显示 |
 
+**内置兜底形象（绿豆）就是本格式的第一个实例**：它由
+`assets/branding/split-bean-layers.py` 把立绘拆成 body / eyes(两帧) / mouth(两帧)
+编进固件（`img_sprite_bean.c` + 坐标头文件），与下发的素材走同一条提交与驱动
+管线。固件里没有任何写死的五官坐标——眨眼/说话都是特征层切帧，眼位来自
+manifest 的 `x`/`y`。给任何新助手做形象，照本文规范提供分层 PNG 即可，
+不需要碰固件。
+
 主题插件的配色仍作用于界面底色和文字；旧主题包 `lock.*` 资产的兼容处理见
 [vibe_theme](../made/components/vibe_theme/vibe_theme.cpp)。
 
@@ -36,6 +43,17 @@
 ```
 
 `sprite/` 目录**可选**。没有它，这个助手用固件内置兜底形象。
+
+## 最小可用与推荐分层
+
+- **最小可用**：只有一层 `body`（一张完整立绘）。能动（呼吸/轻摆/情绪节奏），
+  但不会眨眼、不会张嘴——适合快速验证
+- **推荐**：`body` + `eyes`（open/closed 两帧）+ `mouth`（closed/open 两帧）。
+  眨眼 = 固件按 `blink.period_ms` 切换 eyes 层的两帧；说话 = 按 `talk` 切换
+  mouth 层两帧。**位置全部由 manifest 的 `x`/`y` 声明，固件零写死坐标**
+- 内置绿豆就是这么拆的，可作为拆层参考：
+  `assets/branding/split-bean-layers.py`（含把平涂风格立绘自动拆层的做法：
+  暗色连通域找五官 → 修平进 body → 特征抠成两帧）
 
 ## manifest.json schema
 
