@@ -39,6 +39,8 @@ struct ArtLayer {
     lv_obj_t *obj = nullptr;
     std::vector<Frame> frames;
     int base_scale = 256;        // 设计像素 → 屏幕像素
+    int base_x = 0;              // 未呼吸缩放时的屏幕位置（呼吸补偿的基准）
+    int base_y = 0;
     bool blink = false;
     bool talk = false;
     bool alert = false;
@@ -56,7 +58,7 @@ struct Parts {
         lv_obj_t *container = nullptr;
         std::vector<ArtLayer> layers;
         uint32_t breath_period = 3000;
-        int breath_pct = 103;
+        int breath_pct = 108;
         uint32_t sway_period = 1800;
         int sway_amp = 7;
         int bounce_amp = 8;
@@ -95,7 +97,7 @@ struct MotionSpec {
     int canvas_w = made_design;
     int canvas_h = made_design;
     uint32_t breath_period = 3000;
-    int breath_pct = 103;
+    int breath_pct = 108;
     uint32_t sway_period = 1800;
     int sway_amp = 7;
     int bounce_amp = 8;
@@ -179,13 +181,16 @@ bool commitArt(Parts *parts, const MotionSpec &motion, std::vector<LayerSpec> &&
         // 的「绿色色块」就是被甩出去的嘴层/豆脚）。
         lv_image_set_pivot(object, 0, 0);
         lv_image_set_antialias(object, true);
-        // 不设逐层 pivot：层间相对位置由普通绘制保证。呼吸用容器级单次变换
-        // （见 artUpdate），避免每层各自绕 pivot 缩放——那在 PPA 变换路径上
-        // 实测会把小图层甩到错误位置。
+        // 呼吸缩放用逐层 lv_image_set_scale + 位置补偿（见 artUpdate）：
+        // 容器级 style transform 的变换域是整屏对象，每帧重采样整个屏幕，
+        // 实测是动效卡顿的主源；逐层图像变换只覆盖图层自身 bbox，且能走
+        // PPA 加速的单图变换路径。
         ArtLayer layer;
         layer.obj = object;
         layer.frames = std::move(spec.frames);
         layer.base_scale = base_scale;
+        layer.base_x = made_x(spec.x);
+        layer.base_y = made_home_y(spec.y);
         layer.blink = spec.blink;
         layer.talk = spec.talk;
         layer.alert = spec.alert;
@@ -274,7 +279,7 @@ bool applyBeanArt(Parts *parts) {
     mouth.frames.back().dsc = img_bean_mouth_open;
     specs.push_back(std::move(mouth));
 
-    MotionSpec motion;  // 缺省动效：呼吸 3% / 3000ms，摆 7px / 1800ms
+    MotionSpec motion;  // 缺省动效：呼吸 8% / 3000ms，摆 7px / 1800ms
     return commitArt(parts, motion, std::move(specs), true);
 }
 
@@ -299,12 +304,26 @@ void artUpdate(Parts *parts, uint32_t elapsed_ms, int mood) {
     const int sway = wave(elapsed_ms, sway_period, sway_amp);
     const int bounce = (wave(elapsed_ms, sway_period / 2, bounce_amp, 270) + bounce_amp) / 2;
     lv_obj_set_pos(art.container, made_x(sway), made_home_y(-bounce));
-    // 呼吸：容器整体轻微缩放（单次变换，支点=画布中心）。此前 bisect 排查
-    // 层间漂移时被临时关掉；根因是逐层 pivot 与层表残留（均已修），恢复之。
+    // 呼吸：逐层图像缩放 + 位置补偿，支点=画布中心。缩放比 s 时层的位置
+    // 必须从 base_pos 变为 center + (base_pos - center) * s —— 等价于容器级
+    // 变换的几何效果，但变换域从整屏缩小到各图层自身 bbox，也不再走整屏
+    // 重采样（此前动效一卡一卡的主源）。此前 bisect 排查层间漂移时临时
+    // 关过呼吸，根因是逐层 pivot 与层表残留（均已修），恢复之。
     const int amp = (art.breath_pct - 100) * 256 / 200;
-    lv_obj_set_style_transform_scale(art.container, 256 + wave(elapsed_ms, art.breath_period, amp), 0);
-    lv_obj_set_style_transform_pivot_x(art.container, art.pivot_x, 0);
-    lv_obj_set_style_transform_pivot_y(art.container, art.pivot_y, 0);
+    const int scale = 256 + wave(elapsed_ms, art.breath_period, amp);
+    for (auto &layer : art.layers) {
+        if (!layer.obj) continue;
+        if (scale != 256) {
+            lv_obj_set_pos(layer.obj,
+                art.pivot_x + (layer.base_x - art.pivot_x) * scale / 256,
+                art.pivot_y + (layer.base_y - art.pivot_y) * scale / 256);
+            lv_image_set_scale(layer.obj, layer.base_scale * scale / 256);
+        } else {
+            // 100% 基准：值与上一 tick 相同时 LVGL 不会重复失效
+            lv_obj_set_pos(layer.obj, layer.base_x, layer.base_y);
+            lv_image_set_scale(layer.obj, layer.base_scale);
+        }
+    }
     for (auto &layer : art.layers) {
         if (!layer.obj || layer.frames.empty()) continue;
         int frame = 0;
