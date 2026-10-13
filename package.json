@@ -8,7 +8,9 @@
     "doctor": "npm --prefix bridge run doctor",
     "test": "npm --prefix bridge test",
     "flash": "node tools/flash.mjs",
-    "shot": "node tools/shot.mjs"
+    "shot": "node tools/shot.mjs",
+    "sim": "make -C sim",
+    "sim:shot": "make -C sim shot"
   },
   "engines": {
     "node": ">=22"

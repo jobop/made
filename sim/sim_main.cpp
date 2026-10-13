@@ -1,0 +1,242 @@
+// sim/sim_main.cpp — 码得 UI 模拟器主程序（host 运行）。
+//
+// 用法：
+//   sim                                  # 开窗口跑真实 UI，鼠标=触摸
+//   sim --shot out                       # 渲染稳定后截图 out.bmp/.png（AI 自查布局用）
+//   sim --shot out --swipe 120 300 120 60 --wait 30   # 先模拟手势再截图
+//   sim --tap x y ...                    # 模拟点击序列
+//   MADE_SIM_PAIRING=paired / MADE_SIM_WIFI=1 可切换桩状态。
+#include "lvgl.h"
+#include <SDL2/SDL.h>
+#include "esp_brookesia_app_vibe.hpp"
+
+#include <cstdint>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <string>
+#include <vector>
+
+using esp_brookesia::apps::VibeCoding;
+
+namespace {
+
+struct SimAction {
+    enum Type { Tap, Swipe, Wait } type = Wait;
+    int x1 = 0, y1 = 0, x2 = 0, y2 = 0;
+    int frames = 0;
+};
+
+struct Args {
+    std::vector<SimAction> actions;
+    std::string shot_path;
+    int total_frames = 90;
+    int settle_frames = 60; // 手势做完后等 UI 稳定再截图
+};
+
+Args parseArgs(int argc, char **argv)
+{
+    Args args;
+    for (int i = 1; i < argc; ++i) {
+        const std::string arg = argv[i];
+        if (arg == "--shot" && i + 1 < argc) {
+            args.shot_path = argv[++i];
+        } else if (arg == "--frames" && i + 1 < argc) {
+            args.total_frames = atoi(argv[++i]);
+        } else if (arg == "--tap" && i + 3 < argc) {
+            SimAction a; a.type = SimAction::Tap;
+            a.x1 = atoi(argv[++i]); a.y1 = atoi(argv[++i]);
+            const int hold = atoi(argv[++i]);
+            a.frames = hold > 0 ? hold : 6;
+            args.actions.push_back(a);
+        } else if (arg == "--swipe" && i + 5 < argc) {
+            SimAction a; a.type = SimAction::Swipe;
+            a.x1 = atoi(argv[++i]); a.y1 = atoi(argv[++i]);
+            a.x2 = atoi(argv[++i]); a.y2 = atoi(argv[++i]);
+            a.frames = 14;
+            args.actions.push_back(a);
+        } else if (arg == "--wait" && i + 1 < argc) {
+            SimAction a; a.type = SimAction::Wait;
+            a.frames = atoi(argv[++i]);
+            args.actions.push_back(a);
+        }
+    }
+    return args;
+}
+
+void pushMouse(SDL_Window *window, uint32_t type, float x, float y)
+{
+    SDL_Event ev {};
+    ev.type = type;
+    ev.button.windowID = SDL_GetWindowID(window);
+    ev.button.which = 0;
+    ev.button.clicks = 1;
+    ev.button.x = x;
+    ev.button.y = y;
+    if (type == SDL_MOUSEBUTTONDOWN) {
+        ev.button.state = SDL_PRESSED;
+        ev.button.button = SDL_BUTTON_LEFT;
+    } else if (type == SDL_MOUSEBUTTONUP) {
+        ev.button.state = SDL_RELEASED;
+        ev.button.button = SDL_BUTTON_LEFT;
+    } else if (type == SDL_MOUSEMOTION) {
+        ev.motion.state = SDL_BUTTON_LMASK;
+    }
+    SDL_PushEvent(&ev);
+}
+
+void pushHover(SDL_Window *window, float x, float y)
+{
+    SDL_Event ev {};
+    ev.type = SDL_MOUSEMOTION;
+    ev.motion.windowID = SDL_GetWindowID(window);
+    ev.motion.which = 0;
+    ev.motion.state = 0;   // 未按住：纯悬停移动
+    ev.motion.x = x;
+    ev.motion.y = y;
+    SDL_PushEvent(&ev);
+}
+
+void runTap(const SimAction &a, SDL_Window *window, int &frame)
+{
+    // 先发一个未按住的 MOTION 把光标挪到位：SDL 鼠标设备没有位置事件时，
+    // 部分按下事件会被 indev 丢弃（实测偶发 tap 失效）。
+    pushHover(window, (float)a.x1, (float)a.y1);
+    SDL_PumpEvents();
+    pushMouse(window, SDL_MOUSEBUTTONDOWN, (float)a.x1, (float)a.y1);
+    for (int i = 0; i < 3; ++i) { SDL_PumpEvents(); lv_tick_inc(33); lv_timer_handler(); SDL_Delay(30); ++frame; }
+    pushMouse(window, SDL_MOUSEBUTTONUP, (float)a.x1, (float)a.y1);
+    for (int i = 3; i < a.frames; ++i) { SDL_PumpEvents(); lv_tick_inc(33); lv_timer_handler(); SDL_Delay(30); ++frame; }
+}
+
+void runSwipe(const SimAction &a, SDL_Window *window, int &frame)
+{
+    // LVGL 手势识别要求「单周期速度 ≥3px 且累计位移 >50px」且途中会被清零；
+    // 慢速长滑会卡在阈值下永远不触发（真机触采样率高无此问题）。
+    // 模拟器用 6 步快速滑，保证每周期 ~37px 位移。
+    const int steps = 6;
+    pushMouse(window, SDL_MOUSEBUTTONDOWN, (float)a.x1, (float)a.y1);
+    for (int i = 0; i <= steps; ++i) {
+        const float t = (float)i / (float)steps;
+        const float x = a.x1 + (a.x2 - a.x1) * t;
+        const float y = a.y1 + (a.y2 - a.y1) * t;
+        pushMouse(window, SDL_MOUSEMOTION, x, y);
+        SDL_PumpEvents(); lv_tick_inc(33); lv_timer_handler(); SDL_Delay(30); ++frame;
+    }
+    pushMouse(window, SDL_MOUSEBUTTONUP, (float)a.x2, (float)a.y2);
+    SDL_PumpEvents();
+}
+
+/* RGB565 帧缓冲 → 24 位 BMP（自底向上行序）。 */
+void writeBmp(const std::string &path, const uint8_t *rgb565, int w, int h, uint32_t stride)
+{
+    FILE *fp = fopen(path.c_str(), "wb");
+    if (!fp) { fprintf(stderr, "sim: cannot write %s\n", path.c_str()); return; }
+    const int row = (w * 3 + 3) & ~3;
+    const uint32_t data_size = (uint32_t)row * h;
+    uint8_t header[54] = {0};
+    header[0] = 'B'; header[1] = 'M';
+    const uint32_t file_size = 54 + data_size;
+    memcpy(header + 2, &file_size, 4);
+    const uint32_t offset = 54; memcpy(header + 10, &offset, 4);
+    const uint32_t dib = 40; memcpy(header + 14, &dib, 4);
+    memcpy(header + 18, &w, 4);
+    const int32_t bh = h; memcpy(header + 22, &bh, 4);
+    const uint16_t planes = 1; memcpy(header + 26, &planes, 2);
+    const uint16_t bpp = 24; memcpy(header + 28, &bpp, 2);
+    memcpy(header + 34, &data_size, 4);
+    fwrite(header, 1, 54, fp);
+    std::vector<uint8_t> row_buf(row, 0);
+    for (int y = h - 1; y >= 0; --y) {
+        const uint8_t *src = rgb565 + (size_t)y * stride;
+        for (int x = 0; x < w; ++x) {
+            const uint16_t px = (uint16_t)(src[x * 2] | (src[x * 2 + 1] << 8));
+            row_buf[x * 3 + 0] = (uint8_t)(((px >> 0) & 0x1F) << 3);       // B
+            row_buf[x * 3 + 1] = (uint8_t)(((px >> 5) & 0x3F) << 2);       // G
+            row_buf[x * 3 + 2] = (uint8_t)(((px >> 11) & 0x1F) << 3);      // R
+        }
+        fwrite(row_buf.data(), 1, row, fp);
+    }
+    fclose(fp);
+}
+
+void captureShot(const std::string &path, lv_display_t *disp)
+{
+    lv_refr_now(disp);
+    lv_draw_buf_t *buf = lv_display_get_buf_active(disp);
+    if (!buf || !buf->data) { fprintf(stderr, "sim: no draw buffer\n"); return; }
+    const uint32_t w = buf->header.w;
+    const uint32_t h = buf->header.h;
+    writeBmp(path, (const uint8_t *)buf->data, (int)w, (int)h, buf->header.stride);
+    printf("sim: saved %s (%ux%u)\n", path.c_str(), w, h);
+}
+
+} // namespace
+
+int main(int argc, char **argv)
+{
+    const Args args = parseArgs(argc, argv);
+
+    if (SDL_Init(SDL_INIT_VIDEO) != 0) {
+        fprintf(stderr, "SDL init failed: %s\n", SDL_GetError());
+        return 1;
+    }
+
+    lv_init();
+    lv_display_t *disp = lv_sdl_window_create(240, 320);
+    if (!disp) { fprintf(stderr, "lv_sdl_window_create failed\n"); return 1; }
+    lv_display_set_render_mode(disp, LV_DISPLAY_RENDER_MODE_FULL);
+    lv_sdl_mouse_create();
+
+    if (!VibeCoding::startOnDisplay()) {
+        fprintf(stderr, "sim: startOnDisplay failed\n");
+        return 1;
+    }
+
+    SDL_Window *window = nullptr;
+    void *renderer = lv_sdl_window_get_renderer(disp);
+    if (renderer) window = SDL_RenderGetWindow((SDL_Renderer *)renderer);
+
+    int frame = 0;
+    for (const SimAction &action : args.actions) {
+        if (action.type == SimAction::Tap) runTap(action, window, frame);
+        else if (action.type == SimAction::Swipe) runSwipe(action, window, frame);
+        else {
+            for (int i = 0; i < action.frames; ++i) {
+                SDL_PumpEvents(); lv_tick_inc(33); lv_timer_handler(); SDL_Delay(30); ++frame;
+            }
+        }
+    }
+
+    // 主循环：跑满总帧数（模拟器窗口保持打开，动画/定时器正常运转）。
+    const int remaining = frame < args.total_frames ? args.total_frames - frame : 0;
+    for (int i = 0; i < remaining; ++i) {
+        SDL_PumpEvents();
+        lv_tick_inc(33);
+        lv_timer_handler();
+        SDL_Delay(30);
+        ++frame;
+    }
+
+    if (!args.shot_path.empty()) {
+    // 手势后等待若干帧让过渡动画收尾，再截整帧。
+    for (int i = 0; i < args.settle_frames; ++i) {
+        SDL_PumpEvents(); lv_tick_inc(33); lv_timer_handler(); SDL_Delay(30);
+    }
+        captureShot(args.shot_path, disp);
+    }
+
+    // 不退出：交互模式下窗口一直开着，直到用户关窗口（SDL_QUIT → 跳出）。
+    bool quit = !args.shot_path.empty();
+    while (!quit) {
+        SDL_PumpEvents();
+        SDL_Event ev;
+        while (SDL_PollEvent(&ev)) {
+            if (ev.type == SDL_QUIT) quit = true;
+        }
+        lv_tick_inc(33);
+        lv_timer_handler();
+        SDL_Delay(30);
+    }
+    return 0;
+}
