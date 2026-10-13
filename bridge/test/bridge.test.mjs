@@ -114,6 +114,59 @@ process.stdout.write(JSON.stringify({ type: 'item.completed', item: { type: 'age
   assert.match(job.result, /模型正确/);
 });
 
+test('卡死自愈：被杀的任务自动重跑，重跑成功则任务完成', async () => {
+  let calls = 0;
+  const { store } = fixture(async () => {
+    calls += 1;
+    if (calls === 1) {
+      const error = new Error('任务 5 分钟没有任何输出，疑似卡死：已终止编程工具进程');
+      error.retryable = true;
+      error.autoRetry = true;
+      throw error;
+    }
+    return { status: 'completed', result: '重跑完成' };
+  }, { maxAutoRetries: 1 });
+  const job = submit(store, { instruction: '重跑一次卡死的任务' });
+  store.confirm(job.id);
+  const deadline = Date.now() + 5000;
+  while (job.status !== 'completed' && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  assert.equal(job.status, 'completed', job.error);
+  assert.equal(calls, 2);
+  assert.equal(job.attempts, 1);
+});
+
+test('卡死自愈：一直沉默的假 CLI 触发看门狗，杀进程重跑后回到待确认', async (t) => {
+  const script = `setTimeout(() => {}, 30000);\n`;
+  const { store } = fakeCliFixture(t, 'codex', script, { stuckIdleMs: 400 });
+  const job = submit(store, { instruction: '检查演示项目的代码' });
+  store.confirm(job.id);
+  const deadline = Date.now() + 15000;
+  while (!['waiting_confirmation', 'failed', 'completed'].includes(job.status) && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  assert.equal(job.status, 'waiting_confirmation', JSON.stringify({ status: job.status, error: job.error }));
+  assert.match(job.error, /没有任何输出/);
+  assert.equal(job.attempts, 1);
+  assert.equal(job.retryPending, true);
+});
+
+test('卡死自愈配置：默认 5 分钟 / 重跑 1 次，环境变量可覆盖，越界报错', async (t) => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'vibe-selfheal-'));
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  const configPath = path.join(directory, 'config.json');
+  fs.writeFileSync(configPath, JSON.stringify({ projects: [{ id: 'demo', path: directory }] }));
+  const env = { VIBE_CONFIG: configPath, VIBE_STATE_DIR: directory };
+  const config = loadConfig(env);
+  assert.equal(config.stuckIdleMinutes, 5);
+  assert.equal(config.maxAutoRetries, 1);
+  assert.equal(loadConfig({ ...env, VIBE_STUCK_IDLE_MINUTES: '10' }).stuckIdleMinutes, 10);
+  assert.equal(loadConfig({ ...env, VIBE_MAX_AUTO_RETRIES: '0' }).maxAutoRetries, 0);
+  assert.throws(() => loadConfig({ ...env, VIBE_STUCK_IDLE_MINUTES: '0' }), /卡死判定/);
+  assert.throws(() => loadConfig({ ...env, VIBE_MAX_AUTO_RETRIES: '4' }), /自动重跑/);
+});
+
 test('任务只在确认后运行，状态会保存', async () => {
   let calls = 0;
   const { store, directory } = fixture(async () => {

@@ -144,6 +144,16 @@ export function loadConfig(env = process.env) {
   if (!Number.isInteger(maxParallelJobs) || maxParallelJobs < 1 || maxParallelJobs > 4) {
     throw new Error('并行任务数必须是 1 到 4 之间的整数');
   }
+  // 卡死自愈：任务连续 N 分钟没有任何输出（进度/流式/stderr 都算）视为卡死，
+  // 桥接器杀掉编程工具进程并自动重跑，最多 maxAutoRetries 次。
+  const stuckIdleMinutes = Number(env.VIBE_STUCK_IDLE_MINUTES ?? raw.stuckIdleMinutes ?? 5);
+  if (!Number.isInteger(stuckIdleMinutes) || stuckIdleMinutes < 1 || stuckIdleMinutes > 60) {
+    throw new Error('卡死判定时长必须是 1 到 60 之间的整数（分钟）');
+  }
+  const maxAutoRetries = Number(env.VIBE_MAX_AUTO_RETRIES ?? raw.maxAutoRetries ?? 1);
+  if (!Number.isInteger(maxAutoRetries) || maxAutoRetries < 0 || maxAutoRetries > 3) {
+    throw new Error('卡死自动重跑次数必须是 0 到 3 之间的整数');
+  }
   const stateDir = path.resolve(env.VIBE_STATE_DIR
     || (hasUserConfig ? path.join(path.dirname(configPath), 'state') : dataHome(env)));
   const usbPort = validateUsbPort(env.VIBE_USB_PORT || '');
@@ -176,6 +186,8 @@ export function loadConfig(env = process.env) {
     devicePort,
     discoveryPort,
     maxParallelJobs,
+    stuckIdleMinutes,
+    maxAutoRetries,
     codexModel: models.codex,
     models,
     asrMode,

@@ -4,6 +4,8 @@
   "defaultProject": "demo",
   "defaultProvider": "codex",
   "codexModel": "gpt-6-astra",
+  "stuckIdleMinutes": 5,
+  "maxAutoRetries": 1,
   "projects": [
     {
       "id": "demo",

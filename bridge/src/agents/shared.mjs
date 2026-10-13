@@ -134,6 +134,22 @@ export function runCli({ job, project, signal, onProgress, onSession, config, mo
     let stderr = '';
     let settled = false;
     let timer;
+    // 卡死看门狗：编程工具进程连续 idleMs 没有任何输出（进度、流式、stderr 都算）
+    // 视为卡死，杀掉进程树并把错误标记为可自动重跑，由任务车道决定是否重试。
+    const idleMs = Number(config?.stuckIdleMs)
+      || Math.max(1, Number(config?.stuckIdleMinutes) || 5) * 60 * 1000;
+    let idleTimer;
+    const bumpIdle = () => {
+      clearTimeout(idleTimer);
+      idleTimer = setTimeout(() => {
+        stop();
+        const error = new Error(`任务 ${Math.round(idleMs / 60000)} 分钟没有任何输出，疑似卡死：已终止编程工具进程`);
+        error.retryable = true;
+        error.autoRetry = true;
+        finish(error);
+      }, idleMs);
+      if (idleTimer.unref) idleTimer.unref();
+    };
     const stop = () => {
       if (child.pid && process.platform !== 'win32') {
         try { process.kill(-child.pid, 'SIGTERM'); } catch { /* Already exited. */ }
@@ -151,19 +167,28 @@ export function runCli({ job, project, signal, onProgress, onSession, config, mo
       if (settled) return;
       settled = true;
       clearTimeout(timer);
+      clearTimeout(idleTimer);
       signal.removeEventListener('abort', stop);
       if (error) reject(error); else resolve(value);
     };
     signal.addEventListener('abort', stop, { once: true });
     if (signal.aborted) stop();
+    bumpIdle();
     timer = setTimeout(() => {
       stop();
-      finish(new Error('任务运行超过 20 分钟，已停止'));
+      const error = new Error('任务运行超过 20 分钟，已停止');
+      error.retryable = true;
+      error.autoRetry = true;
+      finish(error);
     }, 20 * 60 * 1000);
     child.on('error', (error) => finish(error));
     child.stdout.setEncoding('utf8');
-    child.stdout.on('data', (chunk) => events.write(chunk));
+    child.stdout.on('data', (chunk) => {
+      bumpIdle();
+      events.write(chunk);
+    });
     child.stderr.on('data', (chunk) => {
+      bumpIdle();
       stderr = `${stderr}${chunk.toString('utf8')}`.slice(-8000);
     });
     child.on('close', (code) => {

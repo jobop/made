@@ -11,7 +11,7 @@ function now() {
 }
 
 export class JobStore {
-  constructor({ file, projects, defaultProject, defaultProvider, workspaceRoot, maxParallel, run, providerAvailable, pluginsRuntime, hooks }) {
+  constructor({ file, projects, defaultProject, defaultProvider, workspaceRoot, maxParallel, maxAutoRetries, run, providerAvailable, pluginsRuntime, hooks }) {
     this.agent = pluginsRuntime ? (id) => pluginsRuntime.agent(id) : run.agent || builtinAgent;
     this.hooks = hooks || null;
     this.file = file;
@@ -24,6 +24,9 @@ export class JobStore {
     // 同时执行的会话数。缺省 1 = 完全串行（保持既有语义，便于测试与降级）。
     const lanes = Number(maxParallel);
     this.maxParallel = Number.isFinite(lanes) ? Math.min(Math.max(Math.trunc(lanes), 1), 4) : 1;
+    // 卡死自愈：看门狗杀掉无输出的编程工具进程后，同车道自动重跑的次数上限。
+    const retries = Number(maxAutoRetries);
+    this.maxAutoRetries = Number.isFinite(retries) ? Math.min(Math.max(Math.trunc(retries), 0), 3) : 1;
     // 正在占用车道的会话 ID。一个会话同时只会有一条指令在跑，所以按会话占位即可。
     this.lanes = new Set();
     this.sessions = new SessionStore({
@@ -344,6 +347,20 @@ export class JobStore {
           }
         } catch (error) {
           if (job.status === 'running') {
+            // 卡死自愈：看门狗杀掉无输出的编程工具进程后，同车道自动重跑，
+            // 最多 maxAutoRetries 次；重跑的是同一条指令（native 会话会 resume 同一 CLI 线程）。
+            const attempts = job.attempts || 0;
+            if (error?.autoRetry && attempts < this.maxAutoRetries) {
+              job.attempts = attempts + 1;
+              job.status = 'queued';
+              job.progress = '任务疑似卡死，已终止编程工具进程并自动重跑';
+              job.progressAt = now();
+              job.error = '';
+              job.updatedAt = now();
+              this.save();
+              this.hooks?.notify('retrying', job);
+              continue;
+            }
             const retryableConflict = error?.retryable === true;
             job.status = retryableConflict ? 'waiting_confirmation' : 'failed';
             job.retryPending = retryableConflict;

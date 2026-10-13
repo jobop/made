@@ -129,6 +129,17 @@ WorkBuddy / 沙箱会话的 shell 会往环境里塞**会话级的本地代理**
 第二条并发指令）。同时执行的会话数默认 2，用 `bridge/config.local.json` 的
 `maxParallelJobs` 或环境变量 `VIBE_MAX_PARALLEL` 调整，取值 1–4。
 
+#### 卡死自愈
+
+编程工具进程可能因网络死亡、模型端点挂起等原因长时间无输出（进程活着但零进度）。
+`bridge/src/agents/shared.mjs` 的 `runCli` 有看门狗：任务连续 `stuckIdleMinutes`
+（默认 5，`VIBE_STUCK_IDLE_MINUTES` 可调，1–60）分钟没有任何输出就杀掉整个进程树，
+错误标记为可重跑；`JobStore` 的车道随后自动重跑同一指令，最多 `maxAutoRetries`
+（默认 1，`VIBE_MAX_AUTO_RETRIES`，0–3）次——native 会话会 resume 同一 CLI 线程。
+重跑仍卡死则回到「待确认」并说明原因，用户手动确认可再试。20 分钟硬超时同样按此处理。
+所以「桥接器重启恢复 + 看门狗杀进程 + 自动重跑 + 手动兜底」构成完整的自愈链，
+卡死的任务不再需要重启桥接器来解锁。
+
 码得锁屏不连接桥接器、不上报心跳。烧录重启后大盘显示离线是预期现象，上滑解锁后才会重新上线。
 
 ### 认板再烧
