@@ -171,7 +171,6 @@ private:
     void syncArtwork();
     void maybeApplyArtwork(const std::string &selected_provider);
     void invalidateCatalog(bool clear = false);
-    void showProviderIcon(const vibe_provider::Icon &icon);
     void sendHeartbeat();
     void sendAction(PendingAction action);
     bool request(const std::string &path, bool post, std::string &response, int &status,
@@ -281,13 +280,8 @@ private:
     lv_obj_t *drawer_grip_ = nullptr;
     lv_obj_t *drawer_hint_ = nullptr;
     lv_obj_t *provider_label_ = nullptr;
-    lv_obj_t *animal_halo_ = nullptr;
-    lv_obj_t *provider_image_ = nullptr;
-    lv_obj_t *icon_placeholder_ = nullptr;
-    lv_image_dsc_t provider_image_descriptor_{};
-    alignas(4) std::array<uint8_t, vibe_provider::MAX_ICON_PIXELS * 4> provider_image_pixels_{};
-    vibe_provider::Icon rendered_icon_;
     bool rendered_catalog_ready_ = false;
+    bool pairing_drawer_auto_ = false;   // 配对期间自动拉开的抽屉，配对完成后自动收囘
     lv_obj_t *page_label_ = nullptr;
     lv_obj_t *new_session_button_ = nullptr;
     lv_obj_t *delete_session_button_ = nullptr;

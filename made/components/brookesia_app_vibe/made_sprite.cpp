@@ -13,47 +13,43 @@
 #include <esp_heap_caps.h>
 #include <png.h>
 
-LV_IMAGE_DECLARE(img_app_vibe);
+#include "assets/img_sprite_bean.h"
+
+// 内置绿豆不是特例：它与第三方助手的素材（docs/SPRITES.md）走同一条分层
+// 管线，只是素材编在固件里（img_sprite_bean.c）而不是从桥接器拉取。
+// 固件里没有任何写死的五官坐标——眨眼/说话都是特征层切帧，眼位来自
+// manifest 的 x/y（内置豆的坐标由 split-bean-layers.py 生成到 img_sprite_bean.h）。
+
+LV_IMG_DECLARE(img_bean_body);
+LV_IMG_DECLARE(img_bean_eyes_open);
+LV_IMG_DECLARE(img_bean_eyes_closed);
+LV_IMG_DECLARE(img_bean_mouth_closed);
+LV_IMG_DECLARE(img_bean_mouth_open);
 
 namespace made_sprite {
 namespace {
 
-constexpr uint32_t kLime = 0xC7F58B;
+struct Frame {
+    lv_image_dsc_t dsc{};
+    uint8_t *pixels = nullptr;   // PSRAM 堆分配（下发素材）；内置素材为 null（静态）
+};
+
+struct ArtLayer {
+    lv_obj_t *obj = nullptr;
+    std::vector<Frame> frames;
+    int base_scale = 256;        // 设计像素 → 屏幕像素
+    bool blink = false;
+    bool talk = false;
+    bool alert = false;
+    uint32_t blink_period = 4000;
+    uint32_t blink_closed = 120;
+};
 
 struct Parts {
+    lv_obj_t *root = nullptr;      // 舞台根对象
     lv_obj_t *glow = nullptr;      // 待确认/运行时的光圈（accent 色，脉冲）
-    lv_obj_t *halo = nullptr;      // 舞台底盘
-    lv_obj_t *body = nullptr;      // 圆形裁切的身体
-    lv_obj_t *image = nullptr;     // 吉祥物图（后续换分层素材）
-    lv_obj_t *lid_left = nullptr;  // 眼皮：眨眼时盖住眼睛（脸部同色）
-    lv_obj_t *lid_right = nullptr;
-    lv_obj_t *shadow = nullptr;
-    lv_obj_t *left_arm = nullptr;
-    lv_obj_t *right_arm = nullptr;
-    lv_obj_t *left_foot = nullptr;
-    lv_obj_t *right_foot = nullptr;
-    lv_obj_t *spark[3]{};
-    lv_point_precise_t left_points[3]{};
-    lv_point_precise_t right_points[3]{};
-    int image_base_scale = 256;    // 素材铺满身体圆的基础缩放（呼吸在其上波动）
+    bool builtin = true;           // 当前显示内置绿豆（setTint 只对它生效）
     int last_mood = -1;
-    bool frozen = false;
-
-    // 分层素材模式（docs/SPRITES.md）。active 时占位形象隐藏。
-    struct Frame {
-        lv_image_dsc_t dsc{};
-        uint8_t *pixels = nullptr;   // PSRAM；解码一次，永久被 dsc 引用
-    };
-    struct ArtLayer {
-        lv_obj_t *obj = nullptr;
-        std::vector<Frame> frames;
-        int base_scale = 256;        // 设计像素 → 屏幕像素
-        bool blink = false;
-        bool talk = false;
-        bool alert = false;
-        uint32_t blink_period = 4000;
-        uint32_t blink_closed = 120;
-    };
     struct Art {
         lv_obj_t *container = nullptr;
         std::vector<ArtLayer> layers;
@@ -62,6 +58,8 @@ struct Parts {
         uint32_t sway_period = 1800;
         int sway_amp = 7;
         int bounce_amp = 8;
+        int pivot_x = 0;             // 呼吸支点（屏幕像素，画布中心）
+        int pivot_y = 0;
         bool active = false;
 
         ~Art() {
@@ -70,6 +68,35 @@ struct Parts {
                     if (frame.pixels) heap_caps_free(frame.pixels);
         }
     } art;
+};
+
+void freeFrames(std::vector<Frame> &frames) {
+    for (auto &frame : frames)
+        if (frame.pixels) heap_caps_free(frame.pixels);
+    frames.clear();
+}
+
+// 一个待提交的图层：坐标是 360 设计画布像素，frames 的像素所有权随 vector 移交。
+struct LayerSpec {
+    int x = 0;
+    int y = 0;
+    int scale_mul = 1;           // 素材基准像素相对设计像素的倍数（内置豆 = 3）
+    bool blink = false;
+    bool talk = false;
+    bool alert = false;
+    uint32_t blink_period = 4000;
+    uint32_t blink_closed = 120;
+    std::vector<Frame> frames;
+};
+
+struct MotionSpec {
+    int canvas_w = made_design;
+    int canvas_h = made_design;
+    uint32_t breath_period = 3000;
+    int breath_pct = 103;
+    uint32_t sway_period = 1800;
+    int sway_amp = 7;
+    int bounce_amp = 8;
 };
 
 void passive(lv_obj_t *object) {
@@ -89,16 +116,6 @@ lv_obj_t *shape(lv_obj_t *parent, int x, int y, int width, int height,
     lv_obj_set_style_radius(object, LV_RADIUS_CIRCLE, 0);
     lv_obj_set_style_bg_color(object, lv_color_hex(color), 0);
     lv_obj_set_style_bg_opa(object, opacity, 0);
-    return object;
-}
-
-lv_obj_t *line(lv_obj_t *parent, uint32_t color, int width) {
-    auto *object = lv_line_create(parent);
-    lv_obj_remove_style_all(object);
-    passive(object);
-    lv_obj_set_style_line_color(object, lv_color_hex(color), 0);
-    lv_obj_set_style_line_width(object, made_s(width) > 0 ? made_s(width) : 1, 0);
-    lv_obj_set_style_line_rounded(object, true, 0);
     return object;
 }
 
@@ -134,20 +151,64 @@ uint8_t *decodePngArgb(const std::string &path, int &width, int &height) {
     return buffer;
 }
 
-void setMascotHidden(Parts *parts, bool hidden) {
-    auto apply = [hidden](lv_obj_t *object) {
-        if (!object) return;
-        if (hidden) lv_obj_add_flag(object, LV_OBJ_FLAG_HIDDEN);
-        else lv_obj_remove_flag(object, LV_OBJ_FLAG_HIDDEN);
-    };
-    apply(parts->halo);
-    apply(parts->body);
-    apply(parts->shadow);
-    apply(parts->left_arm);
-    apply(parts->right_arm);
-    apply(parts->left_foot);
-    apply(parts->right_foot);
-    for (auto *spark : parts->spark) apply(spark);
+// 把规格提交成 LVGL 对象树；任一对象创建失败则整体回滚并保留旧素材。
+bool commitArt(Parts *parts, const MotionSpec &motion, std::vector<LayerSpec> &&specs, bool builtin) {
+    if (specs.empty()) return false;
+    auto *container = lv_obj_create(parts->root);
+    if (!container) return false;
+    lv_obj_remove_style_all(container);
+    passive(container);
+    lv_obj_set_pos(container, 0, 0);
+    lv_obj_set_size(container, made_screen_w(), made_screen_h());
+
+    for (auto &spec : specs) {
+        if (spec.frames.empty()) goto fail;
+        auto *object = lv_image_create(container);
+        if (!object) goto fail;
+        passive(object);
+        lv_image_set_src(object, &spec.frames.front().dsc);
+        lv_obj_set_pos(object, made_x(spec.x), made_home_y(spec.y));
+        const int base_scale = spec.scale_mul * made_lv_scale();
+        lv_image_set_scale(object, base_scale);
+        // 缩放支点必须显式设为左上角：lv_image 的 pivot 默认是图片中心，
+        // 不设的话每层绕各自中心放大，层间相对位置全部漂移（实机右下角
+        // 的「绿色色块」就是被甩出去的嘴层/豆脚）。
+        lv_image_set_pivot(object, 0, 0);
+        lv_image_set_antialias(object, true);
+        // 不设逐层 pivot：层间相对位置由普通绘制保证。呼吸用容器级单次变换
+        // （见 artUpdate），避免每层各自绕 pivot 缩放——那在 PPA 变换路径上
+        // 实测会把小图层甩到错误位置。
+        ArtLayer layer;
+        layer.obj = object;
+        layer.frames = std::move(spec.frames);
+        layer.base_scale = base_scale;
+        layer.blink = spec.blink;
+        layer.talk = spec.talk;
+        layer.alert = spec.alert;
+        layer.blink_period = spec.blink_period;
+        layer.blink_closed = spec.blink_closed;
+        parts->art.layers.push_back(std::move(layer));
+    }
+
+    // 提交：旧素材容器（含内置豆）随之删除。
+    if (parts->art.container) lv_obj_delete(parts->art.container);
+    parts->art.container = container;
+    parts->art.breath_period = motion.breath_period;
+    parts->art.breath_pct = motion.breath_pct;
+    parts->art.sway_period = motion.sway_period;
+    parts->art.sway_amp = motion.sway_amp;
+    parts->art.bounce_amp = motion.bounce_amp;
+    parts->art.pivot_x = made_x(motion.canvas_w / 2);
+    parts->art.pivot_y = made_home_y(motion.canvas_h / 2);
+    parts->art.active = true;
+    parts->builtin = builtin;
+    lv_obj_invalidate(parts->root);
+    return true;
+
+fail:
+    for (auto &layer : parts->art.layers) freeFrames(layer.frames);
+    lv_obj_delete(container);
+    return false;
 }
 
 void destroy(lv_event_t *event) {
@@ -156,16 +217,79 @@ void destroy(lv_event_t *event) {
     delete parts;
 }
 
-// 素材模式的动效驱动。呼吸/轻摆作用于容器与图层缩放；图层自身的
-// blink/talk/alert 在这里按状态机切帧。LRU 素材（占位形象）参数不参与。
+// 内置绿豆：一份用 SPRITES 格式表达的普通素材（分层 + manifest 语义），
+// 与桥接器下发的助手素材走完全相同的提交与驱动路径。
+bool applyBeanArt(Parts *parts) {
+    // 特征层坐标是 112 基准的全画布坐标；素材铺到 336 设计像素（×3）。
+    constexpr int kMul = 3;
+    const int body_w = img_bean_body.header.w * kMul;
+    const int body_h = img_bean_body.header.h * kMul;
+    const int origin_x = (made_design - body_w) / 2;
+    const int origin_y = (made_design - body_h) / 2;
+
+    std::vector<LayerSpec> specs;
+    LayerSpec body;
+    body.x = origin_x;
+    body.y = origin_y;
+    body.scale_mul = kMul;
+    body.frames.push_back(Frame{});
+    body.frames.back().dsc = img_bean_body;
+    specs.push_back(std::move(body));
+
+    LayerSpec eyes;
+    eyes.x = origin_x + IMG_BEAN_EYES_X * kMul;
+    eyes.y = origin_y + IMG_BEAN_EYES_Y * kMul;
+    eyes.scale_mul = kMul;
+    eyes.blink = true;
+    eyes.blink_period = 4200;
+    eyes.blink_closed = 130;
+    eyes.frames.push_back(Frame{});
+    eyes.frames.back().dsc = img_bean_eyes_open;
+    eyes.frames.push_back(Frame{});
+    eyes.frames.back().dsc = img_bean_eyes_closed;
+    specs.push_back(std::move(eyes));
+
+    LayerSpec mouth;
+    mouth.x = origin_x + IMG_BEAN_MOUTH_X * kMul;
+    mouth.y = origin_y + IMG_BEAN_MOUTH_Y * kMul;
+    mouth.scale_mul = kMul;
+    mouth.talk = true;
+    mouth.frames.push_back(Frame{});
+    mouth.frames.back().dsc = img_bean_mouth_closed;
+    mouth.frames.push_back(Frame{});
+    mouth.frames.back().dsc = img_bean_mouth_open;
+    specs.push_back(std::move(mouth));
+
+    MotionSpec motion;  // 缺省动效：呼吸 3% / 3000ms，摆 7px / 1800ms
+    return commitArt(parts, motion, std::move(specs), true);
+}
+
+// 素材模式的动效驱动。呼吸/轻摆作用于容器（位置 + 单次缩放变换，支点在
+// 舞台中心）；blink/talk/alert 层在这里按状态机切帧。节奏随情绪微调。
 void artUpdate(Parts *parts, uint32_t elapsed_ms, int mood) {
     auto &art = parts->art;
-    if (mood == Mood::kOffline) elapsed_ms = 900;  // 与占位形象一致：静止在中间帧
-    const int sway = wave(elapsed_ms, art.sway_period, art.sway_amp);
-    const int bounce = (wave(elapsed_ms, art.sway_period / 2, art.bounce_amp, 270) + art.bounce_amp) / 2;
+    if (mood == Mood::kOffline) elapsed_ms = 900;  // 静止在中间帧
+    uint32_t sway_period = art.sway_period;
+    int sway_amp = art.sway_amp;
+    int bounce_amp = art.bounce_amp;
+    if (mood == Mood::kTalking) {
+        sway_period = sway_period * 2 / 3;
+        sway_amp += 2;
+        bounce_amp += 2;
+    } else if (mood == Mood::kRunning) {
+        sway_period = sway_period * 3 / 4;
+    } else if (mood == Mood::kWaitingConfirm) {
+        sway_period = sway_period * 6 / 5;
+        sway_amp -= 2;
+    }
+    const int sway = wave(elapsed_ms, sway_period, sway_amp);
+    const int bounce = (wave(elapsed_ms, sway_period / 2, bounce_amp, 270) + bounce_amp) / 2;
     lv_obj_set_pos(art.container, made_x(sway), made_home_y(-bounce));
-    const int breath_delta = wave(elapsed_ms, art.breath_period,
-                                  (art.breath_pct - 100) * 256 / 100);
+    // 呼吸：容器整体轻微缩放（单次变换，支点=画布中心）。
+    const int amp = (art.breath_pct - 100) * 256 / 200;
+    lv_obj_set_style_transform_scale(art.container, 256, 0); // BISECT: breath off
+    lv_obj_set_style_transform_pivot_x(art.container, art.pivot_x, 0);
+    lv_obj_set_style_transform_pivot_y(art.container, art.pivot_y, 0);
     for (auto &layer : art.layers) {
         if (!layer.obj || layer.frames.empty()) continue;
         int frame = 0;
@@ -176,12 +300,11 @@ void artUpdate(Parts *parts, uint32_t elapsed_ms, int mood) {
         }
         frame = std::min(std::max(frame, 0), static_cast<int>(layer.frames.size()) - 1);
         lv_image_set_src(layer.obj, &layer.frames[static_cast<size_t>(frame)].dsc);
-        lv_image_set_scale(layer.obj, layer.base_scale + breath_delta);
         lv_obj_set_style_img_opa(layer.obj,
             layer.alert && mood == Mood::kWaitingConfirm
                 ? static_cast<lv_opa_t>(140 + wave(elapsed_ms, 1400, 90)) : LV_OPA_COVER, 0);
     }
-    // 光圈语义与占位形象一致。
+    // 光圈语义：待确认 = accent 脉冲（提醒双击确认/三击取消）；运行中 = 微光常亮。
     if (mood == Mood::kWaitingConfirm)
         lv_obj_set_style_bg_opa(parts->glow, static_cast<lv_opa_t>(120 + wave(elapsed_ms, 1400, 80)), 0);
     else if (mood == Mood::kRunning)
@@ -196,6 +319,10 @@ lv_obj_t *create(lv_obj_t *parent) {
     auto *parts = new (std::nothrow) Parts;
     if (!parts) return nullptr;
     auto *root = lv_obj_create(parent);
+    if (!root) {
+        delete parts;
+        return nullptr;
+    }
     lv_obj_remove_style_all(root);
     lv_obj_set_pos(root, made_s(0), made_s(0));
     lv_obj_set_size(root, made_screen_w(), made_screen_h());
@@ -205,131 +332,22 @@ lv_obj_t *create(lv_obj_t *parent) {
     lv_obj_clear_flag(root, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_set_user_data(root, parts);
     lv_obj_add_event_cb(root, destroy, LV_EVENT_DELETE, parts);
+    parts->root = root;
 
     const auto &palette = vibe_theme::palette();
     // 光圈：平时隐形，待确认/运行中点亮（update() 里驱动脉冲）。
-    parts->glow = shape(root, 58, 40, 244, 244, palette.accent, LV_OPA_TRANSP);
-    // 舞台底盘：比锁屏更占屏，居中略偏上，给底部名字和页码留空间。
-    parts->halo = shape(root, 72, 54, 216, 216, 0x12282B);
-    lv_obj_set_style_bg_grad_color(parts->halo, lv_color_hex(palette.bg_page), 0);
-    lv_obj_set_style_bg_grad_dir(parts->halo, LV_GRAD_DIR_VER, 0);
-    parts->shadow = shape(root, 116, 288, 128, 12, 0x5B846D, 55);
-    parts->left_arm = line(root, 0xABD885, 7);
-    parts->right_arm = line(root, 0xABD885, 7);
-    parts->left_foot = shape(root, 138, 266, 22, 10, kLime);
-    parts->right_foot = shape(root, 196, 266, 22, 10, kLime);
+    // 满屏精灵身后的一整圈光环。
+    parts->glow = shape(root, 18, 4, 324, 324, palette.accent, LV_OPA_TRANSP);
 
-    // 圆形裁切放大豆豆图：136px 锁屏舞台的约 1.6 倍。图片与身体都用屏幕缩放，
-    // 矩形屏上不再裁脸（此前图未乘屏幕缩放，长屏只剩一张放大的脸）。
-    parts->body = shape(root, 100, 62, 160, 160, 0x102629);
-    lv_obj_set_style_clip_corner(parts->body, true, 0);
-    parts->image = lv_image_create(parts->body);
-    passive(parts->image);
-    lv_image_set_src(parts->image, &img_app_vibe);
-    const int show = made_s(172);  // 112px 素材铺到 172 设计像素，超出圆被裁掉
-    parts->image_base_scale = show * LV_SCALE_NONE / 112;
-    lv_image_set_scale(parts->image, parts->image_base_scale);
-    lv_obj_set_pos(parts->image, (made_s(160) - show) / 2, (made_s(160) - show) / 2);
-    lv_image_set_pivot(parts->image, 56, 56);
-    lv_image_set_antialias(parts->image, true);
-
-    // 眼皮：脸部同色圆盘，平时透明，眨眼时短暂盖住眼睛。眼睛中心从素材网格图
-    // 实测：112px 图上左眼 (39,50)、右眼 (68,46)；图片以 172 设计像素铺入
-    // 160 圆（原点 -6、系数 1.536）→ 设计坐标约 (54,71) / (98,65)。
-    constexpr uint32_t kFace = 0xE2F57F;
-    auto makeLid = [&parts](int eye_x, int eye_y) {
-        lv_obj_t *lid = lv_obj_create(parts->body);
-        lv_obj_remove_style_all(lid);
-        passive(lid);
-        lv_obj_set_size(lid, made_s(34), made_s(34));
-        lv_obj_set_pos(lid, made_s(eye_x - 17), made_s(eye_y - 17));
-        lv_obj_set_style_radius(lid, LV_RADIUS_CIRCLE, 0);
-        lv_obj_set_style_bg_color(lid, lv_color_hex(kFace), 0);
-        lv_obj_set_style_bg_opa(lid, LV_OPA_TRANSP, 0);
-        return lid;
-    };
-    parts->lid_left = makeLid(54, 71);
-    parts->lid_right = makeLid(98, 65);
-
-    parts->spark[0] = shape(root, 64, 132, 5, 5, kLime, 160);
-    parts->spark[1] = shape(root, 272, 108, 5, 5, kLime, 190);
-    parts->spark[2] = shape(root, 248, 46, 4, 4, 0x87CEC1, 130);
-
-    update(root, 0, Mood::kIdle);
+    applyBeanArt(parts);
     return root;
 }
 
 void update(lv_obj_t *root, uint32_t elapsed_ms, int mood) {
     if (!root || lv_obj_has_flag(root, LV_OBJ_FLAG_HIDDEN)) return;
     auto *parts = static_cast<Parts *>(lv_obj_get_user_data(root));
-    if (!parts || parts->body == nullptr) return;
-    if (parts->art.active) {
-        artUpdate(parts, elapsed_ms, mood);
-        if (mood != parts->last_mood) {
-            parts->last_mood = mood;
-            lv_obj_invalidate(root);
-        }
-        return;
-    }
-    if (mood == Mood::kOffline) {
-        if (parts->frozen) return;
-        parts->frozen = true;  // 静止在一帧中间姿态
-        elapsed_ms = 900;
-    } else {
-        parts->frozen = false;
-    }
-
-    uint32_t sway_period = 1800, bounce_period = 900, step_period = 1800;
-    int sway_amp = 7, bounce_amp = 8, step_amp = 4, angle_amp = 45;
-    if (mood == Mood::kTalking) {
-        sway_period = 1200; bounce_period = 450; step_period = 1200;
-        sway_amp = 9; bounce_amp = 10; step_amp = 6; angle_amp = 70;
-    } else if (mood == Mood::kRunning) {
-        sway_period = 1300; bounce_period = 600; step_period = 1300;
-        sway_amp = 6; bounce_amp = 6; step_amp = 3; angle_amp = 30;
-    } else if (mood == Mood::kWaitingConfirm) {
-        sway_period = 2200; bounce_period = 700; step_period = 2200;
-        sway_amp = 5; bounce_amp = 5; step_amp = 2; angle_amp = 20;
-    }
-    const int sway = wave(elapsed_ms, sway_period, sway_amp);
-    const int bounce = (wave(elapsed_ms, bounce_period, bounce_amp, 270) + bounce_amp) / 2;
-    const int step = wave(elapsed_ms, step_period, step_amp);
-    lv_obj_set_pos(parts->body, made_x(100 + sway), made_home_y(62 - bounce));
-    const int angle = wave(elapsed_ms, sway_period, angle_amp);
-    lv_image_set_rotation(parts->image, angle < 0 ? angle + 3600 : angle);
-    // 呼吸：整体轻微缩放（±1.6%），与蹦跳的相位错开，待机时也能看出「活着」。
-    const int breath = wave(elapsed_ms, 3200, 4);
-    lv_image_set_scale(parts->image, parts->image_base_scale + breath);
-    // 眨眼：每 ~4.2s 闭一次（约 130ms）；离线冻结时不眨。
-    const bool blink = mood != Mood::kOffline && (elapsed_ms % 4200) < 130;
-    lv_obj_set_style_bg_opa(parts->lid_left, blink ? LV_OPA_COVER : LV_OPA_TRANSP, 0);
-    lv_obj_set_style_bg_opa(parts->lid_right, blink ? LV_OPA_COVER : LV_OPA_TRANSP, 0);
-    lv_obj_set_width(parts->shadow, made_s(128 - bounce * 2));
-    lv_obj_set_x(parts->shadow, made_x(116 + bounce + sway / 2));
-    lv_obj_set_style_bg_opa(parts->shadow, 55 - bounce * 2, 0);
-
-    parts->left_points[0] = {made_x(120 + sway), made_home_y(186 - bounce)};
-    parts->left_points[1] = {made_x(88 + sway), made_home_y(168 - bounce)};
-    parts->left_points[2] = {made_x(74 + sway), made_home_y(132 - step * 2 - bounce)};
-    parts->right_points[0] = {made_x(240 + sway), made_home_y(182 - bounce)};
-    parts->right_points[1] = {made_x(268 + sway), made_home_y(166 - bounce)};
-    parts->right_points[2] = {made_x(282 + sway), made_home_y(134 + step * 2 - bounce)};
-    lv_line_set_points(parts->left_arm, parts->left_points, 3);
-    lv_line_set_points(parts->right_arm, parts->right_points, 3);
-    lv_obj_set_pos(parts->left_foot, made_x(138 + sway - step), made_home_y(266 - std::max(0, step) - bounce / 2));
-    lv_obj_set_pos(parts->right_foot, made_x(196 + sway - step), made_home_y(266 - std::max(0, -step) - bounce / 2));
-    for (int i = 0; i < 3; ++i)
-        lv_obj_set_style_bg_opa(parts->spark[i], 135 + wave(elapsed_ms, 2100, 50, i * 100), 0);
-
-    // 光圈语义：待确认 = accent 脉冲（提醒双击确认/三击取消）；运行中 = 微光常亮；其余隐形。
-    if (mood == Mood::kWaitingConfirm) {
-        const int glow_opa = 120 + wave(elapsed_ms, 1400, 80);
-        lv_obj_set_style_bg_opa(parts->glow, static_cast<lv_opa_t>(glow_opa), 0);
-    } else if (mood == Mood::kRunning) {
-        lv_obj_set_style_bg_opa(parts->glow, static_cast<lv_opa_t>(45), 0);
-    } else {
-        lv_obj_set_style_bg_opa(parts->glow, LV_OPA_TRANSP, 0);
-    }
+    if (!parts || !parts->art.active) return;
+    artUpdate(parts, elapsed_ms, mood);
     if (mood != parts->last_mood) {
         parts->last_mood = mood;
         lv_obj_invalidate(root);
@@ -339,7 +357,7 @@ void update(lv_obj_t *root, uint32_t elapsed_ms, int mood) {
 bool applyArtwork(lv_obj_t *root, const std::string &manifest_json, const std::string &base_dir) {
     if (!root) return false;
     auto *parts = static_cast<Parts *>(lv_obj_get_user_data(root));
-    if (!parts || !parts->body) return false;
+    if (!parts || !parts->root) return false;
     cJSON *manifest = cJSON_Parse(manifest_json.c_str());
     if (!manifest) return false;
     const cJSON *canvas = cJSON_GetObjectItemCaseSensitive(manifest, "canvas");
@@ -352,7 +370,29 @@ bool applyArtwork(lv_obj_t *root, const std::string &manifest_json, const std::s
         return false;
     }
 
-    // 按 z 排序后逐层建对象；全部成功才提交，中途失败整体回滚。
+    MotionSpec motion;
+    motion.canvas_w = canvas_w->valueint;
+    motion.canvas_h = canvas_h->valueint;
+    const cJSON *motion_json = cJSON_GetObjectItemCaseSensitive(manifest, "motion");
+    if (cJSON_IsObject(motion_json)) {
+        const cJSON *breath = cJSON_GetObjectItemCaseSensitive(motion_json, "breath");
+        if (cJSON_IsObject(breath)) {
+            const cJSON *pct = cJSON_GetObjectItemCaseSensitive(breath, "scale_pct");
+            const cJSON *period = cJSON_GetObjectItemCaseSensitive(breath, "period_ms");
+            if (cJSON_IsNumber(pct) && pct->valueint >= 100 && pct->valueint <= 120)
+                motion.breath_pct = pct->valueint;
+            if (cJSON_IsNumber(period) && period->valueint >= 500 && period->valueint <= 10000)
+                motion.breath_period = static_cast<uint32_t>(period->valueint);
+        }
+        const cJSON *sway_deg = cJSON_GetObjectItemCaseSensitive(motion_json, "sway_deg");
+        if (cJSON_IsNumber(sway_deg) && sway_deg->valueint >= 0 && sway_deg->valueint <= 15)
+            motion.sway_amp = 2 + sway_deg->valueint;
+        const cJSON *sway_period = cJSON_GetObjectItemCaseSensitive(motion_json, "sway_period_ms");
+        if (cJSON_IsNumber(sway_period) && sway_period->valueint >= 200 && sway_period->valueint <= 10000)
+            motion.sway_period = static_cast<uint32_t>(sway_period->valueint);
+    }
+
+    // 按 z 排序后逐层建规格；素材在 LVGL 线程解码（数百毫秒级，一次性）。
     struct Pending {
         const cJSON *json;
         int z;
@@ -366,33 +406,7 @@ bool applyArtwork(lv_obj_t *root, const std::string &manifest_json, const std::s
     std::stable_sort(pending.begin(), pending.end(),
                      [](const Pending &a, const Pending &b) { return a.z < b.z; });
 
-    Parts::Art next;
-    auto *container = lv_obj_create(root);
-    lv_obj_remove_style_all(container);
-    passive(container);
-    lv_obj_set_pos(container, 0, 0);
-    lv_obj_set_size(container, made_screen_w(), made_screen_h());
-
-    // 整体动效参数：manifest 缺省时用固件默认值（呼吸 3% / 3000ms，摆 7px / 1800ms）。
-    const cJSON *motion = cJSON_GetObjectItemCaseSensitive(manifest, "motion");
-    if (cJSON_IsObject(motion)) {
-        const cJSON *breath = cJSON_GetObjectItemCaseSensitive(motion, "breath");
-        if (cJSON_IsObject(breath)) {
-            const cJSON *pct = cJSON_GetObjectItemCaseSensitive(breath, "scale_pct");
-            const cJSON *period = cJSON_GetObjectItemCaseSensitive(breath, "period_ms");
-            if (cJSON_IsNumber(pct) && pct->valueint >= 100 && pct->valueint <= 120)
-                next.breath_pct = pct->valueint;
-            if (cJSON_IsNumber(period) && period->valueint >= 500 && period->valueint <= 10000)
-                next.breath_period = static_cast<uint32_t>(period->valueint);
-        }
-        const cJSON *sway_deg = cJSON_GetObjectItemCaseSensitive(motion, "sway_deg");
-        if (cJSON_IsNumber(sway_deg) && sway_deg->valueint >= 0 && sway_deg->valueint <= 15)
-            next.sway_amp = 2 + sway_deg->valueint;
-        const cJSON *sway_period = cJSON_GetObjectItemCaseSensitive(motion, "sway_period_ms");
-        if (cJSON_IsNumber(sway_period) && sway_period->valueint >= 200 && sway_period->valueint <= 10000)
-            next.sway_period = static_cast<uint32_t>(sway_period->valueint);
-    }
-
+    std::vector<LayerSpec> specs;
     for (const auto &entry : pending) {
         const cJSON *layer = entry.json;
         std::vector<std::string> files;
@@ -404,18 +418,18 @@ bool applyArtwork(lv_obj_t *root, const std::string &manifest_json, const std::s
             const cJSON *file = cJSON_GetObjectItemCaseSensitive(layer, "file");
             if (cJSON_IsString(file) && file->valuestring) files.push_back(file->valuestring);
         }
-        Parts::ArtLayer art_layer;
+        LayerSpec spec;
         const cJSON *blink = cJSON_GetObjectItemCaseSensitive(layer, "blink");
         if (cJSON_IsObject(blink)) {
             const cJSON *period = cJSON_GetObjectItemCaseSensitive(blink, "period_ms");
             const cJSON *closed = cJSON_GetObjectItemCaseSensitive(blink, "closed_ms");
-            if (cJSON_IsNumber(period)) art_layer.blink_period = static_cast<uint32_t>(period->valueint);
-            if (cJSON_IsNumber(closed)) art_layer.blink_closed = static_cast<uint32_t>(closed->valueint);
-            art_layer.blink = true;
+            if (cJSON_IsNumber(period)) spec.blink_period = static_cast<uint32_t>(period->valueint);
+            if (cJSON_IsNumber(closed)) spec.blink_closed = static_cast<uint32_t>(closed->valueint);
+            spec.blink = true;
         }
-        art_layer.talk = cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(layer, "talk"));
+        spec.talk = cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(layer, "talk"));
         const cJSON *alert = cJSON_GetObjectItemCaseSensitive(layer, "alert");
-        art_layer.alert = cJSON_IsString(alert) && std::strcmp(alert->valuestring, "pulse") == 0;
+        spec.alert = cJSON_IsString(alert) && std::strcmp(alert->valuestring, "pulse") == 0;
 
         const cJSON *x = cJSON_GetObjectItemCaseSensitive(layer, "x");
         const cJSON *y = cJSON_GetObjectItemCaseSensitive(layer, "y");
@@ -429,7 +443,7 @@ bool applyArtwork(lv_obj_t *root, const std::string &manifest_json, const std::s
             int width = 0, height = 0;
             auto *pixels = decodePngArgb(base_dir + name, width, height);
             if (!pixels) goto fail;
-            Parts::Frame frame;
+            Frame frame;
             frame.pixels = pixels;
             frame.dsc.header.magic = LV_IMAGE_HEADER_MAGIC;
             frame.dsc.header.cf = LV_COLOR_FORMAT_ARGB8888;
@@ -438,47 +452,22 @@ bool applyArtwork(lv_obj_t *root, const std::string &manifest_json, const std::s
             frame.dsc.header.stride = static_cast<uint32_t>(width) * 4;
             frame.dsc.data_size = static_cast<size_t>(width) * height * 4;
             frame.dsc.data = pixels;
-            art_layer.frames.push_back(frame);
+            spec.frames.push_back(frame);
         }
-        if (art_layer.frames.empty() || !cJSON_IsNumber(x) || !cJSON_IsNumber(y)) goto fail;
-
-        {
-            auto *object = lv_image_create(container);
-            passive(object);
-            lv_image_set_src(object, &art_layer.frames.front().dsc);
-            lv_obj_set_pos(object, made_x(x->valueint), made_home_y(y->valueint));
-            art_layer.base_scale = made_lv_scale();
-            lv_image_set_scale(object, art_layer.base_scale);
-            lv_image_set_antialias(object, true);
-            // 缩放支点对齐画布中心：所有层围绕同一点呼吸。
-            lv_image_set_pivot(object,
-                std::clamp(canvas_w->valueint / 2 - x->valueint, 0,
-                           static_cast<int>(art_layer.frames.front().dsc.header.w)),
-                std::clamp(canvas_h->valueint / 2 - y->valueint, 0,
-                           static_cast<int>(art_layer.frames.front().dsc.header.h)));
-            art_layer.obj = object;
-        }
-        next.layers.push_back(std::move(art_layer));
+        if (spec.frames.empty() || !cJSON_IsNumber(x) || !cJSON_IsNumber(y)) goto fail;
+        spec.x = x->valueint;
+        spec.y = y->valueint;
+        specs.push_back(std::move(spec));
     }
-    if (next.layers.empty()) goto fail;
 
-    // 提交：删旧容器（占位形象恢复可见性被隐藏覆盖），换上新素材。
-    if (parts->art.container) lv_obj_delete(parts->art.container);
-    parts->art.container = next.container;
-    parts->art.layers = std::move(next.layers);
-    parts->art.breath_period = next.breath_period;
-    parts->art.breath_pct = next.breath_pct;
-    parts->art.sway_period = next.sway_period;
-    parts->art.sway_amp = next.sway_amp;
-    parts->art.bounce_amp = next.bounce_amp;
-    parts->art.active = true;
-    setMascotHidden(parts, true);
-    cJSON_Delete(manifest);
-    lv_obj_invalidate(root);
-    return true;
-
+    if (commitArt(parts, motion, std::move(specs), false)) {
+        cJSON_Delete(manifest);
+        lv_obj_invalidate(root);
+        return true;
+    }
 fail:
-    lv_obj_delete(container);
+    // commitArt 半途失败时已回滚 own frames；这里只需清理未提交的规格。
+    for (auto &spec : specs) freeFrames(spec.frames);
     cJSON_Delete(manifest);
     return false;
 }
@@ -486,19 +475,35 @@ fail:
 void clearArtwork(lv_obj_t *root) {
     if (!root) return;
     auto *parts = static_cast<Parts *>(lv_obj_get_user_data(root));
-    if (!parts || !parts->art.active) return;
+    if (!parts || !parts->art.active || parts->builtin) return;
     if (parts->art.container) lv_obj_delete(parts->art.container);
     parts->art.container = nullptr;
+    for (auto &layer : parts->art.layers) freeFrames(layer.frames);
     parts->art.layers.clear();
     parts->art.active = false;
-    setMascotHidden(parts, false);
-    lv_obj_invalidate(root);
+    applyBeanArt(parts);        // 回到内置绿豆（同一条管线）
 }
 
 bool artworkActive(lv_obj_t *root) {
     if (!root) return false;
     auto *parts = static_cast<Parts *>(lv_obj_get_user_data(root));
-    return parts && parts->art.active;
+    return parts && parts->art.active && !parts->builtin;
+}
+
+void setTint(lv_obj_t *root, uint32_t color) {
+    if (!root) return;
+    auto *parts = static_cast<Parts *>(lv_obj_get_user_data(root));
+    if (!parts || !parts->builtin || !parts->art.active) return;
+    for (auto &layer : parts->art.layers) {
+        if (!layer.obj) continue;
+        if (color == 0) {
+            lv_obj_set_style_img_recolor_opa(layer.obj, LV_OPA_TRANSP, 0);
+        } else {
+            lv_obj_set_style_img_recolor(layer.obj, lv_color_hex(color), 0);
+            lv_obj_set_style_img_recolor_opa(layer.obj, LV_OPA_60, 0);
+        }
+    }
+    lv_obj_invalidate(root);
 }
 
 } // namespace made_sprite

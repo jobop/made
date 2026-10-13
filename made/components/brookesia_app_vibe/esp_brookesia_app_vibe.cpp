@@ -318,6 +318,11 @@ bool VibeCoding::run()
     last_session_swipe_ms_ = 0;
     drawn_revision_ = UINT32_MAX;
     showing_pairing_layout_ = false;
+    // 开机直达助手页：上次运行的浮层状态全部归零，不能带进新的一次 run()。
+    settings_open_ = false;
+    drawer_open_ = false;
+    delete_dialog_open_ = false;
+    pairing_drawer_auto_ = false;
 
     localized_labels.clear();
     last_locale_revision_ = UINT32_MAX;
@@ -338,26 +343,7 @@ bool VibeCoding::run()
 
     // Artwork arrives with the authorized bridge catalog. Only the selected
     // image is expanded; the other entries retain their bounded packed pixels.
-    // 顶部的助手图标徽章：精灵旁唯一保留的助手标识。
-    animal_halo_ = lv_obj_create(screen);
-    lv_obj_set_pos(animal_halo_, made_x(156), made_home_y(14));
-    lv_obj_set_size(animal_halo_, made_s(48), made_s(48));
-    lv_obj_set_style_bg_color(animal_halo_, lv_color_hex(0x263B59), 0);
-    lv_obj_set_style_border_width(animal_halo_, 1, 0);
-    lv_obj_set_style_radius(animal_halo_, 24, 0);
-    lv_obj_set_style_pad_all(animal_halo_, 0, 0);
-    lv_obj_clear_flag(animal_halo_, LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_clear_flag(animal_halo_, LV_OBJ_FLAG_SCROLLABLE);
-    provider_image_ = lv_image_create(animal_halo_);
-    lv_obj_clear_flag(provider_image_, LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_add_flag(provider_image_, LV_OBJ_FLAG_HIDDEN);
-    icon_placeholder_ = lv_label_create(animal_halo_);
-    lv_label_set_text(icon_placeholder_, "?");
-    lv_obj_set_style_text_font(icon_placeholder_, &lv_font_montserrat_26, 0);
-    lv_obj_set_style_text_color(icon_placeholder_, lv_color_hex(VT(text_hint)), 0);
-    lv_obj_center(icon_placeholder_);
-    lv_obj_add_flag(animal_halo_, LV_OBJ_FLAG_HIDDEN);
-    rendered_icon_ = {};
+    // 顶部的助手头像徽章已撤掉：绿豆本身就是助手本体，切助手时换豆色。
     rendered_catalog_ready_ = false;
 
     page_label_ = lv_label_create(screen);
@@ -896,8 +882,8 @@ bool VibeCoding::run()
     lv_obj_clear_flag(drawer_grip_, LV_OBJ_FLAG_CLICKABLE);
     drawer_hint_ = lv_label_create(drawer_);
     lv_label_set_text(drawer_hint_, T("下拉收起 · 上下滑切任务"));
-    lv_obj_set_pos(drawer_hint_, made_x(60), made_y(18));
-    lv_obj_set_width(drawer_hint_, made_s(240));
+    lv_obj_set_pos(drawer_hint_, made_x(24), made_y(18));
+    lv_obj_set_width(drawer_hint_, made_s(312));
     lv_obj_set_style_text_align(drawer_hint_, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_set_style_text_color(drawer_hint_, lv_color_hex(VT(text_hint)), 0);
     lv_obj_set_style_text_font(drawer_hint_, text_font, 0);
@@ -905,20 +891,21 @@ bool VibeCoding::run()
 
     // 把平铺在主页的任务/回显/会话/设置控件整体搬进抽屉，重排为抽屉版式。
     // 纵向用 made_page_y 全高映射：矩形竖屏上内容铺满屏，不再挤在上半截。
+    // 行距按「提示语可换两行」预留，避免换行后压到下一行（行序：提示/位置/回显）。
     lv_obj_set_parent(instruction_label_, drawer_);
-    lv_obj_set_pos(instruction_label_, made_x(24), made_page_y(42));
+    lv_obj_set_pos(instruction_label_, made_x(24), made_page_y(40));
     lv_obj_set_width(instruction_label_, made_s(312));
     lv_obj_set_parent(position_label_, drawer_);
-    lv_obj_set_pos(position_label_, made_x(24), made_page_y(68));
+    lv_obj_set_pos(position_label_, made_x(24), made_page_y(78));
     lv_obj_set_width(position_label_, made_s(312));
     lv_obj_set_parent(session_title_tap_, drawer_);
-    lv_obj_set_pos(session_title_tap_, made_x(24), made_page_y(64));
+    lv_obj_set_pos(session_title_tap_, made_x(24), made_page_y(75));
     lv_obj_set_size(session_title_tap_, made_s(312), made_s(30));
     lv_obj_set_parent(answer_area_, drawer_);
-    lv_obj_set_pos(answer_area_, made_x(24), made_page_y(100));
-    lv_obj_set_size(answer_area_, made_s(312), made_page_h(158));
+    lv_obj_set_pos(answer_area_, made_x(24), made_page_y(108));
+    lv_obj_set_size(answer_area_, made_s(312), made_page_y(256) - made_page_y(108));
     lv_obj_set_parent(meta_label_, drawer_);
-    lv_obj_set_pos(meta_label_, made_x(30), made_page_y(262));
+    lv_obj_set_pos(meta_label_, made_x(30), made_page_y(256));
     lv_obj_set_width(meta_label_, made_s(300));
     lv_obj_set_parent(new_session_button_, drawer_);
     lv_obj_set_pos(new_session_button_, made_x(270), made_page_y(296));
@@ -1087,12 +1074,6 @@ bool VibeCoding::close()
     power_off_overlay_ = nullptr;
     provider_label_ = nullptr;
     session_title_tap_ = nullptr;
-    animal_halo_ = nullptr;
-    provider_image_ = nullptr;
-    icon_placeholder_ = nullptr;
-    lv_image_cache_drop(&provider_image_descriptor_);
-    provider_image_descriptor_ = {};
-    rendered_icon_ = {};
     rendered_catalog_ready_ = false;
     page_label_ = nullptr;
     new_session_button_ = nullptr;
@@ -1969,6 +1950,9 @@ void VibeCoding::renderThemes()
         // 按钮刚创建还没布局，lv_obj_get_width 会读到 0，字会整行消失；
         // 宽度直接用设计值：按钮 248，两侧各留 8。
         lv_obj_set_width(name, made_s(232));
+        // 固定一行高：DOT 截断只在文字高度超过标签高度时生效，
+        // 高度自适应会让长主题名换行溢出按钮。
+        lv_obj_set_height(name, lv_font_get_line_height(text_font));
         lv_obj_set_style_text_align(name, LV_TEXT_ALIGN_CENTER, 0);
         lv_obj_align(name, LV_ALIGN_CENTER, 0, 0);
         lv_obj_remove_flag(name, LV_OBJ_FLAG_CLICKABLE);
@@ -1994,6 +1978,7 @@ void VibeCoding::renderThemes()
         lv_obj_set_style_text_font(name, text_font, 0);
         lv_label_set_long_mode(name, LV_LABEL_LONG_DOT);
         lv_obj_set_width(name, made_s(232));
+        lv_obj_set_height(name, lv_font_get_line_height(text_font));
         lv_obj_set_style_text_align(name, LV_TEXT_ALIGN_CENTER, 0);
         lv_obj_align(name, LV_ALIGN_CENTER, 0, 0);
         lv_obj_remove_flag(name, LV_OBJ_FLAG_CLICKABLE);
@@ -3201,12 +3186,13 @@ void VibeCoding::render()
     const std::string page_number = std::to_string(provider_count ? provider_index + 1 : 0) + " / " + std::to_string(provider_count);
     lv_label_set_text(page_label_, page_number.c_str());
     if (catalog_ready && provider_count) {
-        lv_obj_remove_flag(animal_halo_, LV_OBJ_FLAG_HIDDEN);
         lv_obj_remove_flag(page_label_, LV_OBJ_FLAG_HIDDEN);
-        showProviderIcon(provider.icon);
+        // 滑动切换的就是绿豆本身：每个助手一种豆色（0 = 默认绿）。
+        static constexpr uint32_t kBeanTints[] = {0, 0x5AB8FF, 0xFFAE5A, 0xC79BFF, 0xFF8FB8};
+        made_sprite::setTint(sprite_stage_, kBeanTints[provider_index % 5]);
     } else {
-        lv_obj_add_flag(animal_halo_, LV_OBJ_FLAG_HIDDEN);
         lv_obj_add_flag(page_label_, LV_OBJ_FLAG_HIDDEN);
+        made_sprite::setTint(sprite_stage_, 0);
         lv_obj_add_flag(new_session_button_, LV_OBJ_FLAG_HIDDEN);
         lv_obj_add_flag(delete_session_button_, LV_OBJ_FLAG_HIDDEN);
         lv_obj_set_style_text_font(provider_label_, text_font, 0);
@@ -3219,7 +3205,11 @@ void VibeCoding::render()
         lv_obj_add_flag(delete_session_button_, LV_OBJ_FLAG_HIDDEN);
         displayed_task_id_.clear();
         // 配对码显示在抽屉里：未配对期间保持抽屉拉开，用户随时能看到六位码。
-        if (!drawer_open_.load()) showDrawer(true);
+        // 记住是这里自动拉开的，配对完成后自动收囘，开机不拐进抽屉。
+        if (!drawer_open_.load()) {
+            showDrawer(true);
+            pairing_drawer_auto_ = true;
+        }
         if (!showing_pairing_layout_) {
             lv_obj_remove_flag(meta_label_, LV_OBJ_FLAG_HIDDEN);
             lv_obj_set_pos(answer_area_, made_x(24), made_page_y(196));
@@ -3231,9 +3221,16 @@ void VibeCoding::render()
         const std::string target = pairing.url.empty() ? std::string() :
             pairing.url.substr(scheme == std::string::npos ? 0 : scheme + 3);
         const bool usb_direct = pairing.access_mode == vibe_pairing::AccessMode::UsbDirect;
+        // 位置行只在有独立信息时出现（USB 直连 / 已定目标）；否则与下面
+        // 的引导行重复成两行「正在查找电脑」（实机截图 bug）。
         const std::string computer = usb_direct ? T("USB 直连电脑") :
-            target.empty() ? T("正在查找电脑") : T("目标 ") + target;
-        lv_label_set_text(position_label_, computer.c_str());
+            target.empty() ? std::string() : T("目标 ") + target;
+        if (computer.empty()) {
+            lv_obj_add_flag(position_label_, LV_OBJ_FLAG_HIDDEN);
+        } else {
+            lv_obj_remove_flag(position_label_, LV_OBJ_FLAG_HIDDEN);
+            lv_label_set_text(position_label_, computer.c_str());
+        }
         lv_label_set_text(instruction_label_, pairing.phase == vibe_pairing::Phase::WaitingApproval ?
                           T("六位配对码") : T("正在查找电脑"));
         lv_label_set_text(meta_label_, pairing.code.empty() ? "------" : pairing.code.c_str());
@@ -3253,9 +3250,15 @@ void VibeCoding::render()
         return;
     }
 
+    if (pairing_drawer_auto_ && drawer_open_.load()) {
+        pairing_drawer_auto_ = false;
+        showDrawer(false);
+    }
     if (catalog_ready && provider_count) lv_obj_remove_flag(new_session_button_, LV_OBJ_FLAG_HIDDEN);
     if (showing_pairing_layout_) {
         lv_obj_add_flag(meta_label_, LV_OBJ_FLAG_HIDDEN);
+        // 配对期间位置行可能被隐藏（避免与引导行重复），恢复会话头显示。
+        lv_obj_remove_flag(position_label_, LV_OBJ_FLAG_HIDDEN);
         lv_obj_set_pos(answer_area_, made_x(24), made_page_y(100));
         lv_obj_set_size(answer_area_, made_s(312), made_page_h(158));
         lv_obj_set_style_text_align(result_label_, LV_TEXT_ALIGN_LEFT, 0);
@@ -3267,6 +3270,8 @@ void VibeCoding::render()
         rendered_session_id_.clear();
         lv_label_set_text(position_label_, catalog_ready ? T("暂无助手") : T("读取助手列表"));
         lv_label_set_text(instruction_label_, catalog_ready ? T("请在电脑端添加助手插件") : T("正在读取电脑设置"));
+        // 状态类短文案与上方居中的标题行同排版，避免「贴左孤行」的观感。
+        lv_obj_set_style_text_align(result_label_, LV_TEXT_ALIGN_CENTER, 0);
         showAnswer("catalog", !snapshot.connection_error.empty() ? own_error :
             catalog_ready ? T("助手名称和图标将由电脑下发。") : T("连接成功后会自动显示可用助手。"));
         {
@@ -3299,6 +3304,7 @@ void VibeCoding::render()
         displayed_task_id_.clear();
         lv_label_set_text(position_label_, T("暂无任务"));
         lv_label_set_text(instruction_label_, !snapshot.session_notice.empty() ? own_session_notice.c_str() : T("上滑拉出抽屉，点 + 创建任务"));
+        lv_obj_set_style_text_align(result_label_, LV_TEXT_ALIGN_CENTER, 0);
         const std::string empty_message = !snapshot.connection_error.empty() ? own_error :
             !snapshot.session_notice.empty() ? own_session_notice :
             !provider_ready ? (provider.reason.empty() ? T("请先在电脑端启用此助手") : provider.reason) :
@@ -3317,6 +3323,8 @@ void VibeCoding::render()
         std::to_string(snapshot.sessions.size()) + " · " +
         (selected_session->title.empty() ? T("未命名任务") : selected_session->title);
     lv_label_set_text(position_label_, session_header.c_str());
+    // 任务回显是长文，恢复左对齐（catalog/空会话状态曾切成居中）。
+    lv_obj_set_style_text_align(result_label_, LV_TEXT_ALIGN_LEFT, 0);
     ui_stage_.store(20);
 
     if (voice_for_selected_session && voice.phase == vibe_voice::Phase::Submitted && !voice.task_id.empty() &&
@@ -3565,37 +3573,6 @@ void VibeCoding::invalidateCatalog(bool clear)
     ++model_.revision;
 }
 
-// Called only by render() on the LVGL task. Network workers keep packed pixels
-// in the catalog and never touch LVGL objects, descriptors or this pixel buffer.
-void VibeCoding::showProviderIcon(const vibe_provider::Icon &icon)
-{
-    if (icon == rendered_icon_) return;
-    lv_obj_invalidate(provider_image_);
-    lv_image_cache_drop(&provider_image_descriptor_);
-    rendered_icon_ = icon;
-    lv_obj_set_style_bg_color(animal_halo_, lv_color_hex(icon.background), 0);
-    lv_obj_set_style_border_color(animal_halo_, lv_color_hex(icon.accent), 0);
-    if (!vibe_provider::decodeIconCanvasBgra(icon, provider_image_pixels_.data(), provider_image_pixels_.size())) {
-        lv_obj_add_flag(provider_image_, LV_OBJ_FLAG_HIDDEN);
-        lv_obj_remove_flag(icon_placeholder_, LV_OBJ_FLAG_HIDDEN);
-        return;
-    }
-    provider_image_descriptor_ = {};
-    provider_image_descriptor_.header.magic = LV_IMAGE_HEADER_MAGIC;
-    provider_image_descriptor_.header.cf = LV_COLOR_FORMAT_ARGB8888;
-    provider_image_descriptor_.header.w = vibe_provider::MAX_ICON_SIDE;
-    provider_image_descriptor_.header.h = vibe_provider::MAX_ICON_SIDE;
-    provider_image_descriptor_.header.stride = vibe_provider::MAX_ICON_SIDE * 4;
-    provider_image_descriptor_.data_size = provider_image_pixels_.size();
-    provider_image_descriptor_.data = provider_image_pixels_.data();
-    lv_image_set_src(provider_image_, &provider_image_descriptor_);
-    lv_image_set_scale(provider_image_, 44 * LV_SCALE_NONE / vibe_provider::MAX_ICON_SIDE);
-    lv_obj_center(provider_image_);
-    lv_obj_remove_flag(provider_image_, LV_OBJ_FLAG_HIDDEN);
-    lv_obj_add_flag(icon_placeholder_, LV_OBJ_FLAG_HIDDEN);
-    lv_obj_invalidate(provider_image_);
-}
-
 // 形象素材下载（worker 线程）。目标与最近一次尝试一致且成功过就不再动网络；
 // 待确认任务在屏上等 BOOT 时也跳过，避免分片下载拖慢确认链路。
 void VibeCoding::syncArtwork()
@@ -3743,6 +3720,9 @@ void VibeCoding::refreshConfig()
         board_events_ = std::move(board_events);
         if (can_voice) model_.voice_hint.clear();
         voice_available_.store(can_voice);
+        // 桥接器重启会丢掉命令清单：config 里带 announce 标志时重新上报。
+        if (cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(root, "announce")))
+            board_catalog_sent_ = false;
         config_loaded_.store(true);
         ++model_.revision;
     }
