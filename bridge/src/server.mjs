@@ -838,6 +838,8 @@ export function createApp(config, { run, transcribe, tunnel: providedTunnel, ena
           defaultProject: config.defaultProject,
           voice: { mode: voice.mode, available: voice.available },
           board: { events: boardLink.subscription(pairing.deviceIdForToken(token), config.pluginsRuntime, config) },
+          // 桥接器重启会丢掉板侧命令清单：让板子看到 announce 后重新上报。
+          announce: !boardLink.hasCatalog(pairing.deviceIdForToken(token)),
         };
         if (Buffer.byteLength(JSON.stringify(payload)) > 32 * 1024) throw new Error('码得配置超过 32 KB，请检查助手元数据');
         deviceSend(res, 200, payload);

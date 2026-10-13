@@ -182,6 +182,9 @@ export function createBoardLink() {
     deviceIds() {
       return [...catalogs.keys()];
     },
+    hasCatalog(deviceId) {
+      return catalogs.has(deviceId);
+    },
     connect(deviceId, runtime, config, bridge) {
       if (!runtime?.boardPlugins) return;
       for (const plugin of runtime.boardPlugins()) {
