@@ -2,11 +2,14 @@
 #include "made_sprite_cache.hpp"
 
 #include <algorithm>
+#include <cerrno>
+#include <cstring>
 #include <dirent.h>
 #include <stdio.h>
 #include <unistd.h>
 
 #include <cJSON.h>
+#include <esp_log.h>
 #include <mbedtls/sha256.h>
 
 #include <vector>
@@ -14,20 +17,28 @@
 namespace made_sprite_cache {
 namespace {
 
+constexpr const char *kTag = "made_sprite";
 constexpr const char *kMount = "/spiffs";
 constexpr size_t kChunkBytes = 192 * 1024;   // 单请求上限，兼容 USB 帧转发 256KB
 constexpr size_t kResponseLimit = 200 * 1024;
 
+// SPIFFS 的对象名长度上限是 SPIFFS_OBJ_NAME_LEN-1 = 31 字节，且算的是
+// VFS 交给 SPIFFS_open 的整串（含前导 '/'）。缓存名 = '/' + 前缀 + 文件名 + 临时后缀，
+// 而合同允许的文件名最长 20 字节（docs/SPRITES.md），所以前缀必须 ≤ 31-1-20-1 = 9。
+// 这里取 8：'s' + 6 位哈希 + '_'。哈希只用于命名，不承担安全语义。
+constexpr const char *kTempSuffix = "~";
+constexpr size_t kObjectNameLimit = 31;
+
 std::string prefixFor(const std::string &provider)
 {
-    // FNV-1a 32bit → 8 位十六进制。只用于命名，不承担安全语义。
+    // FNV-1a 32bit → 6 位十六进制。
     uint32_t hash = 2166136261u;
     for (const char c : provider) {
         hash ^= static_cast<uint8_t>(c);
         hash *= 16777619u;
     }
-    char text[14];
-    snprintf(text, sizeof(text), "sp_%08x_", static_cast<unsigned>(hash));
+    char text[12];
+    snprintf(text, sizeof(text), "s%06x_", static_cast<unsigned>(hash) & 0xffffffu);
     return text;
 }
 
@@ -47,12 +58,39 @@ std::string sha256Hex(const std::string &data)
 
 bool writeAtomic(const std::string &path, const std::string &data)
 {
-    const std::string temporary = path + ".tmp";
+    // VFS 交给 SPIFFS_open 的是「去掉挂载点、保留前导 '/'」的路径，长度限制算的是它。
+    const std::string relative = path.substr(std::strlen(kMount));
+    const std::string temporary = path + kTempSuffix;
+    // 名字超限是 SPIFFS 最沉默的一类失败：open 直接拿不到句柄。提前判掉并留痕。
+    if (relative.size() + 1 > kObjectNameLimit) {
+        ESP_LOGE(kTag, "[sprite] write_name_too_long object_len=%u limit=%u name='%s'",
+            static_cast<unsigned>(relative.size() + 1), static_cast<unsigned>(kObjectNameLimit),
+            relative.c_str());
+        return false;
+    }
+    errno = 0;
     FILE *file = fopen(temporary.c_str(), "wb");
-    if (!file) return false;
-    const bool ok = fwrite(data.data(), 1, data.size(), file) == data.size();
+    if (!file) {
+        ESP_LOGE(kTag, "[sprite] write_open_failed errno=%d(%s) name='%s'",
+            errno, std::strerror(errno), temporary.c_str());
+        return false;
+    }
+    errno = 0;
+    const size_t written = fwrite(data.data(), 1, data.size(), file);
     fclose(file);
-    if (!ok || rename(temporary.c_str(), path.c_str()) != 0) {
+    if (written != data.size()) {
+        ESP_LOGE(kTag, "[sprite] write_short wrote=%u want=%u errno=%d(%s)",
+            static_cast<unsigned>(written), static_cast<unsigned>(data.size()),
+            errno, std::strerror(errno));
+        unlink(temporary.c_str());
+        return false;
+    }
+    errno = 0;
+    // SPIFFS 的 rename 不覆盖已存在的目标（否则 EIO），先摘掉旧文件再改名。
+    unlink(path.c_str());
+    if (rename(temporary.c_str(), path.c_str()) != 0) {
+        ESP_LOGE(kTag, "[sprite] write_rename_failed errno=%d(%s) from='%s' to='%s'",
+            errno, std::strerror(errno), temporary.c_str(), path.c_str());
         unlink(temporary.c_str());
         return false;
     }
@@ -155,13 +193,26 @@ bool ensure(const std::string &provider, const vibe_provider::SpriteInfo &sprite
             snprintf(query, sizeof(query), "?offset=%u&len=%u",
                      static_cast<unsigned>(data.size()), static_cast<unsigned>(kChunkBytes));
             if (!fetch(fileAsPath(provider, file.file) + query, chunk, status) || status != 200) {
+                ESP_LOGE(kTag, "[sprite] fetch_failed file=%s offset=%u status=%d",
+                    file.file.c_str(), static_cast<unsigned>(data.size()), status);
                 return false;
             }
             if (chunk.empty()) break; // 服务端明确返回空：offset 已到文件尾
             data += chunk;
         }
-        if (data.size() != file.bytes || sha256Hex(data) != file.sha256) return false;
-        if (!writeAtomic(target, data)) return false;
+        if (data.size() != file.bytes || sha256Hex(data) != file.sha256) {
+            ESP_LOGE(kTag, "[sprite] verify_failed file=%s want=%u/%s got=%u/%s",
+                file.file.c_str(), static_cast<unsigned>(file.bytes), file.sha256.c_str(),
+                static_cast<unsigned>(data.size()), sha256Hex(data).c_str());
+            return false;
+        }
+        if (!writeAtomic(target, data)) {
+            ESP_LOGE(kTag, "[sprite] write_failed file=%s bytes=%u path=%s",
+                file.file.c_str(), static_cast<unsigned>(data.size()), target.c_str());
+            return false;
+        }
+        ESP_LOGI(kTag, "[sprite] stored file=%s bytes=%u", file.file.c_str(),
+            static_cast<unsigned>(data.size()));
         downloaded.push_back(prefix + file.file);
     }
 
@@ -170,6 +221,8 @@ bool ensure(const std::string &provider, const vibe_provider::SpriteInfo &sprite
     int status = 0;
     if (!fetch(fileAsPath(provider, "manifest.json"), manifest, status) || status != 200 ||
         manifest.empty() || manifest.size() > 20 * 1024) {
+        ESP_LOGE(kTag, "[sprite] manifest_fetch_failed status=%d bytes=%u", status,
+            static_cast<unsigned>(manifest.size()));
         return false;
     }
     bool version_ok = false;
@@ -179,7 +232,11 @@ bool ensure(const std::string &provider, const vibe_provider::SpriteInfo &sprite
             static_cast<uint32_t>(version->valueint) == sprite.version;
         cJSON_Delete(root);
     }
-    if (!version_ok || !writeAtomic(manifest_path, manifest)) return false;
+    if (!version_ok || !writeAtomic(manifest_path, manifest)) {
+        ESP_LOGE(kTag, "[sprite] manifest_rejected version_ok=%d bytes=%u",
+            version_ok ? 1 : 0, static_cast<unsigned>(manifest.size()));
+        return false;
+    }
     downloaded.push_back(prefix + "manifest.json");
     purgeExcept(prefix, downloaded);
     return true;

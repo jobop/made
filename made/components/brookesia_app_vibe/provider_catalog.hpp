@@ -60,7 +60,8 @@ inline SpriteInfo parseSprite(const cJSON *sprite)
         const auto file = text(entry, "file");
         const auto *bytes = cJSON_GetObjectItemCaseSensitive(entry, "bytes");
         const auto sha = text(entry, "sha256");
-        // 文件名在 SPIFFS 平铺缓存里拼在 "sp_<hash8>_" 前后，必须收得很紧。
+        // 文件名在 SPIFFS 平铺缓存里拼在 "s<hash6>_" 之后、临时后缀 "~" 之前，
+        // 而 SPIFFS 对象名（含前导 '/'）只有 31 字节预算，必须收得很紧。
         if (file.size() < 5 || file.size() > 20 || file.rfind(".png") != file.size() - 4 ||
             file.find_first_not_of("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-.") != std::string::npos ||
             sha.size() != 64 || !cJSON_IsNumber(bytes) || bytes->valueint <= 0) continue;

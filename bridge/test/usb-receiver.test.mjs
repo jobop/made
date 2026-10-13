@@ -376,11 +376,26 @@ test('丢弃超长帧、未握手帧和断线时未完成的请求', async () =>
   f.protocol.feed(frame(HELLO));
   f.protocol.feed(frame({ type: 'request', id: 2, method: 'POST',
     path: '/device/voice', authorization: '', contentType: 'audio/wav', length: 1024 }));
-  f.protocol.feed(Buffer.from('x'.repeat(2100)));
+  // 看着像帧（'{' 开头）的超长行仍是协议错误。
+  f.protocol.feed(Buffer.from(`{${'x'.repeat(2100)}`));
   f.protocol.feed(Buffer.from('\n'));
   assert.equal((await response(f)).first.status, 400);
   assert.equal(f.calls(), 0);
   f.protocol.dispose();
+
+  // 固件控制台日志和协议帧共用 USB 流：日志行（含超长行）必须原样放行，
+  // 不能掐掉正在传输的请求。
+  const logs = fixture(async () => ({ status: 200, contentType: 'application/json',
+    body: Buffer.from('{"ok":true}') }));
+  logs.protocol.feed(frame(DIRECT_HELLO));
+  logs.protocol.feed(frame({ type: 'request', id: 5, method: 'GET',
+    path: '/device/config', authorization: '', contentType: '', length: 0 }));
+  logs.protocol.feed(frame({ type: 'end', id: 5 }));
+  // 响应分片在途时，固件控制台日志（含超长行）插进同一条流：必须原样放行。
+  logs.protocol.feed(Buffer.from('I (196220) vibe_boot: [sprite] provider=pi_agent version=2 ok=0\n'));
+  logs.protocol.feed(Buffer.from(`${'E (1) long: '.padEnd(2100, 'y')}\n`));
+  assert.equal((await response(logs)).first.status, 200);
+  logs.protocol.dispose();
 
   const disconnected = fixture();
   disconnected.protocol.feed(frame(HELLO));

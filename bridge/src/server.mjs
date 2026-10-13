@@ -735,6 +735,7 @@ export function createApp(config, { run, transcribe, tunnel: providedTunnel, ena
         return;
       }
       const deviceId = pairing.deviceIdForToken(token);
+      if (process.env.VIBE_UI_DIAGNOSTICS === '1') console.info('[device-req]', req.method, url.pathname);
       if (req.method === 'POST' && url.pathname === '/device/capabilities') {
         boardLink.setCatalog(deviceId, await body(req));
         boardLink.connect(deviceId, config.pluginsRuntime, config, enhance.bridge());
@@ -843,6 +844,8 @@ export function createApp(config, { run, transcribe, tunnel: providedTunnel, ena
           announce: !boardLink.hasCatalog(pairing.deviceIdForToken(token)),
         };
         if (Buffer.byteLength(JSON.stringify(payload)) > 32 * 1024) throw new Error('码得配置超过 32 KB，请检查助手元数据');
+        if (process.env.VIBE_UI_DIAGNOSTICS === '1') console.info('[device-config]', deviceId, 'announce=', payload.announce,
+          'providers=', payload.providers.map((p, i) => `${i}:${p.id}${p.sprite ? '@' + p.sprite.version : ''}`).join(' ') || 'none');
         deviceSend(res, 200, payload);
         return;
       }
@@ -862,9 +865,17 @@ export function createApp(config, { run, transcribe, tunnel: providedTunnel, ena
           });
           return;
         }
+        // 单次应答上限：固件按 offset 循环续拉整文件，这里故意切小。USB 链路
+        // （尤其叠着固件控制台输出时）对十几 KB 以上的帧偶发丢失，且固件下载
+        // 失败不重试；4KB 应答在实测中始终送达，代价只是多几个来回。
+        const SPRITE_DEVICE_CHUNK = 4 * 1024;
+        const requested = url.searchParams.has('len') ? Number(url.searchParams.get('len')) : undefined;
         const chunk = plugin?.sprite ? spriteChunk(plugin.sprite, spriteMatch[2],
           Number(url.searchParams.get('offset')) || 0,
-          url.searchParams.has('len') ? Number(url.searchParams.get('len')) : undefined) : null;
+          requested === undefined ? SPRITE_DEVICE_CHUNK : Math.min(requested, SPRITE_DEVICE_CHUNK)) : null;
+        if (process.env.VIBE_UI_DIAGNOSTICS) {
+          console.log(`[device-sprite] ${spriteMatch[2]} offset=${url.searchParams.get('offset') ?? 0} len=${url.searchParams.get('len') ?? '-'} -> ${chunk ? chunk.length : -1}B`);
+        }
         if (!chunk) {
           deviceSend(res, 404, { error: '素材不存在' });
           return;

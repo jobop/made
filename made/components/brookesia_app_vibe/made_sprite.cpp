@@ -11,6 +11,7 @@
 
 #include <cJSON.h>
 #include <esp_heap_caps.h>
+#include <esp_log.h>
 #include <png.h>
 
 #include "assets/img_sprite_bean.h"
@@ -43,6 +44,7 @@ struct ArtLayer {
     bool alert = false;
     uint32_t blink_period = 4000;
     uint32_t blink_closed = 120;
+    int last_frame = -1;
 };
 
 struct Parts {
@@ -161,6 +163,8 @@ bool commitArt(Parts *parts, const MotionSpec &motion, std::vector<LayerSpec> &&
     lv_obj_set_pos(container, 0, 0);
     lv_obj_set_size(container, made_screen_w(), made_screen_h());
 
+    // 先在本地把整套层建好：中途失败时旧素材可以原样留着，不破坏在线状态。
+    std::vector<ArtLayer> layers;
     for (auto &spec : specs) {
         if (spec.frames.empty()) goto fail;
         auto *object = lv_image_create(container);
@@ -187,11 +191,15 @@ bool commitArt(Parts *parts, const MotionSpec &motion, std::vector<LayerSpec> &&
         layer.alert = spec.alert;
         layer.blink_period = spec.blink_period;
         layer.blink_closed = spec.blink_closed;
-        parts->art.layers.push_back(std::move(layer));
+        layers.push_back(std::move(layer));
     }
 
-    // 提交：旧素材容器（含内置豆）随之删除。
+    // 提交：旧素材（含内置豆）整体退场。层表和容器必须一起换——旧层的 obj 指向
+    // 即将删除的旧容器，留在表里 artUpdate 就会操作已释放对象（实机切素材那一帧
+    // LoadProhibited 崩溃，随后重启把助手选择也带回 0 号）。
     if (parts->art.container) lv_obj_delete(parts->art.container);
+    for (auto &layer : parts->art.layers) freeFrames(layer.frames);
+    parts->art.layers = std::move(layers);
     parts->art.container = container;
     parts->art.breath_period = motion.breath_period;
     parts->art.breath_pct = motion.breath_pct;
@@ -202,11 +210,17 @@ bool commitArt(Parts *parts, const MotionSpec &motion, std::vector<LayerSpec> &&
     parts->art.pivot_y = made_home_y(motion.canvas_h / 2);
     parts->art.active = true;
     parts->builtin = builtin;
+    for (const auto &layer : parts->art.layers) {
+        ESP_LOGI("made_sprite", "[art] layer frames=%u blink=%d period=%u closed=%u",
+            static_cast<unsigned>(layer.frames.size()), layer.blink ? 1 : 0,
+            static_cast<unsigned>(layer.blink_period), static_cast<unsigned>(layer.blink_closed));
+    }
     lv_obj_invalidate(parts->root);
     return true;
 
 fail:
-    for (auto &layer : parts->art.layers) freeFrames(layer.frames);
+    // 只回收本轮已建成的层：旧素材与旧层表保持可用，等下一次提交再换。
+    for (auto &layer : layers) freeFrames(layer.frames);
     lv_obj_delete(container);
     return false;
 }
@@ -285,9 +299,10 @@ void artUpdate(Parts *parts, uint32_t elapsed_ms, int mood) {
     const int sway = wave(elapsed_ms, sway_period, sway_amp);
     const int bounce = (wave(elapsed_ms, sway_period / 2, bounce_amp, 270) + bounce_amp) / 2;
     lv_obj_set_pos(art.container, made_x(sway), made_home_y(-bounce));
-    // 呼吸：容器整体轻微缩放（单次变换，支点=画布中心）。
+    // 呼吸：容器整体轻微缩放（单次变换，支点=画布中心）。此前 bisect 排查
+    // 层间漂移时被临时关掉；根因是逐层 pivot 与层表残留（均已修），恢复之。
     const int amp = (art.breath_pct - 100) * 256 / 200;
-    lv_obj_set_style_transform_scale(art.container, 256, 0); // BISECT: breath off
+    lv_obj_set_style_transform_scale(art.container, 256 + wave(elapsed_ms, art.breath_period, amp), 0);
     lv_obj_set_style_transform_pivot_x(art.container, art.pivot_x, 0);
     lv_obj_set_style_transform_pivot_y(art.container, art.pivot_y, 0);
     for (auto &layer : art.layers) {
@@ -299,6 +314,12 @@ void artUpdate(Parts *parts, uint32_t elapsed_ms, int mood) {
             frame = static_cast<int>((elapsed_ms / 180) % layer.frames.size());
         }
         frame = std::min(std::max(frame, 0), static_cast<int>(layer.frames.size()) - 1);
+        if (frame != layer.last_frame) {
+            layer.last_frame = frame;
+            ESP_LOGI("made_sprite", "[frame] blink=%d talk=%d mood=%d frame=%d elapsed=%u",
+                layer.blink ? 1 : 0, layer.talk ? 1 : 0, mood, frame,
+                static_cast<unsigned>(elapsed_ms));
+        }
         lv_image_set_src(layer.obj, &layer.frames[static_cast<size_t>(frame)].dsc);
         lv_obj_set_style_img_opa(layer.obj,
             layer.alert && mood == Mood::kWaitingConfirm

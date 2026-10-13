@@ -9,6 +9,7 @@
 
 #include "cJSON.h"
 #include "driver/usb_serial_jtag.h"
+#include "esp_log.h"
 #include "esp_mac.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
@@ -19,6 +20,7 @@
 namespace vibe_usb {
 namespace {
 
+constexpr const char *kTag = "vibe_usb";
 constexpr size_t kChunkBytes = 1024;
 constexpr size_t kLineBytes = 2048;
 constexpr size_t kMaxRequest = 1100000;
@@ -335,6 +337,18 @@ esp_err_t receive_response(uint32_t id, uint32_t request_epoch, std::string& res
         cJSON_Delete(frame);
         if (!good_chunk) return ESP_ERR_INVALID_RESPONSE;
         response.append(reinterpret_cast<const char*>(decoded), decoded_length);
+        // 逐帧指纹：与桥接器 [sprite-tx] 按顺序对齐，谁改了数据一眼可见。
+        {
+            uint32_t fnv = 2166136261u;
+            for (size_t i = 0; i < decoded_length; ++i) {
+                fnv ^= decoded[i];
+                fnv *= 16777619u;
+            }
+            char fnv_text[9];
+            std::snprintf(fnv_text, sizeof(fnv_text), "%08" PRIx32, fnv);
+            ESP_LOGI(kTag, "[sprite-rx] size=%u len=%u fnv1a=%s",
+                static_cast<unsigned>(response.size()), static_cast<unsigned>(decoded_length), fnv_text);
+        }
         // 逐块 ACK 流控：电脑端收到 ack 才发下一块，防止 UART RX 环形缓冲溢出。
         char ack[48];
         const int ack_length = std::snprintf(ack, sizeof(ack),

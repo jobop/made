@@ -3183,6 +3183,8 @@ void VibeCoding::render()
         if (artwork_seen_provider_ != selected_provider) {
             artwork_seen_provider_ = selected_provider;
             artwork_request_.store(true);
+            ESP_LOGI(BUTTON_TAG, "[sprite] provider_changed provider=%s -> request",
+                selected_provider.c_str());
         }
         maybeApplyArtwork(selected_provider);
         int mood = made_sprite::Mood::kIdle;
@@ -3643,29 +3645,43 @@ void VibeCoding::syncArtwork()
 {
     std::string provider;
     vibe_provider::SpriteInfo sprite;
+    size_t provider_count = 0;
     bool waiting = false;
     {
         std::lock_guard<std::mutex> lock(model_mutex_);
         const auto &selected = selectedProviderLocked();
         provider = selected.id;
         sprite = selected.sprite;
+        provider_count = providers_.size();
         waiting = !model_.tasks.empty() && model_.tasks.front().status == "waiting_confirmation";
     }
-    if (waiting) return;
+    // 每个跳过分支都必须留痕：素材不下发时，日志要能直接指出是哪一道闸拦的。
+    if (waiting) {
+        ESP_LOGI(BUTTON_TAG, "[sprite] skip=waiting_confirmation provider=%s", provider.c_str());
+        return;
+    }
     {
         std::lock_guard<std::mutex> lock(artwork_mutex_);
         if (artwork_attempted_ && artwork_target_ == provider &&
-            artwork_target_version_ == (sprite.valid() ? sprite.version : 0)) return;
+            artwork_target_version_ == (sprite.valid() ? sprite.version : 0)) {
+            ESP_LOGI(BUTTON_TAG, "[sprite] skip=already_attempted provider=%s version=%u",
+                provider.c_str(), static_cast<unsigned>(artwork_target_version_));
+            return;
+        }
         artwork_target_ = provider;
         artwork_target_version_ = sprite.valid() ? sprite.version : 0;
         artwork_attempted_ = true;
     }
     if (!sprite.valid()) {
+        ESP_LOGI(BUTTON_TAG, "[sprite] skip=no_sprite provider=%s providers=%u",
+            provider.c_str(), static_cast<unsigned>(provider_count));
         std::lock_guard<std::mutex> lock(artwork_mutex_);
         artwork_ready_provider_.clear();
         artwork_dirty_.store(true);
         return;
     }
+    ESP_LOGI(BUTTON_TAG, "[sprite] fetch provider=%s version=%u files=%u",
+        provider.c_str(), static_cast<unsigned>(sprite.version), static_cast<unsigned>(sprite.files.size()));
     const auto fetch = [this](const std::string &path, std::string &out, int &status) {
         return request(path, false, out, status, "", 200 * 1024, 30000);
     };
@@ -3698,9 +3714,11 @@ void VibeCoding::maybeApplyArtwork(const std::string &selected_provider)
     if (made_sprite_cache::loadManifest(selected_provider, manifest) &&
         made_sprite::applyArtwork(sprite_stage_, manifest, made_sprite_cache::baseDir(selected_provider))) {
         artwork_applied_ = selected_provider;
+        ESP_LOGI(BUTTON_TAG, "[sprite] applied provider=%s", selected_provider.c_str());
     } else {
         made_sprite::clearArtwork(sprite_stage_);
         artwork_applied_.clear();
+        ESP_LOGI(BUTTON_TAG, "[sprite] apply_failed provider=%s", selected_provider.c_str());
     }
 }
 
@@ -3740,6 +3758,9 @@ void VibeCoding::refreshConfig()
                 board_events.push_back(name);
         }
     }
+    // announce 必须在 cJSON_Delete(root) 之前取值：删除后再读 root 是释放后使用，
+    // 实测会把「桥接器重启后请重报清单」的指令整个丢掉（只有开机路径才重报）。
+    const bool announce_catalog = cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(root, "announce"));
     cJSON_Delete(root);
     if (!has_catalog) { invalidateCatalog(); return; }
     const auto latest = vibe_pairing::snapshot();
@@ -3785,8 +3806,7 @@ void VibeCoding::refreshConfig()
         if (can_voice) model_.voice_hint.clear();
         voice_available_.store(can_voice);
         // 桥接器重启会丢掉命令清单：config 里带 announce 标志时重新上报。
-        if (cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(root, "announce")))
-            board_catalog_sent_ = false;
+        if (announce_catalog) board_catalog_sent_ = false;
         config_loaded_.store(true);
         ++model_.revision;
     }

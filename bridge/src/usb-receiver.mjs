@@ -15,6 +15,9 @@ const MAX_CHUNK = 1024;
 // 8×1KB 的 base64 行大约 11KB，小于接收器 16KB 接收环。窗口内不等确认，
 // 避免 224KB 提示音被逐块往返拖过接收器 30 秒转发上限。
 const ACK_WINDOW = 8;
+// USB 直连（码得）走 ESP 的 USB Serial/JTAG，固件 RX 环只有 4KB；连发 8 块
+// 会灌爆环、丢字节，表现为大响应偶发超时。直连模式收紧到 2 块（约 2.8KB）。
+const ACK_WINDOW_DIRECT = 2;
 const MAX_REQUEST = 1_100_000;
 const MAX_RESPONSE = 262_144;
 const REQUEST_TIMEOUT_MS = 30_000;
@@ -169,6 +172,8 @@ export class UsbReceiverProtocol {
     this.locale = locale;
     this.line = Buffer.alloc(0);
     this.discardLine = false;
+    this.discardIsFrame = false;
+    this.ackWindow = ACK_WINDOW;
     this.helloReceived = false;
     this.peer = null;
     this.connectionId = randomBytes(16).toString('hex');
@@ -191,9 +196,14 @@ export class UsbReceiverProtocol {
       const segment = chunk.subarray(start, index);
       start = index + 1;
       if (this.discardLine || this.line.length + segment.length + 1 > MAX_LINE) {
+        // 超长行同样要区分日志与坏帧：固件的长日志行不该掐掉在途请求。
+        const looksLikeFrame = this.discardLine
+          ? this.discardIsFrame
+          : (this.line.length ? this.line[0] : segment[0]) === 0x7b;
+        if (looksLikeFrame) this.rejectCurrent(400, 'USB 帧过长');
         this.line = Buffer.alloc(0);
         this.discardLine = false;
-        this.rejectCurrent(400, 'USB 帧过长');
+        this.discardIsFrame = false;
         continue;
       }
       const line = Buffer.concat([this.line, segment]).toString('utf8').replace(/\r$/, '');
@@ -203,6 +213,7 @@ export class UsbReceiverProtocol {
     const remainder = chunk.subarray(start);
     if (this.discardLine) return;
     if (this.line.length + remainder.length + 1 > MAX_LINE) {
+      this.discardIsFrame = (this.line.length ? this.line[0] : remainder[0]) === 0x7b;
       this.line = Buffer.alloc(0);
       this.discardLine = true;
       return;
@@ -213,6 +224,13 @@ export class UsbReceiverProtocol {
   handleLine(line) {
     let frame;
     try { frame = JSON.parse(line); } catch {
+      // 固件控制台日志和协议帧共用这条 USB 流（USB Serial/JTAG），日志行随时
+      // 会插进来。只有「看着像帧」的坏行才算协议错误；日志必须原样放行，
+      // 否则板子一打日志就会掐掉正在传输的响应（素材分片下载失败即此因）。
+      if (!line.startsWith('{')) {
+        console.error(`[usb-link] log: ${line.slice(0, 240)}`);
+        return;
+      }
       console.error(`[usb-link] unparseable: ${line.slice(0, 240)}`);
       this.rejectCurrent(400, 'USB 帧格式无效');
       return;
@@ -236,6 +254,7 @@ export class UsbReceiverProtocol {
       if (this.onHello(peer) === false) return;
       console.error(`[usb-link] hello: mode=${peer.mode} ${new Date().toISOString()}`);
       this.peer = peer;
+      this.ackWindow = peer.mode === 'direct' ? ACK_WINDOW_DIRECT : ACK_WINDOW;
       this.helloReceived = true;
       this.onActivity();
       // The receiver waits for this acknowledgement before forwarding HTTP.
@@ -399,11 +418,18 @@ export class UsbReceiverProtocol {
         length: bytes.length }));
       let sentChunks = 0;
       for (let offset = 0; offset < bytes.length; offset += MAX_CHUNK) {
-        while (sentChunks - (this.ackCredits.get(id) || 0) >= ACK_WINDOW) {
-          await this.waitForCredits(id, sentChunks - ACK_WINDOW + 1);
+        while (sentChunks - (this.ackCredits.get(id) || 0) >= this.ackWindow) {
+          await this.waitForCredits(id, sentChunks - this.ackWindow + 1);
+        }
+        const piece = bytes.subarray(offset, offset + MAX_CHUNK);
+        // 逐帧指纹：和固件的 [sprite-rx] 对齐比对，能定位到具体哪一帧被改。
+        if (process.env.VIBE_UI_DIAGNOSTICS === '1') {
+          let fnv = 2166136261 >>> 0;
+          for (const byte of piece) fnv = Math.imul(fnv ^ byte, 16777619) >>> 0;
+          console.log(`[sprite-tx] id=${id} off=${offset} len=${piece.length} fnv1a=${fnv.toString(16).padStart(8, '0')}`);
         }
         await this.sendLine(JSON.stringify({ type: 'data', id,
-          chunk: bytes.subarray(offset, offset + MAX_CHUNK).toString('base64') }));
+          chunk: piece.toString('base64') }));
         sentChunks += 1;
       }
       if (sentChunks > (this.ackCredits.get(id) || 0)) await this.waitForCredits(id, sentChunks);
