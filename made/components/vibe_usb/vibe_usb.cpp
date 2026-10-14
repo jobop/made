@@ -337,7 +337,8 @@ esp_err_t receive_response(uint32_t id, uint32_t request_epoch, std::string& res
         cJSON_Delete(frame);
         if (!good_chunk) return ESP_ERR_INVALID_RESPONSE;
         response.append(reinterpret_cast<const char*>(decoded), decoded_length);
-        // 逐帧指纹：与桥接器 [sprite-tx] 按顺序对齐，谁改了数据一眼可见。
+        // 逐帧指纹：与桥接器 [usb-tx]（所有 USB 响应分片，非素材专属）按顺序
+        // 对齐，谁改了数据一眼可见；仅在素材下载窗口内与 [sprite-rx] 语义对应。
         {
             uint32_t fnv = 2166136261u;
             for (size_t i = 0; i < decoded_length; ++i) {

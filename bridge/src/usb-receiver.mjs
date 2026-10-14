@@ -422,11 +422,14 @@ export class UsbReceiverProtocol {
           await this.waitForCredits(id, sentChunks - this.ackWindow + 1);
         }
         const piece = bytes.subarray(offset, offset + MAX_CHUNK);
-        // 逐帧指纹：和固件的 [sprite-rx] 对齐比对，能定位到具体哪一帧被改。
+        // 逐帧指纹：这是【所有】USB 响应分片（sessions/commands 轮询也会打），
+        // 不是素材专属日志。与固件 [sprite-rx] 对齐比对仅在素材下载窗口内有效，
+        // 能定位到具体哪一帧被改——别的请求别拿这里的指纹对账（2026-10-14 排障
+        // 曾因把 15B/42B 轮询响应当素材分片绕了远路）。
         if (process.env.VIBE_UI_DIAGNOSTICS === '1') {
           let fnv = 2166136261 >>> 0;
           for (const byte of piece) fnv = Math.imul(fnv ^ byte, 16777619) >>> 0;
-          console.log(`[sprite-tx] id=${id} off=${offset} len=${piece.length} fnv1a=${fnv.toString(16).padStart(8, '0')}`);
+          console.log(`[usb-tx] id=${id} off=${offset} len=${piece.length} fnv1a=${fnv.toString(16).padStart(8, '0')}`);
         }
         await this.sendLine(JSON.stringify({ type: 'data', id,
           chunk: piece.toString('base64') }));

@@ -96,7 +96,14 @@ export function createScreenshotStore(dir) {
   };
   return {
     save(deviceId, png) {
-      const name = `${Date.now()}-${sanitize(deviceId)}.png`;
+      const stamp = Date.now();
+      const dev = sanitize(deviceId);
+      // 同毫秒多次保存不得互相覆盖（连拍/快速重试会撞毫秒，曾有测试因
+      // 27 次保存挤在几个毫秒里而假失败，实机连拍也会丢图）。
+      let name = `${stamp}-${dev}.png`;
+      for (let n = 1; fs.existsSync(path.join(dir, name)); n += 1) {
+        name = `${stamp}-${dev}-${n}.png`;
+      }
       const file = path.join(dir, name);
       fs.writeFileSync(file, png);
       prune();

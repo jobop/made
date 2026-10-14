@@ -866,8 +866,9 @@ export function createApp(config, { run, transcribe, tunnel: providedTunnel, ena
           return;
         }
         // 单次应答上限：固件按 offset 循环续拉整文件，这里故意切小。USB 链路
-        // （尤其叠着固件控制台输出时）对十几 KB 以上的帧偶发丢失，且固件下载
-        // 失败不重试；4KB 应答在实测中始终送达，代价只是多几个来回。
+        // （尤其叠着固件控制台输出时）对十几 KB 以上的帧偶发丢失；4KB 应答在
+        // 实测中始终送达，代价只是多几个来回。固件侧对下载失败已有 15s×5 次
+        // 重试（59f4043），此处小分片是为了把单次失败概率压到最低。
         const SPRITE_DEVICE_CHUNK = 4 * 1024;
         const requested = url.searchParams.has('len') ? Number(url.searchParams.get('len')) : undefined;
         const chunk = plugin?.sprite ? spriteChunk(plugin.sprite, spriteMatch[2],
