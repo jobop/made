@@ -4,6 +4,7 @@
 #include "made_layout.hpp"
 
 #include <algorithm>
+#include <atomic>
 #include <cstring>
 #include <new>
 #include <string>
@@ -13,6 +14,9 @@
 #include <esp_heap_caps.h>
 #include <esp_log.h>
 #include <png.h>
+
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 
 #include "assets/img_sprite_bean.h"
 
@@ -48,8 +52,11 @@ struct ArtLayer {
     uint32_t blink_closed = 120;
     int last_frame = -1;
     // —— 呼吸帧轮播（做法A）：body 层的呼吸缩放预烘焙成 K 帧显示尺寸位图，
-    // 运行时逐拍只换 src + 位移，不再对整张大图做软件重采样。失败回退动态缩放。
+    // 运行时逐拍只换 src + 位移，不再对整张大图做软件重采样。烘焙在后台任务
+    // 进行（每次进出屏幕都会重建舞台，同步烘会把 UI 线程卡住约 2 秒），
+    // 烘焙期间用动态缩放兜底显示；失败不再重试（bake_tried），回退动态缩放。
     bool baked = false;
+    bool bake_tried = false;
     int bbox_x = 0;              // 内容 bbox 在源图中的偏移（源像素）
     int bbox_y = 0;
     std::vector<Frame> baked_frames;   // 帧 k 的缩放 = baked_scale[k]（256 基准）
@@ -73,6 +80,7 @@ struct Parts {
         int pivot_x = 0;             // 呼吸支点（屏幕像素，画布中心）
         int pivot_y = 0;
         bool active = false;
+        uint64_t epoch = 0;          // 每次 commitArt 递增；后台烘焙结果按它对账
 
         ~Art() {
             for (auto &layer : layers) {
@@ -245,24 +253,22 @@ uint8_t *resampleArgb(const uint8_t *src, int sw, int sh,
     return dst;
 }
 
-// 烘焙呼吸帧。成功后原帧像素可释放（该层不参与 blink/talk 切帧）。
-// 等标度步进（相邻帧尺寸差恒定）比等相位步进过渡更均匀；k 帧
+// —— 呼吸帧烘焙（后台化）——
+// 每次进出屏幕都会重建舞台并重新提交素材，同步烘焙 K 帧（PSRAM 双线性重采样）
+// 会把 LVGL 线程卡住约 2 秒（实机「每次换屏都卡两秒」的根因）。改为三段式：
+//   1) bakeTick（LVGL 线程）：给候选层规划帧数/缩放表，把源图内容 bbox 区域
+//      拷成私有副本后交给后台任务——副本与 LVGL 侧像素彻底解耦，素材中途
+//      换装/舞台销毁都不会让后台任务读到已释放内存。
+//   2) bakeWorker（后台任务）：逐帧重采样，只碰私有副本与新分配的 PSRAM，
+//      完成后置 done。
+//   3) bakeTick 收割：epoch 对账通过才把结果挂到层上（原子切到帧轮播），
+//      否则整体丢弃。烘焙期间动态缩放路径照常兜底显示。
+//
+// 预算：SPIRAM 空闲的一半且 ≤3.5MB（给 LVGL 缓冲/网络留余量），且最大
+// 单帧不超过最大连续块（逐帧独立分配）。等标度步进：k 帧
 // s_k = 256 - amp + round(2*amp*k/(M-1))，覆盖 [256-amp, 256+amp]。
-bool bakeMotionLayer(ArtLayer &layer, int amp)
+bool planBakeScales(int bw, int bh, int base_scale, int amp, std::vector<int> &scales)
 {
-    if (amp < 2 || layer.blink || layer.talk || layer.alert || layer.frames.size() != 1)
-        return false;
-    Frame &srcf = layer.frames[0];
-    const int sw = static_cast<int>(srcf.dsc.header.w);
-    const int sh = static_cast<int>(srcf.dsc.header.h);
-    if (!srcf.dsc.data || sw <= 0 || sh <= 0) return false;
-    const auto *src = static_cast<const uint8_t *>(srcf.dsc.data);
-    int bx, by, bw, bh;
-    if (!contentBbox(src, sw, sh, bx, by, bw, bh)) return false;
-    const int base = layer.base_scale;
-
-    // 预算：SPIRAM 空闲的一半且 ≤3.5MB（给 LVGL 缓冲/网络留余量），且最大
-    // 单帧不超过最大连续块（逐帧独立分配）。
     const size_t free_size = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
     const size_t budget = std::min(free_size / 2, static_cast<size_t>(3500) * 1024);
     const size_t largest = heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM);
@@ -270,64 +276,159 @@ bool bakeMotionLayer(ArtLayer &layer, int amp)
         size_t total = 0;
         bool fits = true;
         int max_frame = 0;
+        scales.clear();
         for (int k = 0; k < M && fits; ++k) {
             const int s = 256 - amp + (2 * amp * k + (M - 1) / 2) / (M - 1);
-            const int dw = std::max(1, static_cast<int>((static_cast<int64_t>(bw) * base * s + 32768) / 65536));
-            const int dh = std::max(1, static_cast<int>((static_cast<int64_t>(bh) * base * s + 32768) / 65536));
+            const int dw = std::max(1, static_cast<int>((static_cast<int64_t>(bw) * base_scale * s + 32768) / 65536));
+            const int dh = std::max(1, static_cast<int>((static_cast<int64_t>(bh) * base_scale * s + 32768) / 65536));
             const int bytes = dw * dh * 4;
             total += static_cast<size_t>(bytes);
             max_frame = std::max(max_frame, bytes);
+            scales.push_back(s);
             fits = total <= budget && static_cast<size_t>(max_frame) <= largest / 2;
         }
-        if (!fits) continue;
-        std::vector<Frame> baked;
-        std::vector<int> scales;
-        bool ok = true;
-        for (int k = 0; k < M && ok; ++k) {
-            const int s = 256 - amp + (2 * amp * k + (M - 1) / 2) / (M - 1);
-            const int dw = std::max(1, static_cast<int>((static_cast<int64_t>(bw) * base * s + 32768) / 65536));
-            const int dh = std::max(1, static_cast<int>((static_cast<int64_t>(bh) * base * s + 32768) / 65536));
-            auto *px = resampleArgb(src, sw, sh, bx, by, bw, bh, dw, dh);
-            if (!px) { ok = false; break; }
-            Frame f;
-            f.pixels = px;
-            f.dsc.header.magic = LV_IMAGE_HEADER_MAGIC;
-            f.dsc.header.cf = LV_COLOR_FORMAT_ARGB8888;
-            f.dsc.header.w = static_cast<uint32_t>(dw);
-            f.dsc.header.h = static_cast<uint32_t>(dh);
-            f.dsc.header.stride = static_cast<uint32_t>(dw) * 4;
-            f.dsc.data_size = static_cast<size_t>(dw) * dh * 4;
-            f.dsc.data = px;
-            baked.push_back(f);
-            scales.push_back(s);
-        }
-        if (!ok) {
-            for (auto &f : baked)
-                if (f.pixels) heap_caps_free(f.pixels);
-            continue;   // 内存吃紧：减帧数重试
-        }
-        layer.bbox_x = bx;
-        layer.bbox_y = by;
-        layer.baked_frames = std::move(baked);
-        layer.baked_scale = std::move(scales);
-        layer.baked = true;
-        // 原帧不再参与显示，释放省几百 KB PSRAM
-        if (srcf.pixels) {
-            heap_caps_free(srcf.pixels);
-            srcf.pixels = nullptr;
-            srcf.dsc.data = nullptr;
-            srcf.dsc.data_size = 0;
-        }
-        ESP_LOGI("made_sprite",
-            "[bake] frames=%u bbox=%dx%d+%d+%d scale=[%d..%d] bytes=%uKB",
-            static_cast<unsigned>(layer.baked_frames.size()), bw, bh, bx, by,
-            layer.baked_scale.front(), layer.baked_scale.back(),
-            static_cast<unsigned>(total / 1024));
-        return true;
+        if (fits) return true;
     }
-    ESP_LOGW("made_sprite", "[bake] skipped (budget) bbox=%dx%d free=%uKB", bw, bh,
-        static_cast<unsigned>(free_size / 1024));
+    scales.clear();
     return false;
+}
+
+struct BakeState {
+    std::atomic<bool> in_flight{false};
+    std::atomic<bool> done{false};
+    // 调度时（LVGL 线程）写入，worker 只读：
+    uint8_t *region = nullptr;   // bbox 内容区的私有副本（worker 的唯一输入）
+    int bw = 0, bh = 0;
+    int base_scale = 256;
+    std::vector<int> scales;
+    uint64_t epoch = 0;
+    uint32_t layer_index = 0;
+    int bbox_x = 0, bbox_y = 0;
+    // 结果（worker 写，done 后 LVGL 线程收割/丢弃）：
+    std::vector<Frame> frames;
+};
+BakeState g_bake;
+std::atomic<uint64_t> g_art_epoch{1};
+
+void bakeWorker(void *)
+{
+    for (size_t k = 0; k < g_bake.scales.size(); ++k) {
+        const int s = g_bake.scales[k];
+        const int dw = std::max(1, static_cast<int>((static_cast<int64_t>(g_bake.bw) * g_bake.base_scale * s + 32768) / 65536));
+        const int dh = std::max(1, static_cast<int>((static_cast<int64_t>(g_bake.bh) * g_bake.base_scale * s + 32768) / 65536));
+        auto *px = resampleArgb(g_bake.region, g_bake.bw, g_bake.bh,
+                                0, 0, g_bake.bw, g_bake.bh, dw, dh);
+        if (!px) break;   // 内存吃紧：帧数就到这，短表也照常可用
+        Frame f;
+        f.pixels = px;
+        f.dsc.header.magic = LV_IMAGE_HEADER_MAGIC;
+        f.dsc.header.cf = LV_COLOR_FORMAT_ARGB8888;
+        f.dsc.header.w = static_cast<uint32_t>(dw);
+        f.dsc.header.h = static_cast<uint32_t>(dh);
+        f.dsc.header.stride = static_cast<uint32_t>(dw) * 4;
+        f.dsc.data_size = static_cast<size_t>(dw) * dh * 4;
+        f.dsc.data = px;
+        g_bake.frames.push_back(f);
+    }
+    g_bake.done.store(true, std::memory_order_release);
+    vTaskDelete(nullptr);
+}
+
+// LVGL 线程，update() 每次调用（先于 10Hz 节流门）。
+void bakeTick(Parts *parts)
+{
+    auto &art = parts->art;
+    if (!art.active) return;
+
+    // 收割：done 后结果所有权移到局部，epoch 不匹配就地析构释放。
+    if (g_bake.in_flight.load(std::memory_order_acquire) &&
+        g_bake.done.load(std::memory_order_acquire)) {
+        std::vector<Frame> frames = std::move(g_bake.frames);
+        std::vector<int> scales = std::move(g_bake.scales);
+        g_bake.frames.clear();
+        g_bake.scales.clear();
+        heap_caps_free(g_bake.region);
+        g_bake.region = nullptr;
+        g_bake.done.store(false, std::memory_order_relaxed);
+        g_bake.in_flight.store(false, std::memory_order_release);
+        if (g_bake.epoch == art.epoch && g_bake.layer_index < art.layers.size() &&
+            !frames.empty()) {
+            ArtLayer &layer = art.layers[g_bake.layer_index];
+            if (!layer.baked && layer.obj) {
+                layer.bbox_x = g_bake.bbox_x;
+                layer.bbox_y = g_bake.bbox_y;
+                layer.baked_frames = std::move(frames);
+                layer.baked_scale = std::move(scales);
+                layer.baked = true;
+                // 原帧不再参与显示，释放省几百 KB PSRAM（内置豆的静态 dsc
+                // 没有堆像素，freeFrames 自然跳过）。
+                freeFrames(layer.frames);
+                // 烘焙帧已是显示尺寸：缩放固定 1:1，后续只换 src + 位移
+                lv_image_set_scale(layer.obj, 256);
+                lv_image_set_src(layer.obj, &layer.baked_frames.front().dsc);
+                layer.last_frame = 0;
+                lv_obj_invalidate(parts->root);
+                ESP_LOGI("made_sprite", "[bake] applied frames=%u scale=[%d..%d]",
+                    static_cast<unsigned>(layer.baked_frames.size()),
+                    layer.baked_scale.front(), layer.baked_scale.back());
+            }
+        }
+    }
+
+    // 调度：找最大的可烘焙单帧层（无 blink/talk/alert，未烘焙、未试败）。
+    if (g_bake.in_flight.load(std::memory_order_acquire)) return;
+    ArtLayer *body = nullptr;
+    uint32_t area = 0;
+    for (auto &layer : art.layers) {
+        if (layer.baked || layer.bake_tried || layer.blink || layer.talk || layer.alert)
+            continue;
+        if (layer.frames.size() != 1 || !layer.frames[0].dsc.data) continue;
+        const uint32_t a = layer.frames[0].dsc.header.w * layer.frames[0].dsc.header.h;
+        if (a > area) { area = a; body = &layer; }
+    }
+    if (!body) return;
+    body->bake_tried = true;   // 无论成败本轮素材只试一次
+
+    const int amp = (art.breath_pct - 100) * 256 / 200;
+    if (amp < 2) return;
+    Frame &srcf = body->frames[0];
+    const int sw = static_cast<int>(srcf.dsc.header.w);
+    const int sh = static_cast<int>(srcf.dsc.header.h);
+    int bx, by, bw, bh;
+    if (sw <= 0 || sh <= 0 || !contentBbox(srcf.dsc.data, sw, sh, bx, by, bw, bh)) return;
+
+    std::vector<int> scales;
+    if (!planBakeScales(bw, bh, body->base_scale, amp, scales)) {
+        ESP_LOGW("made_sprite", "[bake] skipped (budget) bbox=%dx%d free=%uKB", bw, bh,
+            static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_SPIRAM) / 1024));
+        return;
+    }
+    // bbox 区域私有副本（PSRAM→PSRAM，≤0.5MB 一次性 memcpy）。
+    auto *region = static_cast<uint8_t *>(heap_caps_malloc(
+        static_cast<size_t>(bw) * bh * 4, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+    if (!region) return;
+    std::memcpy(region,
+        static_cast<const uint8_t *>(srcf.dsc.data) + (static_cast<size_t>(by) * sw + bx) * 4,
+        static_cast<size_t>(bw) * bh * 4);
+
+    g_bake.region = region;
+    g_bake.bw = bw;
+    g_bake.bh = bh;
+    g_bake.base_scale = body->base_scale;
+    g_bake.scales = std::move(scales);
+    g_bake.epoch = art.epoch;
+    g_bake.layer_index = static_cast<uint32_t>(body - art.layers.data());
+    g_bake.bbox_x = bx;
+    g_bake.bbox_y = by;
+    g_bake.frames.clear();
+    g_bake.in_flight.store(true, std::memory_order_release);
+    if (xTaskCreate(bakeWorker, "sprite_bake", 4096, nullptr, 1, nullptr) != pdPASS) {
+        // 起不来任务：恢复现场，退回动态缩放
+        g_bake.in_flight.store(false, std::memory_order_release);
+        heap_caps_free(region);
+        g_bake.region = nullptr;
+        g_bake.scales.clear();
+    }
 }
 
 // 把规格提交成 LVGL 对象树；任一对象创建失败则整体回滚并保留旧素材。
@@ -393,28 +494,10 @@ bool commitArt(Parts *parts, const MotionSpec &motion, std::vector<LayerSpec> &&
     parts->art.pivot_y = made_home_y(motion.canvas_h / 2);
     parts->art.active = true;
     parts->builtin = builtin;
-
-    // 做法 A：给最大的单帧层（实际即 body）烘呼吸帧轮播。提交后才烘，旧素材
-    // 已释放，避免双份 PSRAM 峰值；失败自动回退动态缩放，不影响在线状态。
-    // （块作用域：goto fail 不能跳过函数级初始化。）
-    {
-        ArtLayer *body = nullptr;
-        uint32_t area = 0;
-        for (auto &layer : parts->art.layers) {
-            if (layer.frames.size() != 1 || !layer.frames[0].dsc.data) continue;
-            const uint32_t a = layer.frames[0].dsc.header.w * layer.frames[0].dsc.header.h;
-            if (a > area) { area = a; body = &layer; }
-        }
-        if (body) {
-            const int amp = (motion.breath_pct - 100) * 256 / 200;
-            if (bakeMotionLayer(*body, amp)) {
-                // 烘焙帧已是显示尺寸：缩放固定 1:1，后续只换 src + 位移
-                lv_image_set_scale(body->obj, 256);
-                lv_image_set_src(body->obj, &body->baked_frames.front().dsc);
-                body->last_frame = 0;
-            }
-        }
-    }
+    // 烘焙不在提交时同步做（那会把 LVGL 线程卡约 2 秒，实机每次换屏都卡）。
+    // 这里只递增代际号，update() 里的 bakeTick 会异步调度后台烘焙；
+    // 烘焙期间动态缩放路径照常兜底，烘完原子切帧轮播。
+    parts->art.epoch = g_art_epoch.fetch_add(1) + 1;
 
     for (const auto &layer : parts->art.layers) {
         ESP_LOGI("made_sprite", "[art] layer frames=%u blink=%d period=%u closed=%u",
@@ -614,6 +697,7 @@ void update(lv_obj_t *root, uint32_t elapsed_ms, int mood) {
     // 10Hz 采样视觉无差；而每拍动效都会重采样全部图层（ARGB8888 软件缩放）
     // 并整屏失效——这是滑动不跟手、整体掉帧的最大单一来源，直接砍半。
     // 情绪切换不受节流，立即反映。
+    bakeTick(parts);   // 烘焙收割/调度（有原子门，常驻开销近乎为零）
     if (mood != parts->last_mood || elapsed_ms - parts->last_anim_ms >= 90) {
         parts->last_anim_ms = elapsed_ms;
         artUpdate(parts, elapsed_ms, mood);

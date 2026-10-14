@@ -148,6 +148,45 @@ void ignoreSwipeClick(lv_event_t *event)
         lv_event_stop_processing(event);
 }
 
+// 线性混合两色（整型权重），用于推导按钮的高光/暗部。
+uint32_t mixColor(uint32_t a, uint32_t b, uint32_t weight_a, uint32_t weight_b)
+{
+    const uint32_t sum = weight_a + weight_b ? weight_a + weight_b : 1;
+    const uint32_t r = (((a >> 16) & 0xFF) * weight_a + ((b >> 16) & 0xFF) * weight_b) / sum;
+    const uint32_t g = (((a >> 8) & 0xFF) * weight_a + ((b >> 8) & 0xFF) * weight_b) / sum;
+    const uint32_t bl = ((a & 0xFF) * weight_a + (b & 0xFF) * weight_b) / sum;
+    return (r << 16) | (g << 8) | bl;
+}
+
+// 按钮统一表面：上亮下暗的微渐变 + 柔和投影代替硬描边；按下整体提亮、
+// 投影收紧并轻微下沉，150ms 过渡让反馈可感知而不突兀。
+void styleSurface(lv_obj_t *button, uint32_t color)
+{
+    const uint32_t highlight = mixColor(color, 0xFFFFFF, 7, 1);
+    lv_obj_set_style_bg_color(button, lv_color_hex(color), 0);
+    lv_obj_set_style_bg_grad_color(button, lv_color_hex(mixColor(color, 0x000000, 15, 1)), 0);
+    lv_obj_set_style_bg_grad_dir(button, LV_GRAD_DIR_VER, 0);
+    lv_obj_set_style_border_width(button, 0, 0);
+    lv_obj_set_style_shadow_color(button, lv_color_hex(0x000000), 0);
+    lv_obj_set_style_shadow_width(button, made_s(14), 0);
+    lv_obj_set_style_shadow_spread(button, made_s(1), 0);
+    lv_obj_set_style_shadow_opa(button, LV_OPA_50, 0);
+    lv_obj_set_style_shadow_offset_y(button, made_s(3), 0);
+    lv_obj_set_style_bg_color(button, lv_color_hex(highlight), LV_STATE_PRESSED);
+    lv_obj_set_style_shadow_width(button, made_s(5), LV_STATE_PRESSED);
+    lv_obj_set_style_shadow_opa(button, LV_OPA_30, LV_STATE_PRESSED);
+    lv_obj_set_style_translate_y(button, made_s(1), LV_STATE_PRESSED);
+    static lv_style_prop_t surface_props[] = {
+        LV_STYLE_BG_COLOR, LV_STYLE_BG_GRAD_COLOR, LV_STYLE_SHADOW_WIDTH,
+        LV_STYLE_SHADOW_OPA, LV_STYLE_TRANSLATE_Y,
+    };
+    static lv_style_transition_dsc_t surface_transition;
+    lv_style_transition_dsc_init(&surface_transition, surface_props,
+                                 lv_anim_path_ease_out, 150, 0, nullptr);
+    lv_obj_set_style_transition(button, &surface_transition, 0);
+    lv_obj_set_style_transition(button, &surface_transition, LV_STATE_PRESSED);
+}
+
 lv_obj_t *touchButton(lv_obj_t *parent, int x, int y, int width, int height,
                       const char *caption, lv_event_cb_t callback, void *user,
                       uint32_t color = 0)
@@ -159,9 +198,7 @@ lv_obj_t *touchButton(lv_obj_t *parent, int x, int y, int width, int height,
     lv_obj_set_size(button, page ? made_page_w(width) : made_s(width), page ? made_page_h(height) : made_s(height));
     lv_obj_set_style_radius(button, made_s(12) > 0 ? made_s(12) : 1, 0);
     lv_obj_set_overflow_visible(button, true);
-    lv_obj_set_style_bg_color(button, lv_color_hex(color), 0);
-    lv_obj_set_style_border_color(button, lv_color_hex(VT(border)), 0);
-    lv_obj_set_style_border_width(button, 1, 0);
+    styleSurface(button, color);
     lv_obj_set_style_pad_all(button, 0, 0);
     lv_obj_remove_flag(button, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_add_flag(button, LV_OBJ_FLAG_GESTURE_BUBBLE);
@@ -362,9 +399,8 @@ bool VibeCoding::run()
     lv_obj_set_pos(new_session_button_, made_x(274), made_y(56));
     lv_obj_set_size(new_session_button_, made_s(46), made_s(46));
     lv_obj_set_style_radius(new_session_button_, 23, 0);
-    lv_obj_set_style_bg_color(new_session_button_, lv_color_hex(VT(btn_normal)), 0);
-    lv_obj_set_style_border_color(new_session_button_, lv_color_hex(VT(border)), 0);
-    lv_obj_set_style_border_width(new_session_button_, 1, 0);
+    lv_obj_set_overflow_visible(new_session_button_, true);
+    styleSurface(new_session_button_, VT(btn_normal));
     lv_obj_set_style_pad_all(new_session_button_, 0, 0);
     lv_obj_remove_flag(new_session_button_, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_add_flag(new_session_button_, LV_OBJ_FLAG_GESTURE_BUBBLE);
@@ -372,7 +408,7 @@ bool VibeCoding::run()
     lv_obj_add_event_cb(new_session_button_, ignoreSwipeClick, LV_EVENT_CLICKED, nullptr);
     lv_obj_add_event_cb(new_session_button_, newSessionCallback, LV_EVENT_CLICKED, this);
     lv_obj_t *new_session_mark = lv_label_create(new_session_button_);
-    lv_label_set_text(new_session_mark, "+");
+    lv_label_set_text(new_session_mark, LV_SYMBOL_PLUS);
     lv_obj_set_style_text_color(new_session_mark, lv_color_hex(VT(text_primary)), 0);
     lv_obj_set_style_text_font(new_session_mark, &lv_font_montserrat_26, 0);
     lv_obj_remove_flag(new_session_mark, LV_OBJ_FLAG_CLICKABLE);
@@ -383,9 +419,8 @@ bool VibeCoding::run()
     lv_obj_set_pos(delete_session_button_, made_x(222), made_y(56));
     lv_obj_set_size(delete_session_button_, made_s(46), made_s(46));
     lv_obj_set_style_radius(delete_session_button_, 23, 0);
-    lv_obj_set_style_bg_color(delete_session_button_, lv_color_hex(VT(btn_normal)), 0);
-    lv_obj_set_style_border_color(delete_session_button_, lv_color_hex(VT(border)), 0);
-    lv_obj_set_style_border_width(delete_session_button_, 1, 0);
+    lv_obj_set_overflow_visible(delete_session_button_, true);
+    styleSurface(delete_session_button_, VT(btn_normal));
     lv_obj_set_style_pad_all(delete_session_button_, 0, 0);
     lv_obj_remove_flag(delete_session_button_, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_add_flag(delete_session_button_, LV_OBJ_FLAG_GESTURE_BUBBLE);
@@ -393,7 +428,7 @@ bool VibeCoding::run()
     lv_obj_add_event_cb(delete_session_button_, ignoreSwipeClick, LV_EVENT_CLICKED, nullptr);
     lv_obj_add_event_cb(delete_session_button_, deleteSessionCallback, LV_EVENT_CLICKED, this);
     lv_obj_t *delete_session_mark = lv_label_create(delete_session_button_);
-    lv_label_set_text(delete_session_mark, "-");
+    lv_label_set_text(delete_session_mark, LV_SYMBOL_MINUS);
     lv_obj_set_style_text_color(delete_session_mark, lv_color_hex(VT(text_primary)), 0);
     lv_obj_set_style_text_font(delete_session_mark, &lv_font_montserrat_26, 0);
     lv_obj_remove_flag(delete_session_mark, LV_OBJ_FLAG_CLICKABLE);
@@ -406,33 +441,12 @@ bool VibeCoding::run()
     settings_button_ = touchButton(screen, 40, 56, 46, 46, nullptr, settingsCallback, this);
     lv_obj_set_style_radius(settings_button_, 23, 0);
     lv_obj_set_ext_click_area(settings_button_, 10);
-    constexpr int teeth[][2] = {{17, 6}, {17, 28}, {6, 17}, {28, 17},
-                                {10, 10}, {26, 10}, {10, 26}, {26, 26}};
-    for (const auto &tooth : teeth) {
-        lv_obj_t *part = lv_obj_create(settings_button_);
-        lv_obj_set_pos(part, made_s(tooth[0]), made_s(tooth[1]));
-        lv_obj_set_size(part, made_s(8), made_s(8));
-        lv_obj_set_style_bg_color(part, lv_color_hex(VT(text_primary)), 0);
-        lv_obj_set_style_border_width(part, 0, 0);
-        lv_obj_set_style_pad_all(part, 0, 0);
-        lv_obj_remove_flag(part, LV_OBJ_FLAG_CLICKABLE);
-        lv_obj_remove_flag(part, LV_OBJ_FLAG_SCROLLABLE);
-    }
-    lv_obj_t *gear_ring = lv_obj_create(settings_button_);
-    lv_obj_set_pos(gear_ring, made_s(13), made_s(13));
-    lv_obj_set_size(gear_ring, made_s(20), made_s(20));
-    lv_obj_set_style_radius(gear_ring, 10, 0);
-    lv_obj_set_style_bg_color(gear_ring, lv_color_hex(VT(text_primary)), 0);
-    lv_obj_set_style_border_width(gear_ring, 0, 0);
-    lv_obj_set_style_pad_all(gear_ring, 0, 0);
-    lv_obj_remove_flag(gear_ring, LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_t *gear_hole = lv_obj_create(gear_ring);
-    lv_obj_set_pos(gear_hole, made_s(6), made_s(6));
-    lv_obj_set_size(gear_hole, made_s(8), made_s(8));
-    lv_obj_set_style_radius(gear_hole, 4, 0);
-    lv_obj_set_style_bg_color(gear_hole, lv_color_hex(VT(btn_normal)), 0);
-    lv_obj_set_style_border_width(gear_hole, 0, 0);
-    lv_obj_remove_flag(gear_hole, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_t *gear_icon = lv_label_create(settings_button_);
+    lv_label_set_text(gear_icon, LV_SYMBOL_SETTINGS);
+    lv_obj_set_style_text_color(gear_icon, lv_color_hex(VT(text_primary)), 0);
+    lv_obj_set_style_text_font(gear_icon, &lv_font_montserrat_26, 0);
+    lv_obj_remove_flag(gear_icon, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_center(gear_icon);
 
     settings_overlay_ = lv_obj_create(screen);
     lv_obj_set_pos(settings_overlay_, made_s(0), made_s(0));
@@ -3779,18 +3793,37 @@ bool VibeCoding::tryApplyCachedArtwork(const std::string &provider)
     }
     {
         std::lock_guard<std::mutex> lock(artwork_mutex_);
-        if (cached_apply_provider_ == provider && cached_apply_version_ == version) return false;
-        cached_apply_provider_ = provider;
-        cached_apply_version_ = version;
+        // 退避：上次失败后 300ms 内不重复读 SPIFFS/解码。memo 只代表
+        // 「上次失败」，不代表「试过了就永远别试」——否则从绿豆页切回
+        // （绿豆不覆盖 memo）会被自己的成功记录永久锁死直换路径。
+        const uint32_t now = static_cast<uint32_t>(esp_timer_get_time() / 1000);
+        if (cached_apply_provider_ == provider && cached_apply_version_ == version &&
+            static_cast<int32_t>(now - cached_retry_at_ms_) < 300) return false;
+        cached_retry_at_ms_ = now;
     }
     uint32_t cached = 0;
     std::string manifest;
     if (!made_sprite_cache::cachedVersion(provider, cached) || cached != version ||
-        !made_sprite_cache::loadManifest(provider, manifest)) return false;
+        !made_sprite_cache::loadManifest(provider, manifest)) {
+        // 缓存未就绪不是错误：worker 正在下载/校验，300ms 后会自动再试，
+        // worker 提交（dirty）时也会立即清 memo 解锁。
+        std::lock_guard<std::mutex> lock(artwork_mutex_);
+        cached_apply_provider_ = provider;
+        cached_apply_version_ = version;
+        return false;
+    }
     if (!made_sprite::applyArtwork(sprite_stage_, manifest, made_sprite_cache::baseDir(provider))) {
         ESP_LOGW(BUTTON_TAG, "[sprite] cached_apply_failed provider=%s version=%u",
             provider.c_str(), static_cast<unsigned>(version));
+        std::lock_guard<std::mutex> lock(artwork_mutex_);
+        cached_apply_provider_ = provider;
+        cached_apply_version_ = version;
         return false;
+    }
+    {
+        std::lock_guard<std::mutex> lock(artwork_mutex_);
+        cached_apply_provider_.clear();  // 成功即清：切走再切回仍可秒换
+        cached_apply_version_ = 0;
     }
     ESP_LOGI(BUTTON_TAG, "[sprite] cached_applied provider=%s version=%u",
         provider.c_str(), static_cast<unsigned>(version));

@@ -216,9 +216,11 @@ private:
     std::string artwork_applied_;  // 仅 LVGL 线程访问
     std::string artwork_seen_provider_;  // 仅 LVGL 线程访问
     // 缓存直换的记忆（tryApplyCachedArtwork，仅 LVGL 线程 + artwork_mutex_）：
-    // 同一 (provider, version) 只试一次，失败就交给 worker 的完整校验路径。
+    // 只在失败时记录，作为 300ms 退避（避免未就绪时每帧读 SPIFFS）；
+    // 成功即清——同一助手切走再切回必须能再次秒换，绝不能锁死直换路径。
     std::string cached_apply_provider_;
     uint32_t cached_apply_version_ = 0;
+    uint32_t cached_retry_at_ms_ = 0;
     std::mutex voice_action_mutex_; // Serializes BOOT/touch voice actions with app pause/close.
     Snapshot model_;
     PendingAction pending_action_;
