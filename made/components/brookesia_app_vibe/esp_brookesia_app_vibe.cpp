@@ -3663,10 +3663,15 @@ void VibeCoding::syncArtwork()
     {
         std::lock_guard<std::mutex> lock(artwork_mutex_);
         if (artwork_attempted_ && artwork_target_ == provider &&
-            artwork_target_version_ == (sprite.valid() ? sprite.version : 0)) {
+            artwork_target_version_ == (sprite.valid() ? sprite.version : 0) &&
+            !artworkRetryDue()) {
             ESP_LOGI(BUTTON_TAG, "[sprite] skip=already_attempted provider=%s version=%u",
                 provider.c_str(), static_cast<unsigned>(artwork_target_version_));
             return;
+        }
+        if (artwork_target_ != provider ||
+            artwork_target_version_ != (sprite.valid() ? sprite.version : 0)) {
+            artwork_retry_count_ = 0;  // 换了目标/版本，重试预算重新计
         }
         artwork_target_ = provider;
         artwork_target_version_ = sprite.valid() ? sprite.version : 0;
@@ -3688,8 +3693,26 @@ void VibeCoding::syncArtwork()
     const bool ok = made_sprite_cache::ensure(provider, sprite, fetch);
     ESP_LOGI(BUTTON_TAG, "[sprite] provider=%s version=%u ok=%d", provider.c_str(), sprite.version, ok);
     std::lock_guard<std::mutex> lock(artwork_mutex_);
+    if (ok) {
+        artwork_retry_at_ms_ = 0;
+        artwork_retry_count_ = 0;
+    } else if (++artwork_retry_count_ <= 5) {
+        // 失败 15s 后重试，最多 5 次；配置或选中助手变化会重置预算。
+        artwork_retry_at_ms_ = static_cast<uint32_t>(esp_timer_get_time() / 1000) + 15000;
+        ESP_LOGI(BUTTON_TAG, "[sprite] retry_scheduled provider=%s attempt=%u",
+            provider.c_str(), static_cast<unsigned>(artwork_retry_count_));
+    } else {
+        artwork_retry_at_ms_ = 0;  // 预算用尽：等下一次 provider/版本变化再试
+        ESP_LOGI(BUTTON_TAG, "[sprite] retry_exhausted provider=%s", provider.c_str());
+    }
     artwork_ready_provider_ = ok ? provider : std::string();
     artwork_dirty_.store(true);
+}
+
+bool VibeCoding::artworkRetryDue() const
+{
+    const uint32_t at = artwork_retry_at_ms_;
+    return at != 0 && static_cast<uint32_t>(esp_timer_get_time() / 1000) >= at;
 }
 
 // 素材应用与清理（LVGL 线程）。provider 切走时立刻撤下旧素材；
@@ -4860,7 +4883,8 @@ void VibeCoding::workerLoop()
             (language_refresh_pending_.exchange(false) || (active_cycles++ % 14) == 0 || !config_loaded_.load() || !voice_available_.load())) {
             refreshConfig();
         }
-        if (canOperate() && artwork_request_.exchange(false)) syncArtwork();
+        if (canOperate() &&
+            (artwork_request_.exchange(false) || artworkRetryDue())) syncArtwork();
         PendingAction action;
         {
             std::lock_guard<std::mutex> lock(model_mutex_);

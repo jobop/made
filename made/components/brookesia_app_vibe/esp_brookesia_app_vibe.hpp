@@ -169,6 +169,7 @@ private:
     void refreshTasks();
     void refreshConfig();
     void syncArtwork();
+    bool artworkRetryDue() const;
     void maybeApplyArtwork(const std::string &selected_provider);
     void invalidateCatalog(bool clear = false);
     void sendHeartbeat();
@@ -204,6 +205,10 @@ private:
     std::string artwork_target_;
     uint32_t artwork_target_version_ = 0;
     bool artwork_attempted_ = false;
+    // 素材同步失败后的重试计划（毫秒时间戳，0=无需重试）。瞬时 USB/网络抖动
+    // 不该把助手永久留在回退形象上（2026-10-14 实测：一次失败即永久豆子）。
+    std::atomic<uint32_t> artwork_retry_at_ms_{0};
+    uint32_t artwork_retry_count_ = 0;  // 仅 worker 线程 + artwork_mutex_ 内访问
     std::string artwork_ready_provider_;
     std::atomic<bool> artwork_dirty_{false};
     std::atomic<bool> artwork_request_{false};
