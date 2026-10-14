@@ -61,7 +61,11 @@ test('只注册已激活插件和板侧清单的交集', async () => {
   assert.deepEqual(link.subscription('device', runtime, {}), ['boot.click', 'imu.tilt']);
   const handled = await link.handleEvent('device', { name: 'boot.click' }, runtime, {});
   assert.deepEqual(handled, { accepted: true });
-  assert.deepEqual(link.pending('device'), [{ id: '1', name: 'caption.show', fields: { text: '单击' }, audio: false }]);
+  const [queued] = link.pending('device');
+  assert.equal(queued.name, 'caption.show');
+  assert.deepEqual(queued.fields, { text: '单击' });
+  assert.equal(queued.audio, false);
+  assert.match(queued.id, /^\d{10}$/); // 时间戳起算，跨重启不重置
   await assert.rejects(link.handleEvent('device', { name: 'imu.shake' }, runtime, {}), /不在板侧清单/);
   const silent = { boardPlugins: () => [] };
   await assert.rejects(link.handleEvent('device', { name: 'boot.click' }, silent, {}), /未注册/);
@@ -81,7 +85,10 @@ test('插件不能下发清单外或自己未声明的命令', async () => {
   };
   const handled = await link.handleEvent('device', { name: 'boot.click' }, runtime, {});
   assert.deepEqual(handled, { accepted: true });
-  assert.deepEqual(link.pending('device'), [{ id: '1', name: 'caption.show', fields: { text: '可以' }, audio: false }]);
+  const [queued2] = link.pending('device');
+  assert.equal(queued2.name, 'caption.show');
+  assert.deepEqual(queued2.fields, { text: '可以' });
+  assert.match(queued2.id, /^\d{10}$/);
 });
 
 test('事件入队和桥接器直接下发互相独立', async () => {
@@ -100,8 +107,9 @@ test('事件入队和桥接器直接下发互相独立', async () => {
   const direct = link.send('device', { name: 'caption.show', fields: { text: '直接' } });
   assert.equal(direct.fields.text, '直接');
   assert.equal(link.pending('device').length, 3);
-  assert.deepEqual(link.ack('device', { ids: ['1', '3'] }), { acked: 2 });
-  assert.deepEqual(link.pending('device').map((item) => item.id), ['2']);
+  const ids = link.pending('device').map((item) => item.id);
+  assert.deepEqual(link.ack('device', { ids: [ids[0], ids[2]] }), { acked: 2 });
+  assert.deepEqual(link.pending('device').map((item) => item.id), [ids[1]]);
   assert.throws(() => link.send('other', { name: 'caption.show' }), /尚未上报/);
   assert.throws(() => link.send('device', { name: 'ui.scroll' }), /不在板侧清单/);
   link.forget('device');
@@ -233,9 +241,12 @@ test('配对设备上报清单后，事件与命令分开传递', async (t) => {
   assert.equal(reported.status, 200);
   assert.deepEqual(await reported.json(), { accepted: true });
   const queued = await (await fetch(`${device}/device/commands`, { headers })).json();
-  assert.deepEqual(queued.commands, [{ id: '1', name: 'caption.show', fields: { text: 'boot.click' }, audio: false }]);
+  const pending = (await (await fetch(`${device}/device/commands`, { headers })).json()).commands;
+  assert.equal(pending.length, 1);
+  assert.equal(pending[0].name, 'caption.show');
+  assert.deepEqual(pending[0].fields, { text: 'boot.click' });
   const acked = await fetch(`${device}/device/commands/ack`, {
-    method: 'POST', headers, body: JSON.stringify({ ids: ['1'] }),
+    method: 'POST', headers, body: JSON.stringify({ ids: [pending[0].id] }),
   });
   assert.equal(acked.status, 200);
   assert.deepEqual(await acked.json(), { acked: 1 });

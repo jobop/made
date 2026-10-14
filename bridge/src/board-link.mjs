@@ -141,7 +141,10 @@ export function createBoardLink() {
   const queues = new Map();
   const audios = new Map();
   const hits = new Map();
-  const seq = { n: 0 };
+  // 命令 id 用启动时间戳起算（固件 validCommandId 允许 ≤16 位纯数字）：
+  // 板子的 delivered_command_ids_ 去重表跨重启持久，若桥接器重启后 id 从 1 重新
+  // 计数，会撞上表内旧 id 被当重复静默跳过（但照样 ack）。时间戳起点保证跨重启唯一。
+  const seq = { n: Math.floor(Date.now() / 1000) };
   const dropAudio = (deviceId, id) => audios.delete(`${deviceId}\n${id}`);
   const enqueue = (deviceId, command, allowed, audio) => enqueueCommand(queues, audios, catalogs, seq, deviceId, command, allowed, audio);
   return {
