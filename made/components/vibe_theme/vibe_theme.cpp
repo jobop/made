@@ -40,7 +40,7 @@ Palette defaults() {
         .accent = 0x1C856F,
         .btn_normal = 0x284668,
         .btn_cancel = 0x42566B,
-        .border = 0x83B5E6,
+        .border = 0x3D5A85,
         .text_primary = 0xF1F5FF,
         .text_secondary = 0xB8C9E4,
         .text_hint = 0x9FADD0,
