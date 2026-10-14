@@ -59,6 +59,7 @@ std::string baseDir(const std::string &provider) { (void)provider; return ""; }
 bool ensure(const std::string &provider, const vibe_provider::SpriteInfo &sprite, const Fetch &fetch)
 { (void)provider; (void)sprite; (void)fetch; return false; }
 bool loadManifest(const std::string &provider, std::string &json) { (void)provider; (void)json; return false; }
+bool cachedVersion(const std::string &provider, uint32_t &version) { (void)provider; (void)version; return false; }
 } // namespace made_sprite_cache
 
 /* ---------------- vibe_wifi ---------------- */

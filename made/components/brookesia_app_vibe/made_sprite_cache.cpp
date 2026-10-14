@@ -248,4 +248,17 @@ bool loadManifest(const std::string &provider, std::string &json)
     return readIfPresent(pathFor(prefixFor(provider), "manifest.json"), json) && !json.empty();
 }
 
+bool cachedVersion(const std::string &provider, uint32_t &version)
+{
+    std::string manifest;
+    if (!loadManifest(provider, manifest)) return false;
+    cJSON *root = cJSON_Parse(manifest.c_str());
+    if (!root) return false;
+    const cJSON *value = cJSON_GetObjectItemCaseSensitive(root, "version");
+    const bool ok = cJSON_IsNumber(value) && value->valueint >= 0;
+    if (ok) version = static_cast<uint32_t>(value->valueint);
+    cJSON_Delete(root);
+    return ok;
+}
+
 } // namespace made_sprite_cache

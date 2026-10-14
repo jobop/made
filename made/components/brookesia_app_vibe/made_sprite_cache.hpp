@@ -28,4 +28,8 @@ bool ensure(const std::string &provider, const vibe_provider::SpriteInfo &sprite
 // 读取已提交的 manifest.json（返回原始 JSON 文本）。缓存未提交时返回 false。
 bool loadManifest(const std::string &provider, std::string &json);
 
+// 读取已提交 manifest 的 version 字段（不触碰网络）。缓存未提交或 JSON
+// 无版本号时返回 false。切助手时用它判断「本地缓存即可信」，直接换装。
+bool cachedVersion(const std::string &provider, uint32_t &version);
+
 } // namespace made_sprite_cache

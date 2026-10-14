@@ -1083,6 +1083,8 @@ bool VibeCoding::close()
     {
         std::lock_guard<std::mutex> lock(artwork_mutex_);
         artwork_attempted_ = false;  // 重新进入后允许再校验一轮缓存
+        cached_apply_provider_.clear();  // 缓存直换的记忆一并作废
+        cached_apply_version_ = 0;
     }
     drawer_ = nullptr;
     drawer_grip_ = nullptr;
@@ -3726,11 +3728,28 @@ void VibeCoding::maybeApplyArtwork(const std::string &selected_provider)
         std::lock_guard<std::mutex> lock(artwork_mutex_);
         dirty = artwork_dirty_.exchange(false);
         ready = artwork_ready_provider_;
+        if (dirty) {
+            // worker 刚提交了新缓存（下载完成或校验通过）：清掉直换的
+            // 「同版本只试一次」记忆。否则首次加载走「绿豆+下载」老路时
+            // 记下的失败会永久屏蔽直换，之后每次切回都退回慢路闪绿豆。
+            cached_apply_provider_.clear();
+            cached_apply_version_ = 0;
+        }
     }
-    if (artwork_applied_ != selected_provider &&
-        (dirty || made_sprite::artworkActive(sprite_stage_))) {
-        made_sprite::clearArtwork(sprite_stage_);
-        artwork_applied_.clear();
+    if (artwork_applied_ != selected_provider) {
+        // 缓存直换：本地 manifest 版本与目录一致就直接整体换装（commitArt
+        // 原子换容器，旧素材仍在显示时不闪绿豆），不再等 worker 的 ensure()
+        // 逐文件 SPIFFS 读 + SHA-256 复核——那要好几秒，实机表现为「切到
+        // 旺财先显示绿豆，过几秒才换装」。缓存的完整性不变量是 manifest
+        // 最后写、写前每个文件都已验过哈希，版本一致即可信。
+        if (tryApplyCachedArtwork(selected_provider)) {
+            artwork_applied_ = selected_provider;
+            return;
+        }
+        if (dirty || made_sprite::artworkActive(sprite_stage_)) {
+            made_sprite::clearArtwork(sprite_stage_);
+            artwork_applied_.clear();
+        }
     }
     if (!dirty || ready.empty() || ready != selected_provider || artwork_applied_ == ready) return;
     std::string manifest;
@@ -3743,6 +3762,39 @@ void VibeCoding::maybeApplyArtwork(const std::string &selected_provider)
         artwork_applied_.clear();
         ESP_LOGI(BUTTON_TAG, "[sprite] apply_failed provider=%s", selected_provider.c_str());
     }
+}
+
+// LVGL 线程。同一条流水线的快速通道：读缓存 manifest 的 version，与目录
+// 下发的一致就立即解码应用。同一 (provider, version) 只试一次（记忆在
+// cached_apply_*），失败或没缓存就回退「绿豆 + worker 校验下载」的老路，
+// PNG 损坏等落盘级损坏会在 applyArtwork 解码失败时暴露出来走回退。
+bool VibeCoding::tryApplyCachedArtwork(const std::string &provider)
+{
+    uint32_t version = 0;
+    {
+        std::lock_guard<std::mutex> lock(model_mutex_);
+        const vibe_provider::Provider *entry = findProviderLocked(provider);
+        if (!entry || !entry->sprite.valid()) return false;
+        version = entry->sprite.version;
+    }
+    {
+        std::lock_guard<std::mutex> lock(artwork_mutex_);
+        if (cached_apply_provider_ == provider && cached_apply_version_ == version) return false;
+        cached_apply_provider_ = provider;
+        cached_apply_version_ = version;
+    }
+    uint32_t cached = 0;
+    std::string manifest;
+    if (!made_sprite_cache::cachedVersion(provider, cached) || cached != version ||
+        !made_sprite_cache::loadManifest(provider, manifest)) return false;
+    if (!made_sprite::applyArtwork(sprite_stage_, manifest, made_sprite_cache::baseDir(provider))) {
+        ESP_LOGW(BUTTON_TAG, "[sprite] cached_apply_failed provider=%s version=%u",
+            provider.c_str(), static_cast<unsigned>(version));
+        return false;
+    }
+    ESP_LOGI(BUTTON_TAG, "[sprite] cached_applied provider=%s version=%u",
+        provider.c_str(), static_cast<unsigned>(version));
+    return true;
 }
 
 void VibeCoding::refreshConfig()

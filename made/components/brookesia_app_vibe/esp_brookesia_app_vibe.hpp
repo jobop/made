@@ -170,6 +170,7 @@ private:
     void refreshConfig();
     void syncArtwork();
     bool artworkRetryDue() const;
+    bool tryApplyCachedArtwork(const std::string &provider);
     void maybeApplyArtwork(const std::string &selected_provider);
     void invalidateCatalog(bool clear = false);
     void sendHeartbeat();
@@ -214,6 +215,10 @@ private:
     std::atomic<bool> artwork_request_{false};
     std::string artwork_applied_;  // 仅 LVGL 线程访问
     std::string artwork_seen_provider_;  // 仅 LVGL 线程访问
+    // 缓存直换的记忆（tryApplyCachedArtwork，仅 LVGL 线程 + artwork_mutex_）：
+    // 同一 (provider, version) 只试一次，失败就交给 worker 的完整校验路径。
+    std::string cached_apply_provider_;
+    uint32_t cached_apply_version_ = 0;
     std::mutex voice_action_mutex_; // Serializes BOOT/touch voice actions with app pause/close.
     Snapshot model_;
     PendingAction pending_action_;

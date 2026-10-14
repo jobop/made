@@ -54,6 +54,7 @@ struct Parts {
     lv_obj_t *glow = nullptr;      // 待确认/运行时的光圈（accent 色，脉冲）
     bool builtin = true;           // 当前显示内置绿豆（setTint 只对它生效）
     int last_mood = -1;
+    uint32_t last_anim_ms = 0;     // 上次动效驱动的 elapsed（10Hz 节流）
     struct Art {
         lv_obj_t *container = nullptr;
         std::vector<ArtLayer> layers;
@@ -387,10 +388,17 @@ void update(lv_obj_t *root, uint32_t elapsed_ms, int mood) {
     if (!root || lv_obj_has_flag(root, LV_OBJ_FLAG_HIDDEN)) return;
     auto *parts = static_cast<Parts *>(lv_obj_get_user_data(root));
     if (!parts || !parts->art.active) return;
-    artUpdate(parts, elapsed_ms, mood);
-    if (mood != parts->last_mood) {
-        parts->last_mood = mood;
-        lv_obj_invalidate(root);
+    // 动效 10Hz 节流：渲染泵 20Hz，但呼吸/轻摆/眨眼都是 1.4–4s 的慢波，
+    // 10Hz 采样视觉无差；而每拍动效都会重采样全部图层（ARGB8888 软件缩放）
+    // 并整屏失效——这是滑动不跟手、整体掉帧的最大单一来源，直接砍半。
+    // 情绪切换不受节流，立即反映。
+    if (mood != parts->last_mood || elapsed_ms - parts->last_anim_ms >= 90) {
+        parts->last_anim_ms = elapsed_ms;
+        artUpdate(parts, elapsed_ms, mood);
+        if (mood != parts->last_mood) {
+            parts->last_mood = mood;
+            lv_obj_invalidate(root);
+        }
     }
 }
 

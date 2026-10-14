@@ -624,6 +624,10 @@ export class UsbReceiver {
             refreshAuthenticatedVoice: this.refreshAuthenticatedVoice,
           });
           const inputBuffer = Buffer.allocUnsafe(4096);
+          // macOS 的 CDC 驱动偶发返回 0 字节读（并非拔线）。连续空读超过
+          // ~1s 才判死，否则一次抖动就把链路拆掉重连（实机表现为「时不时断开」）。
+          const ZERO_READ_LIMIT = 50;
+          link.zeroReads = 0;
           const readAvailable = () => {
             if (this.links.get(port) !== link) return;
             // TTY drivers may return only 1 KiB even when more data is ready.
@@ -631,11 +635,16 @@ export class UsbReceiver {
             for (let reads = 0; reads < 64; reads += 1) {
               try {
                 const length = fs.readSync(fd, inputBuffer, 0, inputBuffer.length, null);
-                if (length > 0) link.protocol.feed(inputBuffer.subarray(0, length));
-                else { this.disconnect(link, 'USB 设备已断开'); return; }
+                if (length > 0) {
+                  link.zeroReads = 0;
+                  link.protocol.feed(inputBuffer.subarray(0, length));
+                } else if (this.links.get(port) === link && ++link.zeroReads >= ZERO_READ_LIMIT) {
+                  this.disconnect(link, 'USB 设备已断开');
+                  return;
+                } else break;
               } catch (error) {
                 if (error.code === 'EAGAIN' || error.code === 'EWOULDBLOCK') break;
-                this.disconnect(link, 'USB 设备已断开');
+                this.disconnect(link, `USB 读取错误 ${error.code || error.message}`);
                 return;
               }
             }
@@ -672,6 +681,9 @@ export class UsbReceiver {
 
   disconnect(link, error = '') {
     if (this.links.get(link.port) !== link) return;
+    // 断开原因必须留痕：连接状态只存最后一条 error，没有这行日志就查不到
+    // 「时不时断开」到底是空读判死、写超时还是心跳超时。
+    console.error(`[usb-link] disconnect port=${link.port} reason=${error || '未指定'} lastSeen=${this.state.lastSeen || 'never'}`);
     this.links.delete(link.port);
     clearTimeout(link.helloTimer);
     link.protocol?.dispose();
