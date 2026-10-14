@@ -205,6 +205,11 @@ bool contentBbox(const uint8_t *px, int w, int h, int &bx, int &by, int &bw, int
 
 // 双线性重采样 ARGB8888 的源图子区域（straight alpha：预乘后采样再还原，
 // 避免半透明边缘在缩小时发暗）。失败返回 null。
+//
+// 全程 Q16 定点整数：跨平台/跨核确定性（同输入必同输出），不受编译器
+// 浮点行为影响，便于用校验和做两端对账。注意：曾误判条纹花屏是后台
+// 任务浮点计算所致，实为 bakeTick 里 region 整块 memcpy 的 stride 错位
+// （见调度处注释），float 版本本身没有错。
 uint8_t *resampleArgb(const uint8_t *src, int sw, int sh,
                       int sx0, int sy0, int sw_box, int sh_box, int dw, int dh)
 {
@@ -214,40 +219,50 @@ uint8_t *resampleArgb(const uint8_t *src, int sw, int sh,
     auto *dst = static_cast<uint8_t *>(
         heap_caps_malloc(static_cast<size_t>(dw) * dh * 4, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
     if (!dst) return nullptr;
-    const float rx = static_cast<float>(sw_box) / dw;
-    const float ry = static_cast<float>(sh_box) / dh;
+    // 每输出像素在源图上前进的距离（Q16）
+    const int rx_q16 = static_cast<int>((static_cast<int64_t>(sw_box) << 16) / dw);
+    const int ry_q16 = static_cast<int>((static_cast<int64_t>(sh_box) << 16) / dh);
     for (int dy = 0; dy < dh; ++dy) {
-        const float fy = (dy + 0.5f) * ry - 0.5f;
-        int y0 = std::min(std::max(static_cast<int>(fy < 0 ? 0 : fy), 0), sh_box - 1);
+        // fy = (dy+0.5)*ry - 0.5（Q16）
+        const int fy = static_cast<int>((static_cast<int64_t>(2 * dy + 1) * ry_q16 - 65536) >> 1);
+        int y0 = fy < 0 ? 0 : (fy >> 16);
+        int ty_q8 = fy < 0 ? 0 : ((fy >> 8) & 0xFF);
+        if (y0 > sh_box - 1) { y0 = sh_box - 1; ty_q8 = 0; }
         const int y1 = std::min(y0 + 1, sh_box - 1);
-        const float ty = std::min(std::max(fy - y0, 0.0f), 1.0f);
+        const int w_top_q8 = 256 - ty_q8;
+        const uint8_t *row0 = src + static_cast<size_t>(sy0 + y0) * sw * 4;
+        const uint8_t *row1 = src + static_cast<size_t>(sy0 + y1) * sw * 4;
         uint8_t *out = dst + static_cast<size_t>(dy) * dw * 4;
         for (int dx = 0; dx < dw; ++dx, out += 4) {
-            const float fx = (dx + 0.5f) * rx - 0.5f;
-            int x0 = std::min(std::max(static_cast<int>(fx < 0 ? 0 : fx), 0), sw_box - 1);
+            const int fx = static_cast<int>((static_cast<int64_t>(2 * dx + 1) * rx_q16 - 65536) >> 1);
+            int x0 = fx < 0 ? 0 : (fx >> 16);
+            int tx_q8 = fx < 0 ? 0 : ((fx >> 8) & 0xFF);
+            if (x0 > sw_box - 1) { x0 = sw_box - 1; tx_q8 = 0; }
             const int x1 = std::min(x0 + 1, sw_box - 1);
-            const float tx = std::min(std::max(fx - x0, 0.0f), 1.0f);
-            const float wa[4] = { (1 - tx) * (1 - ty), tx * (1 - ty), (1 - tx) * ty, tx * ty };
-            const uint8_t *ps[4] = {
-                src + (static_cast<size_t>(sy0 + y0) * sw + sx0 + x0) * 4,
-                src + (static_cast<size_t>(sy0 + y0) * sw + sx0 + x1) * 4,
-                src + (static_cast<size_t>(sy0 + y1) * sw + sx0 + x0) * 4,
-                src + (static_cast<size_t>(sy0 + y1) * sw + sx0 + x1) * 4,
-            };
-            float acc_a = 0, r = 0, g = 0, b = 0;
-            for (int i = 0; i < 4; ++i) {
-                const float a = ps[i][3] / 255.0f * wa[i];   // 预乘权重
-                acc_a += a;
-                r += a * ps[i][0];
-                g += a * ps[i][1];
-                b += a * ps[i][2];
+            const int w_left_q8 = 256 - tx_q8;
+            const int w00 = w_left_q8 * w_top_q8;   // Q16（Q8×Q8）
+            const int w10 = tx_q8 * w_top_q8;
+            const int w01 = w_left_q8 * ty_q8;
+            const int w11 = tx_q8 * ty_q8;
+            const uint8_t *p00 = row0 + static_cast<size_t>(sx0 + x0) * 4;
+            const uint8_t *p10 = row0 + static_cast<size_t>(sx0 + x1) * 4;
+            const uint8_t *p01 = row1 + static_cast<size_t>(sx0 + x0) * 4;
+            const uint8_t *p11 = row1 + static_cast<size_t>(sx0 + x1) * 4;
+            const int acc_a = w00 * p00[3] + w10 * p10[3] + w01 * p01[3] + w11 * p11[3];
+            out[3] = static_cast<uint8_t>(acc_a >> 16);
+            if (acc_a > 65) {   // ≈ alpha 0.001 阈值
+                // 预乘颜色：Σ w·C·A / acc_a（int64 防溢出：w·C·A ≤ 65536·65025）
+                for (int c = 0; c < 3; ++c) {
+                    const int64_t prem = static_cast<int64_t>(w00) * p00[c] * p00[3] +
+                        static_cast<int64_t>(w10) * p10[c] * p10[3] +
+                        static_cast<int64_t>(w01) * p01[c] * p01[3] +
+                        static_cast<int64_t>(w11) * p11[c] * p11[3];
+                    out[c] = static_cast<uint8_t>(std::min<int64_t>(
+                        (prem + acc_a / 2) / acc_a, 255));
+                }
+            } else {
+                out[0] = out[1] = out[2] = 0;
             }
-            if (acc_a > 0.001f) { r /= acc_a; g /= acc_a; b /= acc_a; }
-            else { r = g = b = 0; }
-            out[0] = static_cast<uint8_t>(std::min(std::max(r, 0.0f), 255.0f) + 0.5f);
-            out[1] = static_cast<uint8_t>(std::min(std::max(g, 0.0f), 255.0f) + 0.5f);
-            out[2] = static_cast<uint8_t>(std::min(std::max(b, 0.0f), 255.0f) + 0.5f);
-            out[3] = static_cast<uint8_t>(std::min(std::max(acc_a, 0.0f), 1.0f) * 255.0f + 0.5f);
         }
     }
     return dst;
@@ -306,12 +321,26 @@ struct BakeState {
     int bbox_x = 0, bbox_y = 0;
     // 结果（worker 写，done 后 LVGL 线程收割/丢弃）：
     std::vector<Frame> frames;
+    std::vector<uint32_t> checksums;   // worker 侧逐帧 FNV-1a（诊断用）
+    uint32_t region_sum = 0;           // worker 开工前对 region 再算一次
 };
 BakeState g_bake;
 std::atomic<uint64_t> g_art_epoch{1};
 
+uint32_t fnv1a(const uint8_t *data, size_t len)
+{
+    uint32_t h = 2166136261u;
+    for (size_t i = 0; i < len; ++i) {
+        h ^= data[i];
+        h *= 16777619u;
+    }
+    return h;
+}
+
 void bakeWorker(void *)
 {
+    g_bake.region_sum = fnv1a(g_bake.region,
+        static_cast<size_t>(g_bake.bw) * g_bake.bh * 4);
     for (size_t k = 0; k < g_bake.scales.size(); ++k) {
         const int s = g_bake.scales[k];
         const int dw = std::max(1, static_cast<int>((static_cast<int64_t>(g_bake.bw) * g_bake.base_scale * s + 32768) / 65536));
@@ -319,6 +348,7 @@ void bakeWorker(void *)
         auto *px = resampleArgb(g_bake.region, g_bake.bw, g_bake.bh,
                                 0, 0, g_bake.bw, g_bake.bh, dw, dh);
         if (!px) break;   // 内存吃紧：帧数就到这，短表也照常可用
+        g_bake.checksums.push_back(fnv1a(px, static_cast<size_t>(dw) * dh * 4));
         Frame f;
         f.pixels = px;
         f.dsc.header.magic = LV_IMAGE_HEADER_MAGIC;
@@ -330,6 +360,9 @@ void bakeWorker(void *)
         f.dsc.data = px;
         g_bake.frames.push_back(f);
     }
+    ESP_LOGD("made_sprite", "[bake] worker done frames=%u region=%08x",
+        static_cast<unsigned>(g_bake.frames.size()),
+        static_cast<unsigned>(g_bake.region_sum));
     g_bake.done.store(true, std::memory_order_release);
     vTaskDelete(nullptr);
 }
@@ -351,10 +384,22 @@ void bakeTick(Parts *parts)
         g_bake.region = nullptr;
         g_bake.done.store(false, std::memory_order_relaxed);
         g_bake.in_flight.store(false, std::memory_order_release);
+        std::vector<uint32_t> checksums = std::move(g_bake.checksums);
+        g_bake.checksums.clear();
         if (g_bake.epoch == art.epoch && g_bake.layer_index < art.layers.size() &&
             !frames.empty()) {
             ArtLayer &layer = art.layers[g_bake.layer_index];
             if (!layer.baked && layer.obj) {
+                // 诊断：收割时重算第 0 帧校验和，与 worker 侧对比。不一致 =
+                // 双核/缓存可见性问题，弃用烘焙保动态缩放（绝不上屏坏数据）。
+                const Frame &f0 = frames.front();
+                const uint32_t now_sum = fnv1a(
+                    static_cast<const uint8_t *>(f0.dsc.data), f0.dsc.data_size);
+                const uint32_t worker_sum = checksums.empty() ? 0 : checksums.front();
+                if (now_sum != worker_sum) {
+                    ESP_LOGW("made_sprite", "[bake] checksum mismatch, keep dynamic");
+                    return;
+                }
                 layer.bbox_x = g_bake.bbox_x;
                 layer.bbox_y = g_bake.bbox_y;
                 layer.baked_frames = std::move(frames);
@@ -363,8 +408,12 @@ void bakeTick(Parts *parts)
                 // 原帧不再参与显示，释放省几百 KB PSRAM（内置豆的静态 dsc
                 // 没有堆像素，freeFrames 自然跳过）。
                 freeFrames(layer.frames);
-                // 烘焙帧已是显示尺寸：缩放固定 1:1，后续只换 src + 位移
-                lv_image_set_scale(layer.obj, 256);
+                // 烘焙帧已是显示尺寸：缩放固定 1:1，后续只换 src + 位移。
+                // 用 255 而不是 256：256 可能走 LVGL 的恒等（identity）绘制
+                // 快路径，其真机表现未经独立验证；255 强制走变换绘制路径，
+                // 视觉差 0.4% 不可感知（条纹根因已查明是 region 拷贝 bug，
+                // 与此无关，此处仅作稳妥保留）。
+                lv_image_set_scale(layer.obj, 255);
                 lv_image_set_src(layer.obj, &layer.baked_frames.front().dsc);
                 layer.last_frame = 0;
                 lv_obj_invalidate(parts->root);
@@ -403,14 +452,25 @@ void bakeTick(Parts *parts)
             static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_SPIRAM) / 1024));
         return;
     }
-    // bbox 区域私有副本（PSRAM→PSRAM，≤0.5MB 一次性 memcpy）。
+    // bbox 区域私有副本（PSRAM→PSRAM，≤0.5MB 逐行 memcpy）。
+    // 注意必须逐行拷：bbox 在整幅源图里每行之间隔着 (sw-bw) 像素不连续
+    // 数据，整块 memcpy 会把行尾拼上下行开头、逐行漂移 (sw-bw)*4 字节，
+    // 渲染成斜向剪切条纹（真机与 sim 同错，校验和一致但内容本身是错的——
+    // 「数据校验正确」不等于「拷贝正确」，校验只能证自洽不能证对）。
     auto *region = static_cast<uint8_t *>(heap_caps_malloc(
         static_cast<size_t>(bw) * bh * 4, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
     if (!region) return;
-    std::memcpy(region,
-        static_cast<const uint8_t *>(srcf.dsc.data) + (static_cast<size_t>(by) * sw + bx) * 4,
-        static_cast<size_t>(bw) * bh * 4);
-
+    {
+        const uint8_t *src = static_cast<const uint8_t *>(srcf.dsc.data);
+        const size_t sstride = srcf.dsc.header.stride
+            ? static_cast<size_t>(srcf.dsc.header.stride)
+            : static_cast<size_t>(sw) * 4;
+        for (int y = 0; y < bh; ++y) {
+            std::memcpy(region + static_cast<size_t>(y) * bw * 4,
+                src + static_cast<size_t>(by + y) * sstride + static_cast<size_t>(bx) * 4,
+                static_cast<size_t>(bw) * 4);
+        }
+    }
     g_bake.region = region;
     g_bake.bw = bw;
     g_bake.bh = bh;
@@ -641,7 +701,7 @@ void artUpdate(Parts *parts, uint32_t elapsed_ms, int mood) {
         frame = std::min(std::max(frame, 0), static_cast<int>(layer.frames.size()) - 1);
         if (frame != layer.last_frame) {
             layer.last_frame = frame;
-            ESP_LOGI("made_sprite", "[frame] blink=%d talk=%d mood=%d frame=%d elapsed=%u",
+            ESP_LOGD("made_sprite", "[frame] blink=%d talk=%d mood=%d frame=%d elapsed=%u",
                 layer.blink ? 1 : 0, layer.talk ? 1 : 0, mood, frame,
                 static_cast<unsigned>(elapsed_ms));
         }

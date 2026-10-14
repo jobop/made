@@ -9,6 +9,7 @@
 #include "lvgl.h"
 #include <SDL2/SDL.h>
 #include "esp_brookesia_app_vibe.hpp"
+#include "made_sprite.hpp"
 
 #include <cstdint>
 #include <cstdio>
@@ -20,6 +21,49 @@
 using esp_brookesia::apps::VibeCoding;
 
 namespace {
+
+// MADE_SIM_SPRITE_DIR=<dir>：独立精灵测试模式——不走 App，直接在活动屏幕上
+// 建 made_sprite 舞台并加载 <dir>/manifest.json 分层素材，验证真实素材的
+// 解码/烘焙/帧轮播渲染（AI 自查花屏/错位用）。
+std::string read_file(const std::string &path)
+{
+    FILE *fp = fopen(path.c_str(), "rb");
+    if (!fp) return std::string();
+    std::string json;
+    char buf[4096];
+    size_t n;
+    while ((n = fread(buf, 1, sizeof(buf), fp)) > 0) json.append(buf, n);
+    fclose(fp);
+    return json;
+}
+
+int run_sprite_test()
+{
+    const char *dir = getenv("MADE_SIM_SPRITE_DIR");
+    if (!dir || !*dir) return 0;
+    std::string manifest = read_file(std::string(dir) + "/manifest.json");
+    if (manifest.empty()) {
+        fprintf(stderr, "sim: no manifest.json in %s\n", dir);
+        return 1;
+    }
+    lv_obj_t *stage = made_sprite::create(lv_screen_active());
+    std::string base = dir;
+    if (base.empty() || base.back() != '/') base += '/';
+    if (!stage || !made_sprite::applyArtwork(stage, manifest, base)) {
+        fprintf(stderr, "sim: sprite test apply failed\n");
+        return 1;
+    }
+    uint32_t elapsed = 0;
+    for (int i = 0; i < 400; ++i) {   // ~13s：留足后台烘焙时间
+        SDL_PumpEvents();
+        lv_tick_inc(33);
+        lv_timer_handler();
+        SDL_Delay(30);
+        elapsed += 33;
+        made_sprite::update(stage, elapsed, made_sprite::Mood::kIdle);
+    }
+    return 0;
+}
 
 struct SimAction {
     enum Type { Tap, Swipe, Wait } type = Wait;
@@ -188,7 +232,11 @@ int main(int argc, char **argv)
     lv_display_set_render_mode(disp, LV_DISPLAY_RENDER_MODE_FULL);
     lv_sdl_mouse_create();
 
-    if (!VibeCoding::startOnDisplay()) {
+    // 精灵独立测试模式：跳过 App，直接渲染指定素材目录。
+    bool sprite_test = getenv("MADE_SIM_SPRITE_DIR") != nullptr;
+    if (sprite_test) run_sprite_test();
+
+    if (!sprite_test && !VibeCoding::startOnDisplay()) {
         fprintf(stderr, "sim: startOnDisplay failed\n");
         return 1;
     }
@@ -219,10 +267,10 @@ int main(int argc, char **argv)
     }
 
     if (!args.shot_path.empty()) {
-    // 手势后等待若干帧让过渡动画收尾，再截整帧。
-    for (int i = 0; i < args.settle_frames; ++i) {
-        SDL_PumpEvents(); lv_tick_inc(33); lv_timer_handler(); SDL_Delay(30);
-    }
+        // 手势后等待若干帧让过渡动画收尾，再截整帧。
+        for (int i = 0; i < args.settle_frames; ++i) {
+            SDL_PumpEvents(); lv_tick_inc(33); lv_timer_handler(); SDL_Delay(30);
+        }
         captureShot(args.shot_path, disp);
     }
 
