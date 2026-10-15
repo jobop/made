@@ -179,8 +179,15 @@ export class JobStore {
   }
 
   listSessions(provider) {
+    // 单趟找每个会话的最新任务：以前每个会话都全量拷贝+反转 jobs 再线性找，
+    // 会话×任务的 O(n²) 在 /api/state 每次轮询都跑。
+    const latestBySession = new Map();
+    for (let i = this.jobs.length - 1; i >= 0; i -= 1) {
+      const job = this.jobs[i];
+      if (!latestBySession.has(job.vibeSessionId)) latestBySession.set(job.vibeSessionId, job);
+    }
     return this.sessions.list(provider).map((session) => {
-      const latest = [...this.jobs].reverse().find((job) => job.vibeSessionId === session.id);
+      const latest = latestBySession.get(session.id);
       return { ...session, status: latest?.status || 'empty' };
     });
   }

@@ -116,14 +116,19 @@ std::string transport_error(const std::string &value) {
     return value;
 }
 std::string message(const std::string &value) {
+    // 空串是最高频输入（voice/pairing 快照在渲染定时器里 20Hz 调用），直接返回；
+    // 否则未命中后要走一遍全词典前缀扫描。
+    if (value.empty()) return value;
     if (const auto *entry = find(value.c_str())) return locale() == Locale::English ? entry->en : entry->zh;
     // Status-code suffixes are data. Translate only our known prefix.
+    // 逐条目用 strlen+compare，不构造 std::string：以前每条目一次堆分配，
+    // 未知文案每次调用都白付 ~200 次小分配（LVGL 线程，渲染热路径）。
     for (const auto &entry : dictionary) {
         const size_t en_size = std::strlen(entry.en), zh_size = std::strlen(entry.zh);
-        if (en_size < 6 || std::string(entry.en).find("HTTP ") == std::string::npos) continue;
-        if (value.compare(0, zh_size, entry.zh) == 0)
+        if (en_size < 6 || std::strstr(entry.en, "HTTP ") == nullptr) continue;
+        if (value.size() >= zh_size && value.compare(0, zh_size, entry.zh) == 0)
             return std::string(locale() == Locale::English ? entry.en : entry.zh) + value.substr(zh_size);
-        if (value.compare(0, en_size, entry.en) == 0)
+        if (value.size() >= en_size && value.compare(0, en_size, entry.en) == 0)
             return std::string(locale() == Locale::English ? entry.en : entry.zh) + value.substr(en_size);
     }
     return value;

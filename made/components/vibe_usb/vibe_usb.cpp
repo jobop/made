@@ -338,7 +338,9 @@ esp_err_t receive_response(uint32_t id, uint32_t request_epoch, std::string& res
         if (!good_chunk) return ESP_ERR_INVALID_RESPONSE;
         response.append(reinterpret_cast<const char*>(decoded), decoded_length);
         // 逐帧指纹：与桥接器 [usb-tx]（所有 USB 响应分片，非素材专属）按顺序
-        // 对齐，谁改了数据一眼可见；仅在素材下载窗口内与 [sprite-rx] 语义对应。
+        // 对齐，谁改了数据一眼可见。DEBUG 级：空闲轮询每 2.2s 也有 4~8 片，
+        // INFO 级会永久刷屏且被误读成 sprite 传输（标签已正名为 [usb-rx]）；
+        // 对账素材分片时临时把本模块日志级别调到 DEBUG 即可。
         {
             uint32_t fnv = 2166136261u;
             for (size_t i = 0; i < decoded_length; ++i) {
@@ -347,7 +349,7 @@ esp_err_t receive_response(uint32_t id, uint32_t request_epoch, std::string& res
             }
             char fnv_text[9];
             std::snprintf(fnv_text, sizeof(fnv_text), "%08" PRIx32, fnv);
-            ESP_LOGI(kTag, "[sprite-rx] size=%u len=%u fnv1a=%s",
+            ESP_LOGD(kTag, "[usb-rx] size=%u len=%u fnv1a=%s",
                 static_cast<unsigned>(response.size()), static_cast<unsigned>(decoded_length), fnv_text);
         }
         // 逐块 ACK 流控：电脑端收到 ack 才发下一块，防止 UART RX 环形缓冲溢出。

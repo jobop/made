@@ -5,9 +5,26 @@ export function agentFor(config, id) {
   return config.pluginsRuntime ? config.pluginsRuntime.agent(id) : undefined;
 }
 
+// 探针快照缓存：providerStates 每次都重跑全部插件 probe，而 CLI 探针内部是
+// PATH 全量 statSync 扫描 + 60s TTL 的 spawnSync 登录检查。/api/state 是秒级
+// 轮询端点，不缓存会把它放大成每秒上百次 stat、每分钟数次事件循环最长 3s 的
+// 同步冻结。3s TTL 意味着设置变更最迟 3s 可见；调用方只读不写返回值。
+// 按插件运行时实例隔离（WeakMap）：不同注册表（测试/重载）互不串味。
+const PROVIDER_STATES_TTL_MS = 3000;
+const providerStatesCaches = new WeakMap();
+
 export function providerStates(config, locale = config.locale) {
-  const agents = config.pluginsRuntime ? config.pluginsRuntime.agents() : [];
-  return agents.map((plugin) => {
+  const runtime = config.pluginsRuntime;
+  if (!runtime) return [];
+  let byLocale = providerStatesCaches.get(runtime);
+  if (!byLocale) {
+    byLocale = new Map();
+    providerStatesCaches.set(runtime, byLocale);
+  }
+  const cached = byLocale.get(locale);
+  if (cached && cached.until > Date.now()) return cached.states;
+  const agents = runtime.agents();
+  const states = agents.map((plugin) => {
     let state;
     try {
       state = plugin.probe(config);
@@ -38,6 +55,8 @@ export function providerStates(config, locale = config.locale) {
       canCancelRunning: plugin.capabilities.cancel,
     };
   });
+  providerStatesCaches.get(runtime).set(locale, { states, until: Date.now() + PROVIDER_STATES_TTL_MS });
+  return states;
 }
 
 export function createRunner(config) {
