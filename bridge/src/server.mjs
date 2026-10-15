@@ -797,6 +797,11 @@ export function createApp(config, { run, transcribe, tunnel: providedTunnel, ena
               result: result.text,
               resultTruncated: result.truncated,
               error: devicePreview(job.error.slice(-200), 96),
+              attachments: (job.attachments || []).map((a) => ({
+                type: a.type === 'image' ? 'image' : 'link',
+                url: String(a.url || '').slice(0, 2048),
+                text: String(a.text || '').slice(0, 120),
+              })).filter((a) => a.url),
             };
           }),
         });

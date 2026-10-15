@@ -10,6 +10,49 @@ function now() {
   return new Date().toISOString();
 }
 
+const IMAGE_URL_RE = /\.(png|jpg|jpeg|gif|webp|bmp)(\?.*)?$/i;
+const URL_RE = /https?:\/\/[^\s"`<>]+/gi;
+const TRAILING_PUNCT_RE = /[.,;)\]]+$/;
+
+function extractUrlAttachments(text) {
+  const attachments = [];
+  const seen = new Set();
+  for (const match of String(text || '').matchAll(URL_RE)) {
+    let url = match[0];
+    while (TRAILING_PUNCT_RE.test(url)) url = url.replace(TRAILING_PUNCT_RE, '');
+    if (url.length < 8 || seen.has(url)) continue;
+    seen.add(url);
+    attachments.push({
+      type: IMAGE_URL_RE.test(url) ? 'image' : 'link',
+      url,
+      text: '',
+    });
+  }
+  return attachments;
+}
+
+function normalizeAttachments(value) {
+  if (!Array.isArray(value)) return [];
+  return value.map((a) => ({
+    type: a.type === 'image' ? 'image' : 'link',
+    url: String(a.url || ''),
+    text: String(a.text || ''),
+  })).filter((a) => a.url);
+}
+
+function mergeAttachments(result, explicit) {
+  const fromText = extractUrlAttachments(result);
+  const fromExplicit = normalizeAttachments(explicit);
+  const seen = new Set(fromText.map((a) => a.url));
+  for (const a of fromExplicit) {
+    if (!seen.has(a.url)) {
+      fromText.push(a);
+      seen.add(a.url);
+    }
+  }
+  return fromText;
+}
+
 export class JobStore {
   constructor({ file, projects, defaultProject, defaultProvider, workspaceRoot, maxParallel, maxAutoRetries, run, providerAvailable, pluginsRuntime, hooks }) {
     this.agent = pluginsRuntime ? (id) => pluginsRuntime.agent(id) : run.agent || builtinAgent;
@@ -337,6 +380,8 @@ export class JobStore {
             // 回合输出管道：仅在任务完成时调用，插件返回新字符串即改写结果。
             if (job.status === 'completed') result = this.hooks ? await this.hooks.turnOut(job, result) : result;
             job.result = result;
+            // 富内容附件：插件可显式下发 attachments；同时自动从 result 文本解析 URL。
+            job.attachments = mergeAttachments(job.result, outcome.attachments);
             if (outcome.handoff && typeof outcome.handoff === 'object') job.handoff = { ...outcome.handoff };
             if (job.status === 'completed' && typeof outcome.gitSnapshot === 'string') {
               this.sessions.setGitSnapshot(job.vibeSessionId, outcome.gitSnapshot);
