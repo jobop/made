@@ -4321,7 +4321,8 @@ void VibeCoding::announceBoardCatalog()
         "{\"name\":\"task.cancel\"},"
         "{\"name\":\"debug.screenshot\"},"
         "{\"name\":\"ui.swipe\"},"
-        "{\"name\":\"ui.tap\"}"
+        "{\"name\":\"ui.tap\"},"
+        "{\"name\":\"ui.back\"}"
         "]}";
     std::string response;
     int status = 0;
@@ -4698,6 +4699,10 @@ void VibeCoding::applyRemoteCommands()
             handleUiSwipe(command.direction);
         } else if (command.name == "ui.tap") {
             handleUiTap(command.x, command.y);
+        } else if (command.name == "ui.back") {
+            // 远程返回键：与实体返回键同一条 back() 路径（设置面板逐层退出）。
+            // 故意不走 settings_open_ 拦截，否则设置页打开时远程无法恢复。
+            back();
         }
     }
 }

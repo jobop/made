@@ -69,6 +69,7 @@ npx made-market info <包 ID>             # 查看版本、校验和与安装位
 | `task.confirm` / `task.cancel` | 审批待确认任务 |
 | `ui.swipe` | 语义化手势：字段 `direction`＝`left`/`right`（切助手）、`up`（开抽屉）、`down`（收抽屉） |
 | `ui.tap` | 点击屏幕：字段 `x`/`y`（板面像素坐标），命中测试最深的可点击对象并派发 CLICKED |
+| `ui.back` | 远程返回键：与实体返回键同路径逐层退出（设置面板/抽屉/对话框）；设置页打开时仍可用（ui.swipe/ui.tap 在设置页会被拦截） |
 | `debug.screenshot` | 截取当前画面，RGB565 回传桥接器转 PNG（见「板端截屏调试」） |
 
 **桥接器线 —— `bridge/src/plugins/enhance.mjs` 露出的句柄，改完重启桥接器即生效：**
