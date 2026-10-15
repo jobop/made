@@ -65,15 +65,17 @@ int run_sprite_test()
         made_sprite::update(stage, elapsed, made_sprite::Mood::kIdle);
     }
 
-    // MADE_SIM_SWIPE_DEMO=1：左右滑跟手演示。复刻 homeDragCallback 的拖动路径
-    // （screen 整体平移，素材是子对象随之跟手；露出区是 bottom layer 底色），
-    // 每一步截图，供合成 GIF 检查滑动过渡。第二套素材走 MADE_SIM_SPRITE_DIR2，
-    // 模拟松手超阈值切助手后的换装。
+    // MADE_SIM_SWIPE_DEMO=1：左右滑跟手 + 真翻页演示。侧舞台（第二套素材）
+    // 停在屏外 ±1 屏宽，拖动平移 screen 时从屏边滑入视野；松手晋升（换指针）。
+    // 每步截图，供检查滑动过渡与翻页预览。
     if (getenv("MADE_SIM_SWIPE_DEMO")) {
         const char *prefix = getenv("MADE_SIM_SHOT_PREFIX");
         std::string tag = prefix && *prefix ? prefix : "/tmp/swipe";
         lv_obj_t *screen = lv_screen_active();
         const int w = 240;
+        lv_obj_add_flag(screen, LV_OBJ_FLAG_OVERFLOW_VISIBLE);
+        lv_obj_set_ext_draw_size(screen, w);
+        lv_obj_refresh_ext_draw_size(screen);  // set 只注册回调，刷新一次才写入
         auto pump = [&]() {
             SDL_PumpEvents(); lv_tick_inc(33); lv_timer_handler(); SDL_Delay(30);
             elapsed += 33;
@@ -85,24 +87,41 @@ int run_sprite_test()
             pump();
             captureShot(path, disp);
         };
-        auto apply = [&](const char *d) {
+        auto stage2 = [&](lv_obj_t *st, const char *d) {
             std::string m = read_file(std::string(d) + "/manifest.json");
             std::string b = d;
             if (b.empty() || b.back() != '/') b += '/';
-            made_sprite::applyArtwork(stage, m, b);
-            for (int i = 0; i < 20; ++i) pump();   // 等解码/烘焙稳定
+            made_sprite::applyArtwork(st, m, b);
+            for (int i = 0; i < 10; ++i) pump();
         };
+        const char *dir2 = getenv("MADE_SIM_SPRITE_DIR2");
+        // 右侧挂第二套素材：向左拖时它从屏边滑入（真翻页预览）。
+        lv_obj_t *neighbor = made_sprite::create(screen);
+        lv_obj_set_x(neighbor, w);
+        if (dir2 && *dir2) stage2(neighbor, dir2);
         pan(0, tag + "_00.bmp");                       // 起点：素材完整可见
         for (int k = 1; k <= 6; ++k) pan(-w * k / 6, tag + "_a" + std::to_string(k) + ".bmp");
-        apply(getenv("MADE_SIM_SPRITE_DIR2"));         // 松手过阈值：切助手换装
+        // 松手晋升：侧舞台移到正位，旧主舞台撤装停靠屏外，指针互换。
+        lv_obj_set_x(neighbor, 0);
+        made_sprite::clearArtwork(stage);
+        lv_obj_set_x(stage, w * 2);
+        std::swap(stage, neighbor);
         lv_obj_set_x(screen, 0);
-        pump();
+        for (int i = 0; i < 3; ++i) pump();
         captureShot(tag + "_b0.bmp", disp);
-        for (int k = 1; k <= 6; ++k) pan(-w * (6 - k) / 6, tag + "_b" + std::to_string(k) + ".bmp");
-        pan(0, tag + "_c0.bmp");                       // 反向滑回起点素材
-        apply(dir);
-        for (int i = 0; i < 10; ++i) pump();
-        captureShot(tag + "_c1.bmp", disp);
+        // 反向演示：旧素材（第一套）挂到屏外左侧，向右拖时从左边滑入。
+        if (dir2 && *dir2) {
+            stage2(neighbor, dir);                     // neighbor 现在是旧主舞台
+            lv_obj_set_x(neighbor, -w);
+            for (int k = 1; k <= 6; ++k) pan(w * k / 6, tag + "_b" + std::to_string(k) + ".bmp");
+            lv_obj_set_x(neighbor, 0);
+            made_sprite::clearArtwork(stage);
+            lv_obj_set_x(stage, -w * 2);
+            std::swap(stage, neighbor);
+            lv_obj_set_x(screen, 0);
+            for (int i = 0; i < 10; ++i) pump();
+            captureShot(tag + "_c1.bmp", disp);
+        }
     }
     return 0;
 }

@@ -238,6 +238,7 @@ private:
     std::atomic<bool> artwork_dirty_{false};
     std::atomic<bool> artwork_request_{false};
     std::string artwork_applied_;  // 仅 LVGL 线程访问
+    uint32_t artwork_applied_version_ = 0;  // 与 artwork_applied_ 同步更新
     std::string artwork_seen_provider_;  // 仅 LVGL 线程访问
     // 缓存直换的记忆（tryApplyCachedArtwork，仅 LVGL 线程 + artwork_mutex_）：
     // 只在失败时记录，作为 300ms 退避（避免未就绪时每帧读 SPIFFS）；
@@ -259,6 +260,29 @@ private:
     };
     std::vector<ArtworkPreloadEntry> artwork_preload_queue_;
     uint64_t artwork_preload_epoch_ = 0;
+    // 三舞台轮换（仅 LVGL 线程访问）：主舞台 + 左右侧台各一套。实测三套
+    // 解码像素合计 ~2.2MB（猫 0.59/鸟 0.47/狗 1.11），8MB PSRAM 放得下。
+    // 侧台常驻解码好的相邻助手（停靠屏外 ±1 屏宽，拖动平移时随屏滑入
+    // 视野——真翻页）；松手晋升只是三指针轮换（旧主舞台转对侧台，内容
+    // 正好是新主的对侧邻居；远侧台内容由 reconcile 校对补齐）——恰好
+    // 3 个助手时永不重新解码，任何方向随时可翻。
+    struct SideSlot {
+        lv_obj_t *stage = nullptr;
+        std::string provider;      // 该侧台当前挂的素材（空=无）
+        uint32_t version = 0;
+        int side = 0;              // -1 屏左 / +1 屏右（座位固定，不随轮换变）
+    };
+    SideSlot sides_[2];
+    int drag_side_ = -1;                   // 最近一次拖动的方向侧台（0/1，-1=无）；补齐顺序优先它
+    std::string prefetch_provider_;        // 在飞解码的目标（空=无）
+    uint32_t prefetch_version_ = 0;
+    int prefetch_slot_ = -1;               // 在飞解码归属的侧台（0/1）
+    uint32_t prefetch_retry_ms_ = 0;       // 起飞失败/解码失败的退避重试时刻
+    void maybeStartPrefetch(int direction);
+    void prefetchTick();                   // 每帧：解码完挂上归属侧台+对齐两侧
+    void ensureSide(int index);            // 侧台内容对齐相邻助手（按需解码）
+    bool tryPromotePrefetch(const std::string &provider);  // 命中则三指针轮换
+    uint32_t spriteVersionOf(const std::string &provider); // 目录里素材的版本号
     std::mutex voice_action_mutex_; // Serializes BOOT/touch voice actions with app pause/close.
     Snapshot model_;
     PendingAction pending_action_;

@@ -58,6 +58,7 @@ struct Parts {
     lv_obj_t *root = nullptr;      // 舞台根对象
     lv_obj_t *glow = nullptr;      // 待确认/运行时的光圈（accent 色，脉冲）
     bool builtin = false;          // 兼容保留：内置素材已删除，恒为 false
+    bool bake_enabled = true;      // 侧舞台关烘焙：省 PSRAM 给预取解码
     int last_mood = -1;
     uint32_t last_anim_ms = 0;     // 上次动效驱动的 elapsed（10Hz 节流）
     struct Art {
@@ -284,7 +285,14 @@ uint8_t *resampleArgb(const uint8_t *src, int sw, int sh,
 bool planBakeScales(int bw, int bh, int base_scale, int amp, std::vector<int> &scales)
 {
     const size_t free_size = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
-    const size_t budget = std::min(free_size / 2, static_cast<size_t>(3500) * 1024);
+    // 预取预留：滑动方向预取随时可能要在后台解码第二套素材（2~3MB）。
+    // 烘焙若把空闲池吃穿（旧预算 free/2 上限 3.5MB 就会这样），翻回去的
+    // 那一屏预取永远过不了 1.5MB 守卫——素材只能翻页后才出现。恒留
+    // 2.5MB：烘焙拿不到就少烘几帧或干脆跳过（动态缩放兜底），比锁死
+    // 预取划算。
+    const size_t reserve = static_cast<size_t>(2560) * 1024;
+    const size_t budget = std::min(free_size > reserve ? free_size - reserve : 0,
+                                   static_cast<size_t>(3500) * 1024);
     const size_t largest = heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM);
     for (int M : {12, 10, 8, 6, 4}) {
         size_t total = 0;
@@ -371,6 +379,7 @@ void bakeTick(Parts *parts)
 {
     auto &art = parts->art;
     if (!art.active) return;
+    if (!parts->bake_enabled) return;   // 侧舞台：动画走动态缩放，不抢烘焙
 
     // 收割：done 后结果所有权移到局部，epoch 不匹配就地析构释放。
     if (g_bake.in_flight.load(std::memory_order_acquire) &&
@@ -751,10 +760,12 @@ void update(lv_obj_t *root, uint32_t elapsed_ms, int mood) {
     }
 }
 
-bool applyArtwork(lv_obj_t *root, const std::string &manifest_json, const std::string &base_dir) {
-    if (!root) return false;
-    auto *parts = static_cast<Parts *>(lv_obj_get_user_data(root));
-    if (!parts || !parts->root) return false;
+// manifest JSON → 动效参数 + 图层帧规格（含全部 PNG 解码到 PSRAM）。
+// 任一帧解码失败返回 false，已解码的帧就地释放。applyArtwork（LVGL 线程
+// 兜底路径）与滑动预取 worker 共用；本函数不碰 LVGL 对象，可在任意线程跑。
+// static：签名引用匿名命名空间类型，保持内部链接。
+static bool buildSpecsFromManifest(const std::string &manifest_json, const std::string &base_dir,
+                                   MotionSpec &motion, std::vector<LayerSpec> &specs) {
     cJSON *manifest = cJSON_Parse(manifest_json.c_str());
     if (!manifest) return false;
     const cJSON *canvas = cJSON_GetObjectItemCaseSensitive(manifest, "canvas");
@@ -767,19 +778,6 @@ bool applyArtwork(lv_obj_t *root, const std::string &manifest_json, const std::s
         return false;
     }
 
-    // 旧素材先行退场：新帧若在旧帧还活着时解码，两套 324×324×ARGB 叠加
-    // 会把 PSRAM 峰值推到双倍（实机切换时解码失败回退空白）。先撤旧层，
-    // 解码峰值只剩新素材一套；失败时本来就停在空白等下次重试。
-    if (parts->art.container) lv_obj_delete(parts->art.container);
-    parts->art.container = nullptr;
-    for (auto &layer : parts->art.layers) {
-        freeFrames(layer.frames);
-        freeFrames(layer.baked_frames);
-    }
-    parts->art.layers.clear();
-    parts->art.active = false;
-
-    MotionSpec motion;
     motion.canvas_w = canvas_w->valueint;
     motion.canvas_h = canvas_h->valueint;
     const cJSON *motion_json = cJSON_GetObjectItemCaseSensitive(manifest, "motion");
@@ -815,7 +813,6 @@ bool applyArtwork(lv_obj_t *root, const std::string &manifest_json, const std::s
     std::stable_sort(pending.begin(), pending.end(),
                      [](const Pending &a, const Pending &b) { return a.z < b.z; });
 
-    std::vector<LayerSpec> specs;
     for (const auto &entry : pending) {
         const cJSON *layer = entry.json;
         std::vector<std::string> files;
@@ -869,15 +866,55 @@ bool applyArtwork(lv_obj_t *root, const std::string &manifest_json, const std::s
         specs.push_back(std::move(spec));
     }
 
-    if (commitArt(parts, motion, std::move(specs), false)) {
+    cJSON_Delete(manifest);
+    return true;
+fail:
+    for (auto &spec : specs) freeFrames(spec.frames);
+    cJSON_Delete(manifest);
+    return false;
+}
+
+bool applyArtwork(lv_obj_t *root, const std::string &manifest_json, const std::string &base_dir) {
+    if (!root) return false;
+    auto *parts = static_cast<Parts *>(lv_obj_get_user_data(root));
+    if (!parts || !parts->root) return false;
+    // 先快速校验 manifest 合法（完整解析在 buildSpecsFromManifest 里再做，
+    // 纯解析开销可忽略）——manifest 不合法时不能撤旧素材。
+    cJSON *manifest = cJSON_Parse(manifest_json.c_str());
+    if (!manifest) return false;
+    const cJSON *canvas = cJSON_GetObjectItemCaseSensitive(manifest, "canvas");
+    const cJSON *canvas_w = cJSON_GetObjectItemCaseSensitive(canvas, "w");
+    const cJSON *canvas_h = cJSON_GetObjectItemCaseSensitive(canvas, "h");
+    const cJSON *layers = cJSON_GetObjectItemCaseSensitive(manifest, "layers");
+    if (!cJSON_IsNumber(canvas_w) || !cJSON_IsNumber(canvas_h) || !cJSON_IsArray(layers) ||
+        canvas_w->valueint <= 0 || canvas_h->valueint <= 0) {
         cJSON_Delete(manifest);
+        return false;
+    }
+    cJSON_Delete(manifest);
+
+    // 旧素材先行退场：新帧若在旧帧还活着时解码，两套 324×324×ARGB 叠加
+    // 会把 PSRAM 峰值推到双倍（实机切换时解码失败回退空白）。先撤旧层，
+    // 解码峰值只剩新素材一套；失败时本来就停在空白等下次重试。
+    // （滑动预取路径不受此限：预取是「旧素材存活时后台解码」，PSRAM 放得
+    // 下就赚到零等待换装，放不下解码失败回退到这里，行为与现在一致。）
+    if (parts->art.container) lv_obj_delete(parts->art.container);
+    parts->art.container = nullptr;
+    for (auto &layer : parts->art.layers) {
+        freeFrames(layer.frames);
+        freeFrames(layer.baked_frames);
+    }
+    parts->art.layers.clear();
+    parts->art.active = false;
+
+    MotionSpec motion;
+    std::vector<LayerSpec> specs;
+    if (!buildSpecsFromManifest(manifest_json, base_dir, motion, specs)) return false;
+
+    if (commitArt(parts, motion, std::move(specs), false)) {
         lv_obj_invalidate(root);
         return true;
     }
-fail:
-    // commitArt 半途失败时已回滚 own frames；这里只需清理未提交的规格。
-    for (auto &spec : specs) freeFrames(spec.frames);
-    cJSON_Delete(manifest);
     return false;
 }
 
@@ -900,6 +937,121 @@ bool artworkActive(lv_obj_t *root) {
     if (!root) return false;
     auto *parts = static_cast<Parts *>(lv_obj_get_user_data(root));
     return parts && parts->art.active && !parts->builtin;
+}
+
+void setBakeEnabled(lv_obj_t *root, bool enabled) {
+    if (!root) return;
+    auto *parts = static_cast<Parts *>(lv_obj_get_user_data(root));
+    if (parts) parts->bake_enabled = enabled;
+}
+
+// —— 滑动方向预取（后台解码）——
+// 单飞单份：同一时刻最多一个 worker、一份未消费结果。worker 与 LVGL 线程
+// 的握手全部走原子量；解码产物在 worker 本地构建，仅在代际号仍匹配时
+// 一次性发布（prefetchCancel 靠递增代际号让在飞结果作废，避免两线程
+// 同时碰同一份 vector）。
+struct PrefetchJob {
+    std::string manifest_json;
+    std::string base_dir;
+    uint32_t generation = 0;
+};
+
+struct PrefetchState {
+    std::atomic<bool> in_flight{false};
+    std::atomic<bool> done{false};
+    std::atomic<bool> failed{false};
+    std::atomic<uint32_t> generation{0};
+    MotionSpec motion;               // worker 发布后只由 LVGL 线程读写
+    std::vector<LayerSpec> specs;    // 同上
+};
+PrefetchState g_prefetch;
+
+void prefetchWorker(void *param) {
+    auto *job = static_cast<PrefetchJob *>(param);
+    MotionSpec motion;
+    std::vector<LayerSpec> specs;
+    const bool ok = buildSpecsFromManifest(job->manifest_json, job->base_dir, motion, specs);
+    const bool stale = g_prefetch.generation.load(std::memory_order_acquire) != job->generation;
+    if (stale) {
+        // 预取目标已易主（方向反转/松手取消）：结果就地丢弃。
+        for (auto &spec : specs) freeFrames(spec.frames);
+    } else if (ok) {
+        g_prefetch.motion = motion;
+        g_prefetch.specs = std::move(specs);
+        g_prefetch.done.store(true, std::memory_order_release);
+        ESP_LOGI("made_sprite", "[sprite] prefetch_ready layers=%u psram_free=%u",
+            static_cast<unsigned>(g_prefetch.specs.size()),
+            static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_SPIRAM)));
+    } else {
+        for (auto &spec : specs) freeFrames(spec.frames);
+        g_prefetch.failed.store(true, std::memory_order_release);
+        // 优雅降级：上层回退「先撤旧再解码」老路，这里的失败不致命。
+        ESP_LOGW("made_sprite", "[sprite] prefetch_failed psram_free=%u largest=%u",
+            static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_SPIRAM)),
+            static_cast<unsigned>(heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM)));
+    }
+    g_prefetch.in_flight.store(false, std::memory_order_release);
+    delete job;
+    vTaskDelete(nullptr);
+}
+
+bool prefetchBegin(const std::string &manifest_json, const std::string &base_dir) {
+    if (g_prefetch.in_flight.load(std::memory_order_acquire)) return false;
+    if (g_prefetch.done.load(std::memory_order_acquire) ||
+        g_prefetch.failed.load(std::memory_order_acquire)) return false;
+    // 粗粒度守卫：空闲 PSRAM 明显容不下第二套解码像素（一套通常 2~3MB）
+    // 就不白费解码——失败本就是优雅降级，这里只是省掉注定失败的 CPU。
+    if (heap_caps_get_free_size(MALLOC_CAP_SPIRAM) < static_cast<size_t>(1536) * 1024) return false;
+    auto *job = new (std::nothrow) PrefetchJob{
+        manifest_json, base_dir, g_prefetch.generation.load(std::memory_order_relaxed) + 1};
+    if (!job) return false;
+    g_prefetch.generation.store(job->generation, std::memory_order_release);
+    g_prefetch.in_flight.store(true, std::memory_order_release);
+    // libpng 解码栈需求比重采样大：12KB 稳妥。
+    if (xTaskCreate(prefetchWorker, "sprite_prefetch", 12288, job, 1, nullptr) != pdPASS) {
+        g_prefetch.in_flight.store(false, std::memory_order_release);
+        delete job;
+        return false;
+    }
+    return true;
+}
+
+bool prefetchReady() {
+    return g_prefetch.done.load(std::memory_order_acquire) &&
+           !g_prefetch.failed.load(std::memory_order_acquire);
+}
+
+bool prefetchInFlight() {
+    return g_prefetch.in_flight.load(std::memory_order_acquire);
+}
+
+void prefetchCancel() {
+    // 在飞的 worker 结束时会发现代际号不匹配、自行丢弃结果；
+    // 这里只清已经发布未消费的暂存。
+    g_prefetch.generation.fetch_add(1, std::memory_order_release);
+    for (auto &spec : g_prefetch.specs) freeFrames(spec.frames);
+    g_prefetch.specs.clear();
+    g_prefetch.done.store(false, std::memory_order_relaxed);
+    g_prefetch.failed.store(false, std::memory_order_relaxed);
+}
+
+bool commitPrefetched(lv_obj_t *root) {
+    if (!root || g_prefetch.in_flight.load(std::memory_order_acquire) ||
+        !prefetchReady()) return false;
+    auto *parts = static_cast<Parts *>(lv_obj_get_user_data(root));
+    if (!parts || !parts->root) return false;
+    std::vector<LayerSpec> specs = std::move(g_prefetch.specs);
+    g_prefetch.specs.clear();
+    g_prefetch.done.store(false, std::memory_order_relaxed);
+    // commitArt 只在成功时撤旧素材（旧容器+旧帧整体退场，不闪空白）；
+    // 失败时旧素材原样保留，暂存帧就地释放，上层回退老路。
+    if (commitArt(parts, g_prefetch.motion, std::move(specs), false)) {
+        ESP_LOGI("made_sprite", "[sprite] prefetch_committed layers=%u",
+            static_cast<unsigned>(parts->art.layers.size()));
+        return true;
+    }
+    for (auto &spec : specs) freeFrames(spec.frames);
+    return false;
 }
 
 } // namespace made_sprite

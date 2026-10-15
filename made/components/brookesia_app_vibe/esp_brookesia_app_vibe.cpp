@@ -368,6 +368,15 @@ bool VibeCoding::run()
     // swipes beginning on blank space or a non-clickable label reach Vibe.
     lv_obj_add_flag(screen, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_remove_flag(screen, LV_OBJ_FLAG_SCROLLABLE);
+    // 真翻页：允许子对象渲染到屏幕边界之外。侧舞台停在屏外 ±1 屏宽，
+    // 拖动平移时从屏边滑入视野。两个条件缺一不可：
+    //   LV_OBJ_FLAG_OVERFLOW_VISIBLE——子对象裁剪从「屏幕自身坐标」放宽到
+    //   「坐标+ext_draw_size」；ext_draw_size——放宽量（0 的话等于没放宽），
+    //   同时也让屏幕平移时的失效区域盖住滑入的侧舞台。
+    lv_obj_add_flag(screen, LV_OBJ_FLAG_OVERFLOW_VISIBLE);
+    lv_obj_set_ext_draw_size(screen, made_screen_w());
+    // set_ext_draw_size 只注册回调，必须显式刷新一次才真正写入 spec_attr。
+    lv_obj_refresh_ext_draw_size(screen);
     // 兜底：任何异常路径残留的横向偏移在重建界面时归位，避免整屏卡在边上。
     if (!home_dragging_) lv_obj_set_x(screen, 0);
     lv_obj_set_style_bg_color(screen, lv_color_hex(VT(bg_page)), 0);
@@ -389,6 +398,17 @@ bool VibeCoding::run()
 
     // 近全屏小精灵：主页的绝对主角（docs/SPRITES.md 的素材机制接入前用程序化形象）。
     sprite_stage_ = made_sprite::create(screen);
+    // 左右侧台：常驻解码好左右相邻助手（实测三套合计 ~2.2MB），拖动时随屏
+    // 滑入视野；松手晋升是指针轮换，素材永不重解码。侧台关烘焙：烘焙是
+    // 内存换 CPU（原始帧被释放、换成更大的多帧位图），侧台动画走动态缩放。
+    for (auto &slot : sides_) {
+        slot.stage = made_sprite::create(screen);
+        made_sprite::setBakeEnabled(slot.stage, false);
+    }
+    sides_[0].side = -1;
+    sides_[1].side = 1;
+    lv_obj_set_x(sides_[0].stage, -made_screen_w());     // 屏外左侧
+    lv_obj_set_x(sides_[1].stage, made_screen_w());      // 屏外右侧
     sprite_started_ms_ = lv_tick_get();
 
     // Artwork arrives with the authorized bridge catalog. Only the selected
@@ -1103,7 +1123,17 @@ bool VibeCoding::close()
     }
     localized_labels.clear();
     sprite_stage_ = nullptr;
+    for (auto &slot : sides_) {
+        slot.stage = nullptr;
+        slot.provider.clear();
+        slot.version = 0;
+        slot.side = 0;
+    }
+    prefetch_provider_.clear();
+    prefetch_version_ = 0;
+    prefetch_slot_ = -1;
     artwork_applied_.clear();
+    artwork_applied_version_ = 0;
     artwork_seen_provider_.clear();
     artwork_dirty_.store(false);
     artwork_request_.store(false);
@@ -1396,12 +1426,15 @@ void VibeCoding::chooseProvider(int direction)
     submitted_task_seen_ = true;
     displayed_task_id_.clear();
     rendered_session_id_.clear();
+    std::string chosen;
     {
         std::lock_guard<std::mutex> lock(model_mutex_);
         if (!config_loaded_.load() || providers_.empty()) return;
         const int count = static_cast<int>(providers_.size());
         const int current = selected_provider_.load();
         selected_provider_.store((current + direction + count) % count);
+        const auto &entry = providers_[static_cast<size_t>(selected_provider_.load())];
+        if (entry.sprite.valid()) chosen = entry.id;
         button_epoch_.fetch_add(1);
         model_.sessions.clear();
         model_.tasks.clear();
@@ -1414,6 +1447,9 @@ void VibeCoding::chooseProvider(int direction)
         ++model_.revision;
     }
     drawn_revision_ = UINT32_MAX;
+    // 侧舞台已挂好（或可立即挂上）目标素材就晋升为当前舞台；未命中由
+    // render→maybeApplyArtwork 走缓存直换/worker 老路。
+    if (!chosen.empty()) tryPromotePrefetch(chosen);
     render();
 }
 
@@ -1466,6 +1502,8 @@ void VibeCoding::homeDragCallback(lv_event_t *event)
                 switched = true;
             }
         }
+        // 没切过去（弹回当前屏）：侧舞台素材原地保留——下次同向滑动直接
+        // 滑入视野，省一次解码；目标变化时由 maybeStartPrefetch 负责撤换。
         // 位置归零（切助手后 render 会重建内容，原位即可）。
         lv_obj_set_x(screen, self->screen_base_x_);
         // 切助手已设置 last_provider_swipe_ms_ 抑制重复；这里统一再保一次。
@@ -1505,6 +1543,9 @@ void VibeCoding::homeDragCallback(lv_event_t *event)
         const int clamped = std::max(-w, std::min(w, dx));
         self->drag_dx_ = clamped;
         lv_obj_set_x(screen, self->screen_base_x_ + clamped);
+        // 滑动方向已明确：确保该方向侧台就绪（三舞台轮换常态下早已就绪，
+        // 这里零开销）。每拍调用安全。
+        self->maybeStartPrefetch(clamped < 0 ? 1 : (clamped > 0 ? -1 : 0));
         // 素材是 screen 的子对象，随屏幕整体平移：用户要求滑动时素材跟手一起走。
         return;
     }
@@ -3630,6 +3671,11 @@ void VibeCoding::render()
         else if (task_status == "waiting_confirmation") mood = made_sprite::Mood::kWaitingConfirm;
         else if (task_status == "running" || task_status == "queued") mood = made_sprite::Mood::kRunning;
         made_sprite::update(sprite_stage_, lv_tick_get() - sprite_started_ms_, mood);
+        // 侧台同步驱动：拖动中滑入视野的素材也是活的（呼吸/眨眼/轻摆），
+        // 不是一张死图。烘焙已对侧台关闭，走动态缩放路径。
+        for (auto &slot : sides_)
+            if (slot.stage)
+                made_sprite::update(slot.stage, lv_tick_get() - sprite_started_ms_, mood);
     }
     ui_stage_.store(3);
     const auto pairing = vibe_pairing::snapshot();
@@ -4244,11 +4290,212 @@ void VibeCoding::preloadArtworkCache()
     }
 }
 
+// LVGL 线程。确保 sides_[index] 挂着当前选中助手的相邻助手（版本一致）。
+// 内容已对（三舞台轮换的常态）就什么都不做——这就是「任何方向随时可翻」；
+// 不对且解码空闲就起飞后台解码补齐（单飞，1s 失败退避）。两个侧台都缺
+// 内容时每帧按 0→1 顺序排队补，拖动方向由 maybeStartPrefetch 优先插队。
+void VibeCoding::ensureSide(int index)
+{
+    if (!sprite_stage_ || index < 0 || index > 1) return;
+    SideSlot &slot = sides_[index];
+    if (!slot.stage) return;
+    std::string target;
+    uint32_t version = 0;
+    {
+        std::lock_guard<std::mutex> lock(model_mutex_);
+        if (!config_loaded_.load() || providers_.empty()) return;
+        const int count = static_cast<int>(providers_.size());
+        const int selected = selected_provider_.load();
+        const int neighbor = (selected + slot.side + count) % count;
+        const auto &entry = providers_[static_cast<size_t>(neighbor)];
+        // 常驻的就三套（左中右）。邻居没有素材、或只有一个助手（左右邻居
+        // 都是 自己，不值得解码第二份）时，这一侧不该挂着任何东西——
+        // 超出范围的旧素材就地回收，PSRAM 让出去。
+        if (count > 1 && neighbor != selected && entry.sprite.valid()) {
+            target = entry.id;
+            version = entry.sprite.version;
+        }
+    }
+    if (target.empty()) {
+        if (!slot.provider.empty()) {
+            made_sprite::clearArtwork(slot.stage);
+            slot.provider.clear();
+            slot.version = 0;
+            ESP_LOGI(BUTTON_TAG, "[sprite] neighbor_recycled slot=%+d", slot.side);
+        }
+        return;
+    }
+    // 过期内容必须立刻撤下：>3 个助手时每次切换后远侧台都挂着上一次的
+    // 邻居（轮换无法自洽，靠后台解码补齐）。补齐需要一两秒，期间若用户
+    // 拖动，滑入视野的会是错误形象——用户会把上一个助手的邻居当成目标
+    // 助手。宁可滑入空白（解码完自动补上），也不能滑入错的。
+    if (!slot.provider.empty() && slot.provider != target) {
+        made_sprite::clearArtwork(slot.stage);
+        ESP_LOGI(BUTTON_TAG, "[sprite] neighbor_stale_cleared slot=%+d had=%s want=%s",
+            slot.side, slot.provider.c_str(), target.c_str());
+        slot.provider.clear();
+        slot.version = 0;
+    }
+    if (slot.provider == target && slot.version == version) return;   // 已就绪（常态）
+    if (!prefetch_provider_.empty() || made_sprite::prefetchInFlight() ||
+        made_sprite::prefetchReady())
+        return;  // 解码在飞/待提交：本帧等它，下帧轮到这里再排
+    // 失败退避：起飞失败/解码失败后 1s 内不白试；重试前必须清 failed/done
+    // 残留——prefetchBegin 见这些状态会直接拒绝，不清就是永久卡死。
+    const uint32_t now = lv_tick_get();
+    if (now < prefetch_retry_ms_) return;
+    made_sprite::prefetchCancel();
+    std::string manifest;
+    if (made_sprite_cache::loadManifest(target, manifest) &&
+        made_sprite::prefetchBegin(manifest, made_sprite_cache::baseDir(target))) {
+        prefetch_provider_ = target;
+        prefetch_version_ = version;
+        prefetch_slot_ = index;
+        ESP_LOGI(BUTTON_TAG, "[sprite] prefetch_start slot=%+d provider=%s version=%u",
+            slot.side, target.c_str(), static_cast<unsigned>(version));
+    } else {
+        prefetch_retry_ms_ = now + 1000;
+    }
+}
+
+// LVGL 线程。拖动方向已明确：优先补齐该方向的侧台。三舞台轮换的常态下
+// 侧台内容早已就绪，这里什么都不用做（零解码零等待）。
+void VibeCoding::maybeStartPrefetch(int direction)
+{
+    if (direction == 0) return;
+    const int index = direction < 0 ? 0 : 1;
+    drag_side_ = index;
+    // 拖动方向侧内容不对、而单飞解码在飞的是另一侧时：掐掉它改飞本侧。
+    // 用户正盯着这个方向看，另一侧的解码晚点重跑没有任何代价；反过来
+    // 让方向侧等一整套解码，过期/空白素材就会跟着手滑进视野。
+    SideSlot &slot = sides_[index];
+    std::string target;
+    {
+        std::lock_guard<std::mutex> lock(model_mutex_);
+        if (!config_loaded_.load() || providers_.empty()) return;
+        const int count = static_cast<int>(providers_.size());
+        const int selected = selected_provider_.load();
+        const int neighbor = (selected + slot.side + count) % count;
+        if (count > 1 && neighbor != selected &&
+            providers_[static_cast<size_t>(neighbor)].sprite.valid())
+            target = providers_[static_cast<size_t>(neighbor)].id;
+    }
+    const bool wrong = slot.provider != target ||
+        (prefetch_slot_ == index && prefetch_provider_ != target);
+    if (!wrong) { ensureSide(index); return; }
+    if (made_sprite::prefetchInFlight() && prefetch_slot_ != index) {
+        made_sprite::prefetchCancel();
+        prefetch_provider_.clear();
+        prefetch_version_ = 0;
+        prefetch_slot_ = -1;
+    }
+    ensureSide(index);
+}
+
+// 每帧（maybeApplyArtwork）：在飞解码完成后挂上归属侧台，然后把两侧台
+// 内容对齐当前选中助手的左右邻居（轮换后的远侧台、目录版本刷新都会在这
+// 里自动补齐）。素材随即随拖动滑入视野——真翻页，不用等翻页提交。
+void VibeCoding::prefetchTick()
+{
+    if (!prefetch_provider_.empty()) {
+        if (made_sprite::prefetchReady()) {
+            SideSlot &slot = sides_[prefetch_slot_ >= 0 ? prefetch_slot_ : 0];
+            bool stale = false;
+            {
+                std::lock_guard<std::mutex> lock(model_mutex_);
+                const auto *entry = findProviderLocked(prefetch_provider_);
+                stale = !entry || !entry->sprite.valid() ||
+                    entry->sprite.version != prefetch_version_;
+            }
+            if (stale) {
+                // 目录刷新后素材版本变了：暂存帧过期，作废等重登记。
+                made_sprite::prefetchCancel();
+            } else if (made_sprite::commitPrefetched(slot.stage)) {
+                slot.provider = prefetch_provider_;
+                slot.version = prefetch_version_;
+                ESP_LOGI(BUTTON_TAG, "[sprite] neighbor_staged slot=%+d provider=%s",
+                    slot.side, slot.provider.c_str());
+            }
+            prefetch_provider_.clear();
+            prefetch_version_ = 0;
+            prefetch_slot_ = -1;
+        } else if (!made_sprite::prefetchInFlight()) {
+            // 解码失败：清登记走退避，稍后重试。
+            made_sprite::prefetchCancel();
+            prefetch_provider_.clear();
+            prefetch_version_ = 0;
+            prefetch_slot_ = -1;
+        }
+    }
+    // 两侧都要补时按最近的拖动方向排优先级：方向侧先飞，另一侧靠后。
+    if (drag_side_ == 1) { ensureSide(1); ensureSide(0); }
+    else { ensureSide(0); ensureSide(1); }
+}
+
+// LVGL 线程。切换裁决出目标且目标侧台已挂好正确素材：三舞台指针轮换——
+// 目标侧台升主位，旧主舞台转对侧台（内容正好是新主的对侧邻居），远侧台
+// 转目标侧原位（内容由随后的 reconcile 校对补齐；恰好 3 个助手时它也
+// 正确——永不重新解码）。没就绪返回 false 交回缓存直换/worker 老路。
+bool VibeCoding::tryPromotePrefetch(const std::string &provider)
+{
+    if (!sprite_stage_ || artwork_applied_ == provider) return false;
+    int slot_idx = -1;
+    for (int i = 0; i < 2; ++i)
+        if (sides_[i].provider == provider) { slot_idx = i; break; }
+    if (slot_idx < 0) return false;
+    SideSlot &src = sides_[slot_idx];
+    {
+        std::lock_guard<std::mutex> lock(model_mutex_);
+        const auto *entry = findProviderLocked(provider);
+        if (!entry || !entry->sprite.valid() || entry->sprite.version != src.version) {
+            // 目录刷新后素材版本变了：这台挂的是旧版本，作废走老路。
+            made_sprite::clearArtwork(src.stage);
+            src.provider.clear();
+            src.version = 0;
+            return false;
+        }
+    }
+    const uint32_t promoted_version = src.version;
+    SideSlot &dst = sides_[1 - slot_idx];
+    // 三方轮换：src→主位，主→dst 位，dst 原舞台→src 位。素材全跟舞台走。
+    lv_obj_t *old_main = sprite_stage_;
+    const std::string old_provider = artwork_applied_;
+    const uint32_t old_version = artwork_applied_version_;
+    const std::string dst_provider = dst.provider;
+    const uint32_t dst_version = dst.version;
+    sprite_stage_ = src.stage;
+    src.stage = dst.stage;
+    dst.stage = old_main;
+    src.provider = dst_provider;
+    src.version = dst_version;
+    dst.provider = old_provider;
+    dst.version = old_version;
+    lv_obj_set_x(sprite_stage_, 0);
+    lv_obj_set_x(src.stage, src.side < 0 ? -made_screen_w() : made_screen_w());
+    lv_obj_set_x(dst.stage, dst.side < 0 ? -made_screen_w() : made_screen_w());
+    artwork_applied_ = provider;
+    artwork_applied_version_ = promoted_version;
+    ESP_LOGI(BUTTON_TAG, "[sprite] neighbor_promoted provider=%s", provider.c_str());
+    return true;
+}
+
 // 素材应用与清理（LVGL 线程）。provider 切走时立刻撤下旧素材；
 // 下载完成的素材在下一帧淡入（这里是直接换，圆屏上视觉上就是一次闪切）。
+// 目录里某助手素材的版本号（找不到/无效返回 0）。轮换记录对侧台内容版本用。
+uint32_t VibeCoding::spriteVersionOf(const std::string &provider)
+{
+    std::lock_guard<std::mutex> lock(model_mutex_);
+    const auto *entry = findProviderLocked(provider);
+    return (entry && entry->sprite.valid()) ? entry->sprite.version : 0;
+}
+
 void VibeCoding::maybeApplyArtwork(const std::string &selected_provider)
 {
     if (!sprite_stage_) return;
+    // 每帧：在飞解码挂上归属侧台 + 两侧台内容对齐相邻助手（三舞台轮换后
+    // 远侧台、目录版本刷新都在这里自动补齐）。
+    prefetchTick();
+    if (tryPromotePrefetch(selected_provider)) return;
     bool dirty = false;
     std::string ready;
     {
@@ -4264,6 +4511,13 @@ void VibeCoding::maybeApplyArtwork(const std::string &selected_provider)
         }
     }
     if (artwork_applied_ != selected_provider) {
+        if (made_sprite::prefetchInFlight()) {
+            // 后台预取正在解码（单飞，通常就是本目标的侧台素材）：等一拍再
+            // 试，绝不在 LVGL 线程并行再解一套——两套解码像素叠加正是 PSRAM
+            // 峰值坑。worker 发布后下一帧 prefetchTick 挂侧台、晋升零解码；
+            // worker 失败则落到下面的老路。
+            return;
+        }
         // 缓存直换：本地 manifest 版本与目录一致就直接整体换装（commitArt
         // 原子换容器，旧素材仍在显示时不闪空白），不再等 worker 的 ensure()
         // 逐文件 SPIFFS 读 + SHA-256 复核——那要好几秒，实机表现为「切到
@@ -4271,6 +4525,7 @@ void VibeCoding::maybeApplyArtwork(const std::string &selected_provider)
         // 最后写、写前每个文件都已验过哈希，版本一致即可信。
         if (tryApplyCachedArtwork(selected_provider)) {
             artwork_applied_ = selected_provider;
+            artwork_applied_version_ = spriteVersionOf(selected_provider);
             return;
         }
         if (dirty || made_sprite::artworkActive(sprite_stage_)) {
@@ -4283,6 +4538,7 @@ void VibeCoding::maybeApplyArtwork(const std::string &selected_provider)
     if (made_sprite_cache::loadManifest(selected_provider, manifest) &&
         made_sprite::applyArtwork(sprite_stage_, manifest, made_sprite_cache::baseDir(selected_provider))) {
         artwork_applied_ = selected_provider;
+        artwork_applied_version_ = spriteVersionOf(selected_provider);
         ESP_LOGI(BUTTON_TAG, "[sprite] applied provider=%s", selected_provider.c_str());
     } else {
         made_sprite::clearArtwork(sprite_stage_);
