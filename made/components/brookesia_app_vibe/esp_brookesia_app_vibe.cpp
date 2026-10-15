@@ -924,7 +924,7 @@ bool VibeCoding::run()
     lv_obj_set_style_bg_opa(drawer_grip_, LV_OPA_70, 0);
     lv_obj_clear_flag(drawer_grip_, LV_OBJ_FLAG_CLICKABLE);
     drawer_hint_ = lv_label_create(drawer_);
-    lv_label_set_text(drawer_hint_, T("下拉收起 · 上下滑切任务"));
+    lv_label_set_text(drawer_hint_, T("下拉收起 · 左右滑切任务"));
     lv_obj_set_pos(drawer_hint_, made_x(24), made_y(18));
     lv_obj_set_width(drawer_hint_, made_s(312));
     lv_obj_set_style_text_align(drawer_hint_, LV_TEXT_ALIGN_CENTER, 0);
@@ -1362,7 +1362,9 @@ void VibeCoding::providerSwipeCallback(lv_event_t *event)
     const uint32_t now = lv_tick_get();
     if (self->last_provider_swipe_ms_ != 0 && now - self->last_provider_swipe_ms_ < 350) return;
     self->last_provider_swipe_ms_ = now;
-    self->chooseProvider(direction == LV_DIR_LEFT ? 1 : -1);
+    // 任务结果页（抽屉）里横向手势切当前助手的不同任务；主屏才切助手。
+    if (self->drawer_open_.load()) self->chooseSession(direction == LV_DIR_LEFT ? 1 : -1);
+    else self->chooseProvider(direction == LV_DIR_LEFT ? 1 : -1);
 }
 
 void VibeCoding::chooseProvider(int direction)
@@ -4616,9 +4618,10 @@ void VibeCoding::handleUiSwipe(const std::string &direction)
 {
     if (!canOperate() || settings_open_.load()) return;
     if (direction == "left") {
-        chooseProvider(1);
+        // 抽屉（任务结果页）里横向切当前助手的不同任务，主屏切助手。
+        drawer_open_.load() ? chooseSession(1) : chooseProvider(1);
     } else if (direction == "right") {
-        chooseProvider(-1);
+        drawer_open_.load() ? chooseSession(-1) : chooseProvider(-1);
     } else if (direction == "up") {
         if (!drawer_open_.load()) showDrawer(true);
     } else if (direction == "down") {
