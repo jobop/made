@@ -6,7 +6,7 @@
 npm run flash
 ```
 
-实现是 `tools/flash.mjs`，纯 Node，无第三方依赖。它只是把 AGENTS.md 里那套手动烧录流程固化成脚本：先停桥接器放串口，再 `source export.sh`，再 `esptool write_flash`。工具把这些串起来，并加了认板、芯片校验和 NVS 保护。
+实现是 `tools/flash.mjs`，纯 Node，无第三方依赖。它只是把 [启动与烧录](standards/04-build-and-flash.md) 里那套手动烧录流程固化成脚本：先停桥接器放串口，再 `source export.sh`，再 `esptool write_flash`。工具把这些串起来，并加了认板、芯片校验和 NVS 保护。
 
 ## 目标
 
@@ -126,4 +126,4 @@ S3 上码得与 S3 接收器靠 PSRAM 容量区分；容量读不到时，再看
 
 ## 与手动烧录的关系
 
-AGENTS.md「启动与烧录」一节的手动命令仍然有效，工具只是把它们自动化。需要精细控制（例如只写应用分区、或换自定义 `sdkconfig`）时按 AGENTS.md 手动执行。方板目前没有独立的固件工程，全仓库只有圆屏 1.85B 的 BSP；等方屏硬件到位，把它的镜像目录接到 `TARGETS.made` 同级即可，认板逻辑不用改。
+[启动与烧录](standards/04-build-and-flash.md)（原 AGENTS.md「启动与烧录」一节）的手动命令仍然有效，工具只是把它们自动化。需要精细控制（例如只写应用分区、或换自定义 `sdkconfig`）时按该文档手动执行。方板目前没有独立的固件工程，全仓库只有圆屏 1.85B 的 BSP；等方屏硬件到位，把它的镜像目录接到 `TARGETS.made` 同级即可，认板逻辑不用改。

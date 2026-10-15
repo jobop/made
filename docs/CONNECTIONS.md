@@ -1,91 +1,101 @@
-# 接入方式详解
+# Connection Modes
 
-码得支持四种接入方式，全部走同一套设备 API（事件上报 ⇄ 命令队列），换方式不需要重新配网以外的任何开发：
+Made supports four connection methods, all using the same device API (event reporting ⇄ command queue). Switching methods requires no re-developing beyond provisioning:
 
-| 方式 | 适用场景 | 是否需要 Wi-Fi |
+| Method | Best For | Requires Wi-Fi? |
 | --- | --- | --- |
-| USB 线直连 | 无局域网、调试 | 否 |
-| 局域网 Wi-Fi 直连 | 设备与电脑同网 | 是 |
-| 接收器转发 | 公司 Wi-Fi 有准入/网页认证 | 仅接收器热点 |
-| 公网 HTTPS 地址 | 跨网络远程使用 | 是（需可上网） |
+| **USB Cable (Direct)** | No LAN, debugging | No |
+| **LAN Wi-Fi (Direct)** | Device and computer on same network | Yes |
+| **Receiver Relay** | Company Wi-Fi with portal/auth | Receiver hotspot only |
+| **Public HTTPS (Tunnel)** | Remote access across networks | Yes (needs internet) |
 
-配对流程对四种方式一致：电脑大盘点「添加码得」→ 板端选择目标 → **核对两端六位数字** → 电脑确认。
+**Pairing process is identical for all four:** Computer dashboard taps "Add Made" → Board picks target → **Verify 6-digit numbers on both ends** → Computer confirms.
 
-## 配对与凭据
+## Pairing & Credentials
 
-- 电脑把配对令牌保存在 `state/paired-devices.json`；板子把令牌、电脑标识与地址保存在 NVS。
-- **不需要在编译时填写电脑 IP 或设备令牌，也不需要设置 `VIBE_DEVICE_TOKEN`。**
-- 配对接口：`POST /pair/request`、`GET /pair/status`；手动地址每次连接前还会用 `GET /pair/verify` 验证已存令牌与目标桥接机。
-- 首次设备发现自动开放约两分钟配对窗口；窗口过期可在电脑大盘点「添加码得」重新开启。电脑防火墙需放行 UDP `8789`（发现）与 TCP `8788`（设备 API）。
-- 已配对后，板子每次进入「码得」并解锁会先重新验证桥接机身份再复用令牌；验证失败会重新走六位码配对。换电脑在接入设置里选择 Wi-Fi 重新扫描即可，扫描、刷新和退出不会自动改配其他电脑。
-- 仅「码得」应用在前台且已解锁期间，板子每约 12 秒发一次 `GET /device/heartbeat`；锁屏、退出应用或重启未解锁不上报，电脑按最近约 30 秒通信判断离线。
+- Computer saves pairing tokens to `state/paired-devices.json`; board saves token, computer ID, and address to NVS.
+- **No need to fill computer IP or device token at compile time; no `VIBE_DEVICE_TOKEN` needed.**
+- Pairing interface: `POST /pair/request`, `GET /pair/status`; manual address paths verify saved token against target bridge with `GET /pair/verify` before each connection.
+- First-device discovery auto-opens a ~2-minute pairing window; window expires, tap "Add Made" on the computer to reopen. Computer firewall needs UDP `8789` (discovery) and TCP `8788` (device API) open.
+- After pairing, the board re-verifies bridge identity each time entering "Made" and unlocking before reusing the token; on failure, falls back to 6-digit code pairing. Switch computers: in the connection settings, choose Wi-Fi to rescan; scanning, refreshing, and exiting don't auto-switch to another computer.
+- Only the "Made" app in foreground and unlocked, the board pings `GET /device/heartbeat` every ~12s (`HEARTBEAT_INTERVAL_MS = 12000`). Lock screen, app exit, or reboot while unlocked stops the heartbeat and command fetching; dashboard shows "offline." USB and receiver links timeout after ~20s without handshake.
 
-## 局域网 Wi-Fi 直连
+---
 
-1. 电脑与码得接入同一 Wi-Fi，启动桥接器（仓库根 `npm start`）。
-2. 板端「码得」→ 齿轮 → 接入设置，选 **Wi-Fi 自动发现**，扫描后在码得列表点选目标电脑。
-3. 核对两端六位数字，在电脑大盘确认。
+## LAN Wi-Fi (Direct)
 
-## 手动地址与公网接入
+1. Connect computer and Made to the same Wi-Fi; start the bridge (`npm start` from repo root).
+2. On the board's "Made" → Gear → Connection settings, choose **Wi-Fi Auto Discovery**, scan, then tap the target computer.
+3. Verify the 6-digit numbers on both ends; confirm on the computer dashboard.
 
-在接入设置选 **手动地址**，填桥接机的 IPv4/域名、端口与协议：
+---
 
-- **可信局域网**：填电脑私有 IPv4，端口 `8788`，HTTP。明文 HTTP 可能被同网监听，只在可信网络使用。
-- **公网**：必须选 **HTTPS**（通常 `443`），证书必须匹配所填域名或 IP（填公网 IP 时证书须含该 IP 的 SAN）。推荐填域名。**不要把明文 HTTP 端口直接映射到公网。**
+## Manual Address & Public Access
 
-### 电脑没有公网地址时（内网穿透）
+In connection settings, choose **Manual Address**, fill the bridge's IPv4/domain, port, and protocol:
 
-电脑大盘的「公网接入」支持把**设备接口 `127.0.0.1:8788`** 发布为公网 HTTPS 地址；管理页 `127.0.0.1:8787` 始终只监听本机。穿透不会随桥接器启动自动开启，须在大盘手动开关。
+- **Trusted LAN:** Fill computer's private IPv4, port `8788`, HTTP. Plain HTTP may be eavesdropped on the same network; use only on trusted networks.
+- **Public:** Must choose **HTTPS** (usually `443`); certificate must match the filled domain or IP (when filling a public IP, cert's SAN must include that IP). Prefer a domain. **Don't map a plain HTTP port directly to the public.**
 
-- **Cloudflare 临时试用**：安装 [cloudflared](https://developers.cloudflare.com/tunnel/downloads/)，用 [Quick Tunnel](https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/do-more-with-tunnels/trycloudflare/) 免域名试用，地址随机且可能变化。
-- **Cloudflare 固定域名**：创建[远程管理 Tunnel](https://developers.cloudflare.com/tunnel/get-started/)，目标 `http://127.0.0.1:8788`，`HTTP Host Header` 覆盖项保持未设置（改成 `localhost` 会导致地址绑定验证失败）。在大盘填地址与 [Tunnel token](https://developers.cloudflare.com/tunnel/reference/tunnel-tokens/)；token 只存电脑 `state/tunnel-token`（0600）。
-- **Tailscale Funnel**：安装并登录 Tailscale，tailnet 启用 MagicDNS、HTTPS 证书并允许 [Funnel](https://tailscale.com/docs/features/tailscale-funnel)。桥接器把 `8788` 以 HTTPS 443 发布到 `*.ts.net` 地址，码得无需安装 Tailscale。
-- **ngrok**：安装 [Agent](https://ngrok.com/docs/gateway/agent/getting-started/)，大盘填 Authtoken；可留空地址自动分配。桥接器经 [Agent API](https://ngrok.com/docs/gateway/agent/api) 核对转发目标确为 `127.0.0.1:8788` 才展示。码得请求自带 [ngrok 跳过提示页的请求头](https://ngrok.com/abuse)。
-- **花生壳**：在花生壳平台先创建外网 `443` → `127.0.0.1:8788` 的 HTTPS 映射并取得 [API Key](https://service.oray.com/question/50663.html)；桥接器只启停这条已存在且目标匹配的映射，不增删映射，开启后用随机挑战核验公网域名确实到达本机。
+### No Public IP? (Tunneling)
 
-共同注意事项：
+The computer dashboard's "Public Access" supports publishing the **device interface `127.0.0.1:8788`** as a public HTTPS address; the management page always listens locally at `127.0.0.1:8787`. Tunneling doesn't auto-start with the bridge; toggle it manually on the dashboard.
 
-- **板子必须有可用网络并能访问对应公网地址**；公司网络禁止板子联网时，隧道无法替代，可让板子改用可上网的 Wi-Fi（如手机热点）。
-- 公网 HTTPS 校验证书链、目标主机与有效期；板子在前台会先同步网络时间，未取得可信时间不会发请求（15 秒后报失败，单击 BOOT 重试）。
-- 配对仍需电脑端确认；勿分享穿透密钥或设备令牌。
-- 单独 [DDNS](https://www.noip.com/support/knowledgebase/i-have-added-a-hostname-what-do-i-do-with-it-now) 只更新域名到现有公网 IP，CGNAT 下无法替代内网穿透。
+- **Cloudflare (Temporary Trial):** Install [cloudflared](https://developers.cloudflare.com/tunnel/downloads/), try with [Quick Tunnel](https://developers.cloudflare.com/cloud-one/networks/connectors/cloudflare-tunnel/do-more-with-tunnels/trycloudflare/) — random address, may change.
+- **Cloudflare (Fixed Domain):** Create a [Remote Management Tunnel](https://developers.cloudflare.com/tunnel/get-started/), target `http://127.0.0.1:8788`, `HTTP Host Header` override unset (changing to `localhost` causes address binding validation to fail). On the dashboard, fill the address and [Tunnel token](https://developers.cloudflare.com/tunnel/reference/tunnel-tokens/); token saves to computer's `state/tunnel-token` (0600 permissions).
+- **Tailscale Funnel:** Install and login to Tailscale, enable MagicDNS on tailnet, configure HTTPS cert, and allow [Funnel](https://tailscale.com/docs/features/tailscale-funnel). The bridge publishes `8788` as HTTPS on `443` to a `*.ts.net` address; Made doesn't need Tailscale installed.
+- **ngrok:** Install the [Agent](https://ngrok.com/docs/gateway/agent/getting-started/), fill the Authtoken on the dashboard; leave address blank for auto-assignment. The bridge verifies via [Agent API](https://ngrok.com/docs/gateway/agent/api) that the forward target is `127.0.0.1:8788` before displaying. Made requests include [ngrok's abuse-skip header](https://ngrok.com/abuse).
+- **Peanut Shell (Oray):** Create an external `443 → 127.0.0.1:8788` HTTPS mapping on the Peanut Shell platform and grab the [API Key](https://service.oray.com/question/50663.html); the bridge just starts/stops this pre-existing, target-mapped tunnel, not adding/remapping. After enabling, use random-challenge verification that the public domain truly reaches the local machine.
 
-ngrok 与花生壳当前经模拟接口测试，真实账号联通待用户实测。
+**Common caveats:**
 
-## USB 线直连（只需一块码得）
+- **The board must have usable network and reach the public address;** company networks blocking the board's internet access mean tunnels won't substitute — switch to a Wi-Fi that can browse (e.g., phone hotspot).
+- Public HTTPS validates cert chain, target host, and validity; the board pre-syncs network time in foreground mode; without trusted time, requests wait 15s before failing (tap BOOT to retry).
+- Pairing still needs computer confirmation; don't share tunnel keys or device tokens.
+- Standalone [DDNS](https://www.noip.com/support/knowledgebase/i-have-added-a-hostname-what-do-i-do-with_it-now) only updates domain to an existing public IP; under CGNAT it can't replace tunneling.
 
-1. 数据线把码得插到电脑，板端 **接入设置 → USB → 保存**。电脑仍需运行桥接器；大盘「USB 连接」显示「码得 USB 直连」。
-2. 首次按常规流程配对（六位码）；已配对则验证电脑身份后复用原配对。
+ngrok and Peanut Shell currently tested via mock interfaces; real account connectivity awaits user validation.
 
-特点与边界：
+---
 
-- 不需要 Wi-Fi、接收器或内网穿透；语音识别与 agent 都走电脑自己的网络。
-- 走原生 USB Serial/JTAG 帧转发，**不是键盘模拟**，也不会自动启动电脑程序。
-- USB 身份独立保存：换电脑或桥接器重启会重新验证，未验证不发送旧令牌。
-- 仅应用前台、已解锁且已选 USB 时建立协议连接；退出应用会停止通信并取消进行中的录音，已执行的编程任务继续由电脑管理。拔线显示断开，重接验证后恢复。
-- 固件运行日志保留在 UART0，USB 副控制台已关闭，避免日志混入数据协议。
+## USB Cable (Direct — One Made Only)
 
-## 可选接收器（第二块板）
+1. Plug Made into the computer via USB cable; on the board, **Connection settings → USB → Save**. Computer still runs the bridge; dashboard's "USB Connection" shows "Made USB Direct."
+2. First time, pair via the regular 6-digit flow; already paired, verify computer identity and reuse the original pairing.
 
-公司 Wi-Fi 要求网页登录或设备准入时，用另一块 ESP32-S3（原生 USB）或 ESP32-C3 作接收器：它建立独立 WPA2 热点，把码得的 HTTP 请求经 USB 串口转发给电脑。
+**Features & Boundaries:**
 
-1. 按芯片与变体刷接收器固件（别刷进码得主机）：S3 见 [receiver/release/FLASH.md](../receiver/release/FLASH.md)；C3 原生 USB 用 `receiver-c3-usb`，WCH 转串口用 `receiver-c3`（见 [receiver/release-esp32c3/FLASH.md](../receiver/release-esp32c3/FLASH.md)）。**刷错变体桥接器收不到数据**；Windows 上只支持原生 USB 变体（[平台支持](PLATFORMS.md)）。
-2. 保持桥接器运行，大盘「USB 连接」查看热点名称与 8 位密码（WPA2）。macOS/Linux 自动发现限定 Espressif `303a:1001` 与 WCH `1a86:55d3`；如需指定端口：`VIBE_USB_PORT=/dev/cu.usbmodemXXXX npm start`。码得主机若也在 USB 直连，请先退出该模式。
-3. 板端 **接入设置 → 接收器**，扫描并点选热点，输入大盘显示的密码保存。连接后使用固定地址 `http://192.168.4.1:8788`，无需填电脑 IP。
-4. 未配对时在电脑大盘「添加码得」核对六位码。同一台电脑上，两种传输方式复用经验证的配对并同步令牌更新与撤销。
+- No Wi-Fi, receiver, or tunnel needed; voice recognition and agents use the computer's own network.
+- Uses native USB Serial/JTAG frame forwarding, **not keyboard simulation**, and doesn't auto-launch computer apps.
+- USB identity saves separately: switching computers or restarting the bridge re-verifies; unverified, it doesn't send old tokens.
+- Protocol connection builds only when app is in foreground, unlocked, and USB selected; exiting the app stops comms and cancels ongoing recordings; already-executed programming tasks remain under computer management. Pulling the cable shows "disconnected"; re-plug, verify, and resume.
+- Firmware logs stay on UART0; USB secondary console is off, avoiding log contamination in the data protocol.
 
-边界：
+---
 
-- 接收器只是 USB/Wi-Fi 转发器，**完整功能仍需电脑运行桥接器**；热点本身没有互联网。
-- 设备仅在前台且已解锁时临时连接收器热点，退出「码得」后恢复原 Wi-Fi。
-- C3 实体板已完成烧录、校验及 USB 握手；热点连接、配对、语音全链路待完整联调。
+## Optional Receiver (Second Board)
 
-## 手机配置（无电脑参与）
+When a company Wi-Fi requires web login or device onboarding, use a second ESP32-S3 (native USB) or ESP32-C3 as a receiver: it establishes its own WPA2 hotspot, forwarding Made's HTTP requests via USB serial to the computer.
 
-码得 → 齿轮 → 连接 → **手机配置**。手机扫屏幕二维码加入 `Made-Setup-xxxx` 临时热点（通常自动弹出配置页，否则浏览器打开 `http://192.168.8.1`；也可手动输热点密码连接）。
+1. Flash the receiver firmware (don't flash into the Made host): S3 see [receiver/release/FLASH.md](../receiver/release/FLASH.md); C3 native USB with `receiver-c3-usb`, WCH serial-to-USB with `receiver-c3` (see [receiver/release-esp32c3/FLASH.md](../receiver/release-esp32c3/FLASH.md)). **Flash the wrong variant and the bridge won't receive data;** on Windows, only native USB variants work ([PLATFORMS.md](PLATFORMS.md)).
+2. Keep the bridge running; check dashboard's "USB Connection" for the hotspot name and 8-digit password (WPA2). macOS/Linux auto-discovery limits to Espressif `303a:1001` and WCH `1a86:55d3`; specify port with: `VIBE_USB_PORT=/dev/cu.usbmodemXXXX npm start`. If the Made host is also USB-connected, exit that mode first.
+3. On the board, **Connection settings → Receiver**, scan and tap the hotspot, input the dashboard's password to save. After connecting, use the fixed address `http://192.168.4.1:8788`; no need to fill the computer IP.
+4. Unpaired, tap "Add Made" on the computer and verify the 6-digit code. On the same computer, both transport methods reuse the verified pairing, syncing token updates and revocations.
 
-网页可填写普通 Wi-Fi、接收器热点信息，或粘贴桥接器完整公网 HTTPS 地址；点「保存并连接」后码得关闭热点并应用设置，再按原流程核对六位配对码。
+**Boundaries:**
 
-- 该页由码得自身提供，无需先连上电脑，也不需要手机应用。
-- 入口仅在配置页打开期间有效，10 分钟自动关闭；返回或长按 BOOT 退出也会关闭。
-- 语音 API Key、模型与任务管理仍在电脑工作台配置。
+- The receiver is just a USB/Wi-Fi forwarder; **full functionality still needs the computer running the bridge;** the hotspot itself has no internet.
+- Device connects to the receiver hotspot only when in foreground and unlocked; exit "Made" and it reverts to original Wi-Fi.
+- C3 physical board flashed, validated, and USB-handshaked; hotspot connection, pairing, and full-voice chain await complete tuning.
+
+---
+
+## Mobile Provisioning (No Computer)
+
+Made → Gear → Connection → **Mobile Config**. Phone scans the screen's QR code to join `Made-Setup-xxxx` temporary hotspot (usually auto-opens config page; otherwise open `http://192.168.8.1` in browser, or manually connect to the hotspot with its password).
+
+The web page can fill a plain Wi-Fi, receiver hotspot info, or paste the bridge's full public HTTPS address; tap "Save & Connect" and Made closes the hotspot, applying settings, then follows the original 6-digit pairing flow.
+
+- Provided by Made itself; no prior computer connection, no phone app needed.
+- Entry valid only while config page is open; auto-closes after 10 minutes; returning or long-pressing BOOT exits also closes it.
+- Voice API Key, model, and task management still configured on the computer workbench.

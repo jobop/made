@@ -57,6 +57,14 @@
 
 产品与协议不限定屏幕形状——圆屏只是当前实现。
 
+### 3D 打印外壳
+
+外壳完全开源且参数化生成，不需要 CAD 经验：
+
+- **开箱即打印**：[`made_case_plate.3mf`](3d-model/made_case_plate.3mf) 是排好版的打印板（Bambu Studio 或任何支持 3MF 的切片软件直接用）。三个零件也单独提供 STL：[`made_case_front.stl`](3d-model/made_case_front.stl)（前框）、[`made_case_back.stl`](3d-model/made_case_back.stl)（后壳）、[`made_case_buttons.stl`](3d-model/made_case_buttons.stl)（按键）。
+- **标注与预览**：[`PARTS.md`](3d-model/PARTS.md) 是部位词典，[`PARTS-diagram.svg`](3d-model/PARTS-diagram.svg) 是标注图，`preview.png` 是渲染效果图。
+- **重新生成**：整个外壳由一个参数化脚本产出——`blender -b -P 3d-model/make_case.py` 一键重建三个 STL。基线板轮廓为 50.0 × 85.8 mm，换板子只需改脚本顶部的常量。
+
 ## 快速开始
 
 **1. 启动桥接器**（Node.js ≥ 22，无 npm 依赖）：

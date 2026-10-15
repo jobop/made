@@ -4,23 +4,32 @@
 
 **An open, extensible AI companion — the electronic pet of the AI era.**
 
-Speak a task. Watch it run. Any agent can get its own hardware with a single plugin.
+> 一个开源、可扩展的 AI 伴侣，AI 时代的电子宠物。
+> Speak a task. Watch it run. Any agent can get its own hardware with a single plugin.
 
 [English](README.md) · [简体中文](README.zh-CN.md)
 
 ![License](https://img.shields.io/badge/license-MIT-green) ![Hardware](https://img.shields.io/badge/hardware-ESP32--S3-orange) ![Bridge](https://img.shields.io/badge/bridge-Node%20%E2%89%A5%2022-blue) ![Firmware](https://img.shields.io/badge/firmware-ESP--IDF%205.5-red)
 
-**码得，代码触手可得** · **Made, when you want to make.**
+**Made, when you want to make.** · **码得，代码触手可得**
 
 </div>
 
 ---
 
-## Why made?
+## 🎯 Overview
 
-Coding agents live in terminals and IDEs — invisible, silent, far away. **made** puts one on your desk: a palm-sized device with a round touch display and a layered animated sprite that breathes, blinks, and talks while your agent works.
+**made** is an open-source hardware platform that brings AI agents into the physical world. It transforms your desk into a thinking space: a palm-sized device with a round capacitive touch display and a layered animated sprite that breathes, blinks, and talks while your agent works.
+
+**码得** is the open-source hardware platform that brings AI agents into the physical world. It transforms your desk into a thinking space: a palm-sized device with a round capacitive touch display and a layered animated sprite that breathes, blinks, and talks while your agent works.
+
+### The AI Era Electronic Pet
 
 It is an **electronic pet for the AI era**: not a single-purpose gadget, but open, hackable hardware that grows through plugins. An agent is not a feature we shipped — it is a plugin you write. Bring your own agent, and it gets its own face, voice channel, session memory, and a physical body on your desk.
+
+### Why made?
+
+Coding agents live in terminals and IDEs — invisible, silent, far away. **made** puts one on your desk.
 
 - **🐾 A pet, not a remote control.** The sprite idles, breathes, blinks and lip-syncs; task states drive its motion. Themes and sprites ship as plugin packages — no firmware reflashing.
 - **🔌 One plugin = one hardware resident.** Assistant names, icons, capabilities and full-screen sprites are all delivered by the bridge at runtime. A new agent never touches the firmware.
@@ -29,14 +38,14 @@ It is an **electronic pet for the AI era**: not a single-purpose gadget, but ope
 - **🔗 Four ways to connect.** USB cable, LAN Wi-Fi, a second-board receiver hotspot, or a public HTTPS tunnel — same protocol, same device API.
 - **🔓 Fully open.** MIT licensed: ESP-IDF firmware, a Node.js bridge, a web workbench, 3D-printable case files. No cloud account required.
 
-## How it works
+## 🧠 Architecture
 
 ```
         voice / buttons                  device API (event ⇄ command queue)
   you ───────────────▶ ┌─────────┐ ─────────────────────────▶ ┌──────────┐
                        │  made   │      USB · Wi-Fi · LAN     │  bridge  │
-  you ◀─────────────── │  device │ ◀───────────────────────── │ (Node.js)│
-        sprite screen  └─────────┘        receiver · public    └────┬─────┘
+  you ◀─────────────── │  device │      receiver · public     │          │
+        sprite screen  └─────────┘        hotspot             │          │
                                                                        │ CLI sessions
                                                           ┌────────────┼────────────┐
                                                           ▼            ▼            ▼
@@ -45,9 +54,9 @@ It is an **electronic pet for the AI era**: not a single-purpose gadget, but ope
 
 The **device firmware** is a generic terminal: it records audio, renders assistant sprites and replies, and exchanges a small event/command protocol. The **bridge** runs on your computer: it hosts the web workbench (`127.0.0.1:8787`), serves the device API (`8788`), runs agent plugins as CLI sessions in your Git repositories, and relays progress, confirmation and cancellation back to the device. A **task is a session**: create it once, keep talking in the same context.
 
-## Hardware
+## 💻 Hardware
 
-| | |
+| Feature | Specification |
 | --- | --- |
 | Reference board | Waveshare `ESP32-S3-Touch-LCD-1.85B` |
 | Display | 360 × 360 round capacitive touch |
@@ -57,7 +66,15 @@ The **device firmware** is a generic terminal: it records audio, renders assista
 
 The product and protocol are display-shape agnostic — the round screen is just the current implementation.
 
-## Quick start
+### 3D-printed case
+
+The case is fully open and parametric — no CAD skill required:
+
+- **Ready to print:** [`made_case_plate.3mf`](3d-model/made_case_plate.3mf) is a pre-arranged print plate (Bambu Studio or any slicer that reads 3MF). Individual parts are also shipped as STL: [`made_case_front.stl`](3d-model/made_case_front.stl), [`made_case_back.stl`](3d-model/made_case_back.stl), [`made_case_buttons.stl`](3d-model/made_case_buttons.stl).
+- **Labels & preview:** [`PARTS.md`](3d-model/PARTS.md) is the part dictionary, [`PARTS-diagram.svg`](3d-model/PARTS-diagram.svg) the labeled diagram, and `preview.png` the rendered result.
+- **Regenerate:** the whole shell comes from one parametric script — `blender -b -P 3d-model/make_case.py` rebuilds all three STLs. Baseline board outline is 50.0 × 85.8 mm; tweak the constants at the top of the script to fit a different board.
+
+## 🚀 Quick start
 
 **1. Run the bridge** (Node.js ≥ 22, no npm dependencies):
 
@@ -88,7 +105,7 @@ npx made-market install codex cursor qoder workbuddy
 
 **On the device:** swipe left/right to switch assistants · `+` creates a task · BOOT once records, twice confirms, three times cancels, hold ~1.2 s returns to the desktop. The device only talks to the bridge while the app is in the foreground and unlocked.
 
-## Write your own agent — one plugin away
+## 🧪 Write your own agent — one plugin away
 
 An agent is a JavaScript object. Save it under `~/made/plugins/`, restart the bridge, and it appears on the device — name, icon, sprite, capabilities and all:
 
@@ -115,7 +132,7 @@ Beyond coding agents, **control plugins** subscribe to device events (`boot.clic
 - Sprite (layered character art) spec: [docs/SPRITES.md](docs/SPRITES.md)
 - Full bridge capabilities table: [AGENTS.md](AGENTS.md)
 
-## Plugin ecosystem
+## 🛍️ Plugin ecosystem
 
 Three markets, each owning one layer — packages only install and register; the bridge executes:
 
@@ -137,7 +154,7 @@ npx made-market info <package-id>           # versions, checksums, install locat
 
 Marketplace boundaries and classification rules: [docs/MARKETS.md](docs/MARKETS.md).
 
-## Repository layout
+## 📁 Repository layout
 
 ```
 made/               Device firmware (ESP-IDF 5.5, Brookesia desktop, made app)
@@ -151,7 +168,7 @@ sim/                Host simulator for the device UI (npm run sim)
 tools/              Flash tool and dev utilities
 ```
 
-## Documentation
+## 📖 Documentation
 
 | Document | Contents |
 | --- | --- |
@@ -167,7 +184,7 @@ tools/              Flash tool and dev utilities
 
 > Deep technical documents are currently written in Chinese; the README is bilingual.
 
-## Testing
+## 🧪 Testing
 
 ```sh
 npm test          # bridge-side suite: jobs, sessions, pairing, USB framing, voice upload…
@@ -175,10 +192,10 @@ npm run sim       # host simulator for the device UI (screenshots without hardwa
 npm run doctor    # environment self-check for your machine
 ```
 
-## Contributing
+## 🤝 Contributing
 
 Issues and pull requests are welcome. For plugin ideas, start with [docs/PLUGINS.md](docs/PLUGINS.md) and the `npx made-market init` scaffold — most extensions need no firmware work. Firmware changes should keep all four connection paths working (see [AGENTS.md](AGENTS.md)).
 
-## License
+## 📄 License
 
 [MIT](LICENSE)

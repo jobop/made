@@ -166,6 +166,10 @@ alarm-clock/
 | `voice.start` | 无 | 开始录音并上传 |
 | `task.confirm` | 可选 `id` | 确认当前可见任务 |
 | `task.cancel` | 可选 `id` | 取消当前可见任务 |
+| `debug.screenshot` | 无 | 截取当前画面回传桥接器（转 PNG 存档） |
+| `ui.swipe` | `direction`=`left`/`right`/`up`/`down` | 语义化手势：切助手、开/收抽屉；抽屉内左右切任务 |
+| `ui.tap` | `x`、`y`（板面像素坐标） | 命中点击最深的可点击对象 |
+| `ui.back` | 无 | 远程返回键，与实体返回键同路径逐层退出 |
 
 码得用 `GET /device/commands` 领取，执行后 `POST /device/commands/ack`，请求体为 `{ids}`。未确认的命令留在队列里，下次领取会再次带上。队列最多 8 条，其中待播放语音同时只保留一条。USB、局域网、接收器和公网都走这同一套设备接口。配网、配对和语言不在命令里。
 

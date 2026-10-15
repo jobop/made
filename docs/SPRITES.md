@@ -4,8 +4,7 @@
 `sprite/` 目录（分层 PNG + manifest），桥接器把素材清单暴露给码得，码得按版本号
 分片拉取、落盘缓存。换形象 = 换插件包里的素材，**不需要刷固件**。
 
-本文是素材包的格式真源。改动本文时，三处必须同步：本仓库 [插件开放能力清单](../AGENTS.md)
-（AGENTS.md）、市场 CLI 脚手架（made-market 仓库 `cli/`，`npx made-market init --kind agent`
+本文是素材包的格式真源。改动本文时，三处必须同步：本仓库 [插件开放能力清单](./standards/03-plugin-capabilities.md)、市场 CLI 脚手架（made-market 仓库 `cli/`，`npx made-market init --kind agent`
 生成的模板）、市场网站 [开放能力说明页](https://made-market.link/capabilities.html)。
 
 ## 归属与优先级
@@ -137,8 +136,9 @@ manifest 的 `x`/`y`。给任何新助手做形象，照本文规范提供分层
 - 桥接器扫描已安装 agent 包的 `sprite/`，在 `/device/config` 对应 provider 上暴露：
   `sprite: { version, files: [{ file, bytes, sha256 }] }`（清单很小，走现有通道）
 - 素材本体走**分片拉取端点**：`GET /device/sprite/<provider>/<file>?offset=N&len=L`，
-  单次响应 **≤192KB**——远低于 USB 帧转发的 256KB 上限，三种接入方式
-  （局域网 / USB 直连 / 接收器转发）行为一致
+  单片 **4KB**（桥接器 `SPRITE_DEVICE_CHUNK`，请求更大的 `len` 也会被截到 4KB——
+  大分片在 USB 帧转发上实测丢帧，勿调大），远低于 USB 帧转发的 256KB 上限，三种接入
+  方式（局域网 / USB 直连 / 接收器转发）行为一致
 - 码得按 `version` 决定是否重拉；逐片下载校验 `sha256`，断点续传，完整落盘后才切换显示
 - 拉取失败不阻塞助手页：沿用旧缓存或兜底形象，下轮再试
 
