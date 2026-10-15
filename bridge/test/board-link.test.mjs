@@ -9,6 +9,7 @@ import { createBoardLink } from '../src/board-link.mjs';
 import { loadConfiguredPlugins } from '../src/plugins/registry.mjs';
 import { loadConfig } from '../src/config.mjs';
 import { createApp } from '../src/server.mjs';
+import { testRegistry } from './helpers/fixture-agents.mjs';
 
 const catalog = {
   events: [
@@ -208,7 +209,15 @@ test('配对设备上报清单后，事件与命令分开传递', async (t) => {
     projects: [{ id: 'demo', path: directory }],
     plugins: ['./caption.mjs'],
   }));
-  const config = loadConfig({ VIBE_CONFIG: configPath, VIBE_STATE_DIR: path.join(directory, 'state'), VIBE_ASR_MODE: 'off' });
+  const config = loadConfig({ VIBE_CONFIG: configPath, VIBE_STATE_DIR: path.join(directory, 'state'), VIBE_ASR_MODE: 'off', MADE_HOME: path.join(directory, 'made') });
+  // 内置编程助手已插件化：默认助手 codex 由临时 madeHome 里的插件包提供。
+  const madeHome = path.join(directory, 'made');
+  fs.mkdirSync(path.join(madeHome, 'plugins'), { recursive: true });
+  fs.writeFileSync(path.join(madeHome, 'plugins', 'codex.mjs'), `export default {
+    apiVersion: 1, kind: 'coding-agent', id: 'codex', label: 'Codex',
+    capabilities: { session: 'native', model: true, cancel: true, progress: true },
+    probe: () => ({ available: true }), run: async () => ({ status: 'completed', result: '完成' })
+  };`);
   config.pluginsRuntime = await loadConfiguredPlugins(config);
   config.port = await freeTcpPort();
   do { config.devicePort = await freeTcpPort(); } while (config.port === config.devicePort);

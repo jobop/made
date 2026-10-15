@@ -2,7 +2,6 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { SessionStore, validAgentSessionId, VIBE_SESSION_ID } from './sessions.mjs';
-import { builtinAgent } from './agents/index.mjs';
 
 const ACTIVE = new Set(['waiting_confirmation', 'queued', 'running']);
 
@@ -55,7 +54,7 @@ function mergeAttachments(result, explicit) {
 
 export class JobStore {
   constructor({ file, projects, defaultProject, defaultProvider, workspaceRoot, maxParallel, maxAutoRetries, run, providerAvailable, pluginsRuntime, hooks }) {
-    this.agent = pluginsRuntime ? (id) => pluginsRuntime.agent(id) : run.agent || builtinAgent;
+    this.agent = pluginsRuntime ? (id) => pluginsRuntime.agent(id) : run.agent;
     this.hooks = hooks || null;
     this.file = file;
     this.projects = projects;

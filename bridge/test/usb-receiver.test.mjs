@@ -8,6 +8,7 @@ import net from 'node:net';
 import { createHmac } from 'node:crypto';
 import { createApp } from '../src/server.mjs';
 import { UsbReceiverProtocol, forwardUsbRequest, parseMacUsbSerialPorts, linuxUsbSerialPorts } from '../src/usb-receiver.mjs';
+import { testRegistry } from './helpers/fixture-agents.mjs';
 
 const HELLO = { type: 'hello', version: 1, ssid: 'Vibe-Receiver', password: 'private-passphrase' };
 const DIRECT_HELLO = { type: 'hello', version: 1, mode: 'direct',
@@ -459,7 +460,7 @@ test('USB 接收器与直连仅接受持有进程密钥的 loopback 转发，并
     port: await reserve(), devicePort: await reserve(), discoveryPort: await reserve(),
     stateDir: directory, projects: [{ id: 'demo', label: 'Demo', path: directory }],
     defaultProject: 'demo', defaultProvider: 'codex', asrMode: 'off',
-    workbuddy: { allowUnscopedDispatch: false },
+    workbuddy: { allowUnscopedDispatch: false }, pluginsRuntime: testRegistry(),
   };
   let tunnelState = { status: 'offline' };
   const tunnel = { summary: () => tunnelState, stop: async () => {} };

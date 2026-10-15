@@ -16,6 +16,12 @@ function fixture(t) {
     events: ['boot.double'], commands: ['caption.show'],
     probe: () => ({ available: true }), onEvent: () => ({ commands: [] })
   };`);
+  // 内置编程助手已插件化：默认助手 codex 也要由用户目录里的插件包提供。
+  fs.writeFileSync(path.join(directory, 'plugins', 'codex.mjs'), `export default {
+    apiVersion: 1, kind: 'coding-agent', id: 'codex', label: 'Codex',
+    capabilities: { session: 'native', model: true, cancel: true, progress: true },
+    probe: () => ({ available: true }), run: async () => ({ status: 'completed', result: '完成' })
+  };`);
   fs.writeFileSync(path.join(directory, 'themes', 'bobo', 'theme.json'), JSON.stringify({ title: '波波' }));
   fs.writeFileSync(configFile, JSON.stringify({ plugins: [], disabledPlugins: [] }));
   const config = {
@@ -55,7 +61,8 @@ test('移除插件会删除用户目录中的文件，删除主题会去掉用�
   const config = fixture(t);
   config.pluginsRuntime = await loadConfiguredPlugins(config);
   const removed = await removePlugin(config, { id: 'alarm_clock' });
-  assert.equal(removed.plugins.length, 0);
+  // 夹具里的 codex 助手包还在，只有闹钟被移除。
+  assert.deepEqual(removed.plugins.map((plugin) => plugin.label), ['Codex']);
   assert.equal(fs.existsSync(path.join(config.madeHome, 'plugins', 'alarm.mjs')), false);
   const themes = removeTheme(config, 'bobo');
   // 用户目录里的副本被删掉后，列表里只剩内置的 sunset。

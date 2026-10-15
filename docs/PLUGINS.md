@@ -18,11 +18,16 @@
 
 示例 `echo-example` 仅回显文字和上一句，用于验证新助手、持久上下文、进度和取消，不执行编程任务。
 
-`disabledPlugins` 可填写内置或外部助手插件 ID。禁用后历史任务与配置保留，重新安装同 ID 插件后可继续。不要复用他人 ID 来表示不同助手，否则旧上下文会被错误解释。默认助手必须安装且启用。
+`disabledPlugins` 可填写助手插件 ID。禁用后历史任务与配置保留，重新安装同 ID 插件后可继续。不要复用他人 ID 来表示不同助手，否则旧上下文会被错误解释。默认助手必须安装且启用。
 
 ## 编程助手
 
-完整接口见 `bridge/src/plugins/contracts.d.ts`，内置实现在 `bridge/src/agents/`。
+完整接口见 `bridge/src/plugins/contracts.d.ts`。
+
+原内置的四个编程助手（codex / cursor / qoder / workbuddy）已插件化为市场包，源码真源在 made-market-plugins 仓库，桥接器不再内置任何编程助手；`bridge/src/agents/` 只保留它们共用的 CLI 执行机制（权限边界指令、卡死看门狗、改动清单、JSONL 事件解析），并经 `config.runtime` 注入给插件。装回市场包即恢复原有助手：
+```sh
+npx made-market install codex cursor qoder workbuddy
+```
 
 外部插件装在固定目录 `~/made/plugins/`（可用 `MADE_HOME` 环境变量或配置里的 `madeHome` 改到别处），桥接器启动时自动扫描，并在工作台「插件」页启用、停用或移除；移除只作用于这个用户目录。随代码发布的内置插件放在 `bridge/builtin/plugins/`，主题在 `bridge/builtin/themes/`，同名时用户目录覆盖内置，内置包不能被工作台移除。插件市场只负责发包，不代替这个运行目录。
 
@@ -54,6 +59,8 @@ const probe = runCommand('esptool', ['version']);   // {status, stdout, stderr, 
 - **「本机没装」和「装了但执行失败」是两类错误**，提示要分开写，否则排查会被带偏：没装是 `code === 'ENOENT'`、`notFound === true`；执行失败是 `code === 'ENPMFAIL'`，message 里带最后几行输出。
 
 `config.runtime` 从当前版本起由桥接器注入。插件面向旧版桥接器时按可选处理，例如 `const runNpm = config.runtime?.runNpm ?? fallback`。
+
+CLI 型助手插件还可以用同一份 `config.runtime` 里的 CLI 工具箱：`probeCli`（登录探测）、`runCli`（带权限边界、看门狗与改动清单地拉起 CLI 子进程）、`gitState`、`jsonLineEvents` / `assistantEvent` / `streamActivity` / `toolActivity` / `textBlocks`（事件解析）。权限边界指令统一在 `runCli` 里拼，插件不要再自己拼一份。插件声明 `bridgeStrings: true` 表示其进度/错误/探针提示都是桥接器规范文案，客户端会在输出边界按界面语言翻译；第三方插件不声明则原样展示。
 
 能力字段：
 

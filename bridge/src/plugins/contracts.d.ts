@@ -27,10 +27,30 @@ export interface Job {
   [key: string]: unknown;
 }
 export interface Project { id: string; label: string; path: string }
+/** Streaming JSONL event parser shared by CLI coding agents. */
+export interface CliEventStream {
+  write(chunk: string): void;
+  finish(): { result: string; hasAssistantText: boolean; error: string; rawTail: string };
+}
+/** Per-CLI adapter handed to runCli: command line plus event interpretation. */
+export interface CliAdapter {
+  label: string;
+  createEvents: (onProgress?: (text: string) => void, onSession?: (sessionId: string) => void) => CliEventStream;
+  command: (options: { cwd: string; instruction: string; config: PluginConfig; model?: string; sessionId?: string }) => {
+    command: string; args: string[]; stdin?: string;
+  };
+  classifyExit?: (context: {
+    job: Job; project: Project; stderr: string;
+    output: { result: string; hasAssistantText: boolean; error: string; rawTail: string };
+    startingGitSnapshot: string;
+  }) => Error | void;
+}
 /**
  * Cross-platform helpers the bridge hands to every plugin. Use these instead of
  * hand-rolling PATH lookups or spawning npm: on Windows npm is npm.cmd, which
  * Node 20+ refuses to spawn without a shell, and PATH lookups must walk PATHEXT.
+ * Also includes the CLI toolbox (probeCli/runCli/event parsing) used by CLI
+ * coding-agent plugins; guardrails and the stuck watchdog live in runCli.
  */
 export interface PluginRuntime {
   /** process.platform of the bridge, e.g. 'darwin' | 'linux' | 'win32'. */
@@ -46,6 +66,26 @@ export interface PluginRuntime {
   };
   /** Sync npm run; returns stdout. Throws ENOENT when npm is missing. */
   runNpm: (args?: string[], options?: Record<string, unknown>) => string;
+  /** Sync CLI login probe; loginArgs like ['login', 'status']. */
+  probeCli: (command: string, loginArgs?: string[]) => { available: boolean; mode: string; reason: string };
+  /** Spawn a CLI adapter with guardrails, watchdog, and change-footer handling. */
+  runCli: (context: RunContext, adapter: CliAdapter) => Promise<RunResult>;
+  /** Git working-tree fingerprint for a project directory. */
+  gitState: (cwd: string) => { dirty: boolean; snapshot: string; changed: string };
+  /** JSONL event stream parser; interpret returns {sessionId?, activity?}. */
+  jsonLineEvents: (
+    interpret: (event: Record<string, unknown>, state: Record<string, unknown>) => { sessionId?: string; activity?: string } | void,
+    onProgress?: (text: string) => void,
+    onSession?: (sessionId: string) => void,
+  ) => CliEventStream;
+  /** Update state from assistant/result events (Claude-style stream-json). */
+  assistantEvent: (event: Record<string, unknown>, state: Record<string, unknown>, options?: { append?: boolean }) => void;
+  /** Categorical activity text for Claude/Qoder-style stream events. */
+  streamActivity: (event: Record<string, unknown>) => string;
+  /** Categorical progress text for a tool name. */
+  toolActivity: (name: string, completed?: boolean) => string;
+  /** Concatenated text of string-or-blocks content. */
+  textBlocks: (content: unknown) => string;
 }
 export interface PluginConfig {
   locale?: 'zh-CN' | 'en';
@@ -81,6 +121,8 @@ export interface CodingAgentPlugin {
   capabilities: Capabilities;
   model?: { default: string; required: boolean };
   sessionIdPattern?: RegExp;
+  /** Declare that progress/error/reason strings are bridge-canonical messages; clients localize them at output boundaries. */
+  bridgeStrings?: boolean;
   probe: (config: PluginConfig) => { available: boolean; reason?: string; mode?: string };
   run: (context: RunContext) => Promise<RunResult>;
   readUpdates?: (context: { job: Job; config: PluginConfig }) => Promise<{

@@ -7,6 +7,7 @@ import os from 'node:os';
 import path from 'node:path';
 import zlib from 'node:zlib';
 import { rgb565ToPng, validateScreenshotParams, createScreenshotStore } from '../src/board-screenshot.mjs';
+import { testRegistry } from './helpers/fixture-agents.mjs';
 
 // —— PNG 解析（仅测试用）：拆 chunk，返回 IHDR 与解压后的像素原始流 ——
 function decodePng(png) {
@@ -110,7 +111,7 @@ test('设备端全链路：/device/screenshot 回传 RGB565 转 PNG 落盘，/ap
     plugins: [path.join(directory, 'plugin.mjs')],
   }));
   const config = loadConfig({ VIBE_CONFIG: configPath, VIBE_STATE_DIR: path.join(directory, 'state'), VIBE_ASR_MODE: 'off' });
-  config.pluginsRuntime = await loadConfiguredPlugins(config);
+  config.pluginsRuntime = testRegistry();
   config.port = await freeTcpPort();
   do { config.devicePort = await freeTcpPort(); } while (config.port === config.devicePort);
   config.discoveryPort = await freeUdpPort();

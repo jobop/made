@@ -1,7 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { builtinAgent } from './agents/index.mjs';
 
 export const VIBE_SESSION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 export const CLI_SESSION_ID = /^[A-Za-z0-9_-]{6,128}$/;
@@ -33,7 +32,7 @@ function firstTurnTitle(instruction) {
 
 export class SessionStore {
   constructor({ file, projects, defaultProject, defaultProvider, pluginsRuntime, agent }) {
-    this.agent = agent || (pluginsRuntime ? (id) => pluginsRuntime.agent(id) : builtinAgent);
+    this.agent = agent || (pluginsRuntime ? (id) => pluginsRuntime.agent(id) : () => undefined);
     this.file = file;
     this.projects = projects;
     this.defaultProject = defaultProject;

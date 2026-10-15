@@ -12,8 +12,8 @@ import { translateKnownMessage } from '../src/i18n.mjs';
 import { createApp } from '../src/server.mjs';
 import { loadConfig } from '../src/config.mjs';
 import { createPluginRegistry } from '../src/plugins/registry.mjs';
-import { builtinAgent } from '../src/agents/index.mjs';
 import { builtinSpeechRecognizers } from '../src/speech/index.mjs';
+import { qoderFixture, workbuddyFixture } from './helpers/fixture-agents.mjs';
 import { UsbReceiverProtocol, forwardUsbRequest } from '../src/usb-receiver.mjs';
 import openai from '../src/speech/openai.mjs';
 import { runCli } from '../src/agents/shared.mjs';
@@ -81,7 +81,7 @@ test('language API requires local authorization, persists, reaches device config
   };
   const env = { VIBE_CONFIG: configPath, VIBE_STATE_DIR: stateDir };
   const config = loadConfig(env);
-  config.pluginsRuntime = createPluginRegistry([custom, builtinAgent('qoder'), builtinAgent('workbuddy'), ...builtinSpeechRecognizers,
+  config.pluginsRuntime = createPluginRegistry([custom, qoderFixture, workbuddyFixture, ...builtinSpeechRecognizers,
     { apiVersion: 1, kind: 'speech-recognizer', id: 'custom_speech', label: '新任务', fields: [],
       probe: () => ({ available: true, reason: '正在读取文件' }), transcribe: async () => '' }]);
   config.port = await tcp(); config.devicePort = await tcp(); config.discoveryPort = await udp();

@@ -10,7 +10,7 @@ import { fileURLToPath } from 'node:url';
 import { loadConfig, packageRoots, ROOT, ensureUserConfig } from './config.mjs';
 import { JobStore } from './jobs.mjs';
 import { VIBE_SESSION_ID } from './sessions.mjs';
-import { createRunner, providerStates, isBuiltinAgent } from './providers.mjs';
+import { createRunner, providerStates } from './providers.mjs';
 import { loadLanguageSettings, saveLanguageSettings, validateLocale } from './language-settings.mjs';
 import { translateKnownMessage, localizeStatus } from './i18n.mjs';
 import { transcribe as transcribeVoice, transcriptionState, validateVoiceWav } from './transcribe.mjs';
@@ -228,8 +228,10 @@ export function createApp(config, { run, transcribe, tunnel: providedTunnel, ena
   const publicSession = (session, locale = config.locale) => ({ ...session,
     ...(session.autoTitlePending ? { title: message(session.title, locale) } : {}) });
   const publicJob = (job, locale = config.locale) => {
-    const builtin = isBuiltinAgent(config.pluginsRuntime.agent(job.provider));
-    return { ...job, ...(builtin ? { progress: message(job.progress, locale), error: message(job.error, locale),
+    // 桥接器规范文案（bridgeStrings 插件）在输出边界翻译；第三方插件自有的
+    // 进度与错误原样返回。
+    const canonical = config.pluginsRuntime.agent(job.provider)?.bridgeStrings === true;
+    return { ...job, ...(canonical ? { progress: message(job.progress, locale), error: message(job.error, locale),
       ...(job.handoffReadError ? { handoffReadError: message(job.handoffReadError, locale) } : {}) } : {}) };
   };
   const publicVoice = () => {
@@ -315,7 +317,7 @@ export function createApp(config, { run, transcribe, tunnel: providedTunnel, ena
     hooks: enhance,
     // Keep stored built-in failures canonical; each client localizes at its output boundary.
     providerAvailable: (id) => ({ ...providerStates(config, 'zh-CN').find((item) => item.id === id),
-      preserveMessage: !isBuiltinAgent(config.pluginsRuntime.agent(id)) }),
+      preserveMessage: config.pluginsRuntime.agent(id)?.bridgeStrings !== true }),
   });
   // 任务存储与板侧链路就绪后，把句柄露给管控插件。
   enhance.attach({ jobs: store, board: boardLink, themes: () => listThemes(config) });

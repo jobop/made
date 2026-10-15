@@ -44,6 +44,8 @@ npx made-market info <包 ID>             # 查看版本、校验和与安装位
 
 ## 插件开放能力清单
 
+> 2026-10 起，桥接器不再内置编程助手：codex / cursor / qoder / workbuddy 四个助手已插件化为市场包（源码真源 `~/WorkBuddy/made-market-plugins/`），装回包即恢复。CLI 执行机制留在 `bridge/src/agents/` 并经 `config.runtime` 注入给插件。
+
 管控插件的能力面 = 两条供给线的并集。写插件、评需求前先查这张表；市场网站有同步的[开放能力说明页](https://made-market.link/capabilities.html)，脚手架 `npx made-market init --kind control` 会把同一份清单生成进包里（`capabilities.json` + `contracts.d.ts`）。**给插件加新能力时，三处必须同步更新：本清单、市场 CLI 脚手架（made-market 仓库 `cli/`）、市场网站说明页（`site/capabilities.html`）。**
 
 **板侧线 —— 清单由固件上报（`esp_brookesia_app_vibe.cpp` 的 `announceBoardCatalog`），扩清单要刷固件：**

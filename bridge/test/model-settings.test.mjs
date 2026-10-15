@@ -10,6 +10,7 @@ import { createApp } from '../src/server.mjs';
 import { loadConfig } from '../src/config.mjs';
 import { createRunner } from '../src/providers.mjs';
 import { loadModelSettings, validateModelSettings } from '../src/model-settings.mjs';
+import { testRegistry } from './helpers/fixture-agents.mjs';
 
 async function availableTcpPort() {
   const server = net.createServer();
@@ -51,6 +52,7 @@ test('模型设置接口需本机操作令牌、保存后可重启读取，WorkB
   const env = { VIBE_CONFIG: configPath, VIBE_STATE_DIR: path.join(directory, 'state'),
     VIBE_CODEX_MODEL: 'gpt-5.5' };
   const config = loadConfig(env);
+  config.pluginsRuntime = testRegistry();
   assert.deepEqual(config.models, { codex: 'gpt-5.5', cursor: '', qoder: '' });
   config.port = await availableTcpPort();
   config.devicePort = await availableTcpPort();
@@ -116,7 +118,7 @@ if (provider === 'codex') {
     if (priorMarker === undefined) delete process.env.VIBE_TEST_MODEL_ARGS;
     else process.env.VIBE_TEST_MODEL_ARGS = priorMarker;
   });
-  const config = { models: { codex: 'gpt-6-astra', cursor: 'cursor-old', qoder: 'qoder-old' } };
+  const config = { models: { codex: 'gpt-6-astra', cursor: 'cursor-old', qoder: 'qoder-old' }, pluginsRuntime: testRegistry() };
   const runner = createRunner(config);
   const run = (provider) => runner({ provider, instruction: '检查演示项目' }, { path: repo },
     new AbortController().signal, () => {}, () => {});

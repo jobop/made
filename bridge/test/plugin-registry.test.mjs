@@ -84,6 +84,12 @@ test('用户插件目录中的模块无需写入 plugins 配置也会加载', as
     events: ['boot.click'], commands: ['caption.show'],
     probe: () => ({ available: true }), onEvent: () => ({ commands: [] })
   };`);
+  // 内置编程助手已插件化：默认助手 codex 由用户目录里的插件包提供。
+  fs.writeFileSync(path.join(directory, 'plugins', 'codex.mjs'), `export default {
+    apiVersion: 1, kind: 'coding-agent', id: 'codex', label: 'Codex',
+    capabilities: { session: 'native', model: true, cancel: true, progress: true },
+    probe: () => ({ available: true }), run: async () => ({ status: 'completed', result: '完成' })
+  };`);
   const loaded = await loadConfiguredPlugins({ configDirectory: directory, madeHome: directory, plugins: [], disabledPlugins: [], defaultProvider: 'codex' });
   assert.equal(loaded.boardPlugin('dropped_in').label, '丢进来的插件');
 });
@@ -94,6 +100,14 @@ test('外部语音插件拒绝加载，包括禁用条目，内置语音接口�
     apiVersion:1, kind:'speech-recognizer', id:'community_speech', label:'社区语音', fields:[],
     probe:()=>({available:true}), transcribe:async()=> '转写'
   };`);
+  fs.mkdirSync(path.join(directory, 'plugins'), { recursive: true });
+  for (const id of ['codex', 'cursor']) {
+    fs.writeFileSync(path.join(directory, 'plugins', `${id}.mjs`), `export default {
+      apiVersion: 1, kind: 'coding-agent', id: '${id}', label: '${id}',
+      capabilities: { session: 'native', model: true, cancel: true, progress: true },
+      probe: () => ({ available: true }), run: async () => ({ status: 'completed', result: '完成' })
+    };`);
+  }
   const config = { configDirectory: directory, madeHome: directory, plugins: ['./speech.mjs'], defaultProvider: 'codex' };
   await assert.rejects(loadConfiguredPlugins(config), /外部插件仅支持 coding-agent.*URL.*API Key.*模型名/);
   await assert.rejects(loadConfiguredPlugins({ ...config, disabledPlugins: ['community_speech'] }), /外部插件仅支持 coding-agent/);
@@ -102,6 +116,7 @@ test('外部语音插件拒绝加载，包括禁用条目，内置语音接口�
   }
   const loaded = await loadConfiguredPlugins({ ...config, plugins: [], disabledPlugins: ['cursor'] });
   assert.equal(loaded.hasAgent('cursor'), false);
+  assert.equal(loaded.hasAgent('codex'), true);
   assert.equal(loaded.hasSpeechRecognizer('openai'), true);
 });
 

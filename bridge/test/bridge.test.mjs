@@ -6,8 +6,10 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { JobStore } from '../src/jobs.mjs';
 import { createRunner } from '../src/providers.mjs';
+import { createPluginRegistry } from '../src/plugins/registry.mjs';
 import { loadConfig } from '../src/config.mjs';
 import { transcribe, validateVoiceWav } from '../src/transcribe.mjs';
+import { codexFixture, cursorFixture, workbuddyFixture, testRegistry } from './helpers/fixture-agents.mjs';
 
 function sampleWav() {
   const wav = Buffer.alloc(44 + 16000);
@@ -29,13 +31,14 @@ function sampleWav() {
 function fixture(run = async () => ({ status: 'completed', result: '完成' }), options = {}) {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'vibe-bridge-'));
   const projects = [{ id: 'demo', label: '演示项目', path: directory }];
-  const config = { projects, defaultProject: 'demo', defaultProvider: 'codex' };
+  const config = { projects, defaultProject: 'demo', defaultProvider: 'codex', pluginsRuntime: testRegistry() };
   const store = new JobStore({
     file: path.join(directory, 'jobs.json'),
     projects,
     defaultProject: 'demo',
     defaultProvider: 'codex',
     run,
+    pluginsRuntime: testRegistry(),
     providerAvailable: () => ({ available: true }),
     ...options,
   });
@@ -47,16 +50,18 @@ function submit(store, payload) {
   return store.submit({ ...payload, sessionId: session.id });
 }
 
-function workbuddyFixture() {
+function workbuddyFixtureStore() {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'vibe-workbuddy-'));
   const projects = [{ id: 'demo', label: '演示项目', path: directory }];
   const config = {
     projects, defaultProject: 'demo', defaultProvider: 'workbuddy',
     workbuddyToken: 'test-token', workbuddy: { allowUnscopedDispatch: true },
+    pluginsRuntime: createPluginRegistry([workbuddyFixture]),
   };
   const file = path.join(directory, 'jobs.json');
   const store = new JobStore({
     file, projects, defaultProject: 'demo', defaultProvider: 'workbuddy',
+    pluginsRuntime: config.pluginsRuntime,
     run: createRunner(config), providerAvailable: () => ({ available: true }),
   });
   return { store, file };
@@ -84,9 +89,11 @@ function fakeCliFixture(t, command, script, runnerConfig = {}) {
   t.after(() => { process.env.PATH = previousPath; });
   const file = path.join(directory, 'jobs.json');
   const projects = [{ id: 'demo', label: '演示项目', path: repo }];
+  const pluginsRuntime = createPluginRegistry([codexFixture, cursorFixture]);
   const store = new JobStore({
     file, projects, defaultProject: 'demo', defaultProvider: command === 'codex' ? 'codex' : 'cursor',
-    run: createRunner(runnerConfig), providerAvailable: () => ({ available: true }),
+    pluginsRuntime,
+    run: createRunner({ ...runnerConfig, pluginsRuntime }), providerAvailable: () => ({ available: true }),
   });
   return { store, file, projects };
 }
@@ -366,7 +373,7 @@ test('WorkBuddy 回读助理消息并持久化游标，不将回复当成完成�
       ];
     return { ok: true, status: 200, json: async () => ({ code: 0, data: { messages } }) };
   });
-  const { store, file } = workbuddyFixture();
+  const { store, file } = workbuddyFixtureStore();
   const job = submit(store, { instruction: '修改演示项目的标题' });
   store.confirm(job.id);
   await until(() => job.status === 'handed_off');
@@ -391,7 +398,7 @@ test('WorkBuddy 缺少消息读取授权时仍保留已转交状态和查看提�
     }
     return { ok: false, status: 403 };
   });
-  const { store } = workbuddyFixture();
+  const { store } = workbuddyFixtureStore();
   const job = submit(store, { instruction: '更新 README 文案' });
   store.confirm(job.id);
   await until(() => job.status === 'handed_off');

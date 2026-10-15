@@ -5,6 +5,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { loadOpenAIKey } from './openai-key.mjs';
 import { pluginRuntime } from './plugin-runtime.mjs';
+import { cliToolbox } from './agents/toolbox.mjs';
 import { DEFAULT_CODEX_MODEL, loadModelSettings, validateModelSettings, validateStoredModels } from './model-settings.mjs';
 import { DEFAULT_TRANSCRIBE_MODEL, DEFAULT_TRANSCRIBE_URL, loadVoiceSettings, validateTranscribeModel, validateTranscribeUrl } from './voice-settings.mjs';
 
@@ -198,14 +199,16 @@ export function loadConfig(env = process.env) {
     environmentOpenaiKey,
     transcribeUrl: savedVoiceSettings?.url || validateTranscribeUrl(env.VIBE_TRANSCRIBE_URL || DEFAULT_TRANSCRIBE_URL),
     transcribeModel: savedVoiceSettings?.model || validateTranscribeModel(env.VIBE_TRANSCRIBE_MODEL || DEFAULT_TRANSCRIBE_MODEL),
+    stateDir,
+    usbPort,
+    configFile: selected,
+    // workbuddy 插件的旧凭证入口，仅为兼容既有部署保留；新配置请用插件设置。
     workbuddyToken: env.WORKBUDDY_ACCESS_TOKEN || '',
     workbuddy: {
       allowUnscopedDispatch: raw.workbuddy?.allowUnscopedDispatch === true,
     },
-    stateDir,
-    usbPort,
-    configFile: selected,
-    // 插件可用的跨平台助手（命令查找、子进程、npm）。见 plugin-runtime.mjs。
-    runtime: pluginRuntime,
+    // 插件可用的助手：跨平台助手（命令查找、子进程、npm）加上 CLI 执行
+    // 工具箱（runCli、事件解析等）。见 plugin-runtime.mjs 与 agents/toolbox.mjs。
+    runtime: Object.freeze({ ...pluginRuntime, ...cliToolbox }),
   };
 }

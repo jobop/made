@@ -12,6 +12,7 @@ import { createHmac } from 'node:crypto';
 import { TunnelManager, inspectTailscaleFunnelStatus, inspectNgrokEndpointStatus } from '../src/tunnel.mjs';
 import { createApp } from '../src/server.mjs';
 import { PairingStore } from '../src/pairing.mjs';
+import { testRegistry } from './helpers/fixture-agents.mjs';
 
 function fakeChild() {
   const child = new EventEmitter();
@@ -326,7 +327,7 @@ test('公网开关只在本机桌面 API 且持有本机操作令牌时可用', 
   const config = {
     stateDir, port: await freeTcpPort(), devicePort: await freeTcpPort(), discoveryPort: await freeUdpPort(),
     projects: [{ id: 'demo', label: '演示项目', path: stateDir }], defaultProject: 'demo', defaultProvider: 'codex',
-    workbuddy: { allowUnscopedDispatch: false }, asrMode: 'off',
+    workbuddy: { allowUnscopedDispatch: false }, asrMode: 'off', pluginsRuntime: testRegistry(),
   };
   const app = createApp(config, { tunnel, run: async () => ({ status: 'completed', result: '完成' }) });
   t.after(async () => { await app.close(); fs.rmSync(stateDir, { recursive: true, force: true }); });
@@ -378,7 +379,7 @@ test('工作台配置的固定地址在内置隧道未启动时也通过校验�
   const config = {
     stateDir, port: await freeTcpPort(), devicePort: await freeTcpPort(), discoveryPort: await freeUdpPort(),
     projects: [{ id: 'demo', label: '演示项目', path: stateDir }], defaultProject: 'demo', defaultProvider: 'codex',
-    workbuddy: { allowUnscopedDispatch: false }, asrMode: 'off',
+    workbuddy: { allowUnscopedDispatch: false }, asrMode: 'off', pluginsRuntime: testRegistry(),
   };
   const app = createApp(config, { tunnel, run: async () => ({ status: 'completed', result: '完成' }) });
   t.after(async () => { await app.close(); fs.rmSync(stateDir, { recursive: true, force: true }); });
@@ -396,7 +397,7 @@ test('花生壳只授权已核验的设备域名，映射开关与公网探针�
   const config = {
     stateDir, port: await freeTcpPort(), devicePort: await freeTcpPort(), discoveryPort: await freeUdpPort(),
     projects: [{ id: 'demo', label: '演示项目', path: stateDir }], defaultProject: 'demo', defaultProvider: 'codex',
-    workbuddy: { allowUnscopedDispatch: false }, asrMode: 'off',
+    workbuddy: { allowUnscopedDispatch: false }, asrMode: 'off', pluginsRuntime: testRegistry(),
   };
   const bridgeId = new PairingStore(stateDir).bridgeId;
   let enabled = false;

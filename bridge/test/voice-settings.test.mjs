@@ -9,6 +9,7 @@ import { createApp } from '../src/server.mjs';
 import { loadConfig } from '../src/config.mjs';
 import { transcribe } from '../src/transcribe.mjs';
 import { DEFAULT_TRANSCRIBE_URL, validateTranscribeUrl } from '../src/voice-settings.mjs';
+import { testRegistry } from './helpers/fixture-agents.mjs';
 
 function sampleWav() {
   const wav = Buffer.alloc(44 + 16000);
@@ -83,6 +84,7 @@ test('电脑端三要素设置保存到本机，密钥不会通过状态接口�
   }));
   const env = { VIBE_CONFIG: configPath, VIBE_STATE_DIR: directory, VIBE_ASR_MODE: 'openai' };
   const config = loadConfig(env);
+  config.pluginsRuntime = testRegistry();
   config.port = await availableTcpPort();
   config.devicePort = await availableTcpPort();
   config.discoveryPort = await availableUdpPort();

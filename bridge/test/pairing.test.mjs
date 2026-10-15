@@ -8,6 +8,7 @@ import dgram from 'node:dgram';
 import http from 'node:http';
 import { createHmac } from 'node:crypto';
 import { createApp } from '../src/server.mjs';
+import { testRegistry } from './helpers/fixture-agents.mjs';
 
 function sampleWav() {
   const wav = Buffer.alloc(44 + 16000);
@@ -138,7 +139,7 @@ test('V3 扫描列出电脑名称和配对状态，选择电脑后才产生待�
   const config = { ...await ports(), stateDir,
     projects: [{ id: 'demo', label: 'Demo', path: stateDir }],
     defaultProject: 'demo', defaultProvider: 'codex', asrMode: 'off',
-    workbuddy: { allowUnscopedDispatch: false } };
+    workbuddy: { allowUnscopedDispatch: false }, pluginsRuntime: testRegistry() };
   let hostname = '  办公电脑\u0000\u202E\t MacBook  ';
   t.mock.method(os, 'hostname', () => hostname);
   const app = createApp(config, { run: async () => ({ status: 'completed', result: 'done' }) });
@@ -197,7 +198,7 @@ test('录音连接断开会通知识别取消，迟到的识别结果不会创�
   const config = { ...await ports(), stateDir,
     projects: [{ id: 'demo', label: 'Demo', path: stateDir }],
     defaultProject: 'demo', defaultProvider: 'codex', asrMode: 'off',
-    workbuddy: { allowUnscopedDispatch: false } };
+    workbuddy: { allowUnscopedDispatch: false }, pluginsRuntime: testRegistry() };
   let started;
   const began = new Promise((resolve) => { started = resolve; });
   let finish;
@@ -258,6 +259,7 @@ test('首台圆屏发现电脑后自动开放配对；确认令牌跨重启有�
     defaultProvider: 'codex',
     workbuddy: { allowUnscopedDispatch: false },
     asrMode: 'off',
+    pluginsRuntime: testRegistry(),
   };
   const firstPorts = await ports();
   app = createApp({ ...base, ...firstPorts }, {

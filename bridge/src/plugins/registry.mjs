@@ -4,7 +4,6 @@ import fs from 'node:fs';
 import { packageRoots } from '../config.mjs';
 import { isPackageEntry, packageDirectories, readPackageSettings } from '../plugin-package.mjs';
 import { MODEL_ID } from '../model-settings.mjs';
-import { builtinAgents } from '../agents/index.mjs';
 import { normalizeAgentIcon } from '../agent-icons.mjs';
 import { readSprite } from '../agent-sprites.mjs';
 import { builtinSpeechRecognizers } from '../speech/index.mjs';
@@ -67,7 +66,7 @@ export function validatePlugin(plugin) {
   return plugin;
 }
 
-export function createPluginRegistry(plugins = [...builtinAgents, ...builtinSpeechRecognizers]) {
+export function createPluginRegistry(plugins = [...builtinSpeechRecognizers]) {
   const entries = new Map();
   for (const raw of plugins) {
     const plugin = validatePlugin(raw);
@@ -90,7 +89,9 @@ export async function loadConfiguredPlugins(config) {
   for (const recognizer of builtinSpeechRecognizers) {
     if (disabled.has(recognizer.id)) throw new Error(`语音识别 ${recognizer.id} 是内置接口，不能通过 disabledPlugins 禁用；请在语音设置中配置`);
   }
-  const plugins = [...builtinAgents.filter(p => !disabled.has(p.id)), ...builtinSpeechRecognizers];
+  // 内置编程助手已插件化为市场包（codex/cursor/qoder/workbuddy），桥接器
+  // 只保留内置语音识别；助手全部来自已安装的插件包。
+  const plugins = [...builtinSpeechRecognizers];
   const loadFile = async (filename, label) => {
     if (!/\.(mjs|js)$/.test(filename) || !fs.statSync(filename).isFile()) throw new Error(`插件模块无效：${label}`);
     const exported = (await import(pathToFileURL(filename).href)).default;

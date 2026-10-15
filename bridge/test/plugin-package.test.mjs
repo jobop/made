@@ -23,6 +23,12 @@ function fixture(t) {
     ],
   }));
   fs.writeFileSync(path.join(pkg, 'settings.json'), JSON.stringify({ demoSeconds: '45' }));
+  // 内置编程助手已插件化：默认助手 codex 由用户目录里的插件包提供。
+  fs.writeFileSync(path.join(directory, 'plugins', 'codex.mjs'), `export default {
+    apiVersion: 1, kind: 'coding-agent', id: 'codex', label: 'Codex',
+    capabilities: { session: 'native', model: true, cancel: true, progress: true },
+    probe: () => ({ available: true }), run: async () => ({ status: 'completed', result: '完成' })
+  };`);
   const config = {
     configDirectory: directory,
     // 用户包目录固定为 ~/made，测试里指向临时目录。

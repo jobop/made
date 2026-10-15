@@ -6,8 +6,14 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { JobStore } from '../src/jobs.mjs';
 import { createRunner } from '../src/providers.mjs';
+import { createPluginRegistry } from '../src/plugins/registry.mjs';
+import { codexFixture, cursorFixture, qoderFixture, workbuddyFixture } from './helpers/fixture-agents.mjs';
 
 const CLI_ID = '0199a213-81c0-7800-8aa1-bbab2a035a53';
+
+function registry() {
+  return createPluginRegistry([codexFixture, cursorFixture, qoderFixture, workbuddyFixture]);
+}
 
 async function until(check) {
   const deadline = Date.now() + 3000;
@@ -22,6 +28,7 @@ function makeStore(directory, run = async () => ({ status: 'completed', result: 
     file: path.join(directory, 'jobs.json'),
     projects: [{ id: 'demo', path: directory }],
     defaultProject: 'demo', defaultProvider: 'codex', run,
+    pluginsRuntime: registry(),
     providerAvailable: () => ({ available: true }),
   });
 }
@@ -180,7 +187,7 @@ for (const event of events) process.stdout.write(JSON.stringify(event) + '\\n');
   const previousPath = process.env.PATH;
   process.env.PATH = `${bin}${path.delimiter}${previousPath || ''}`;
   t.after(() => { process.env.PATH = previousPath; });
-  const config = { models: { codex: 'gpt-6-astra', cursor: '', qoder: '' } };
+  const config = { models: { codex: 'gpt-6-astra', cursor: '', qoder: '' }, pluginsRuntime: registry() };
   for (const [provider, command] of [['codex', 'codex'], ['cursor', 'cursor-agent'], ['qoder', 'qoder']]) {
     const repoPath = path.join(directory, provider);
     fs.mkdirSync(repoPath);
@@ -257,7 +264,8 @@ process.stdout.write(JSON.stringify({ type: 'item.completed', item: { type: 'age
   const file = path.join(directory, 'jobs.json');
   const store = new JobStore({ file, projects: [{ id: 'demo', path: repo }],
     defaultProject: 'demo', defaultProvider: 'codex',
-    run: createRunner({ models: { codex: 'gpt-6-astra' } }),
+    run: createRunner({ models: { codex: 'gpt-6-astra' }, pluginsRuntime: registry() }),
+    pluginsRuntime: registry(),
     providerAvailable: () => ({ available: true }) });
   const session = store.createSession({ provider: 'codex' });
   const first = store.submit({ instruction: '检查代码', sessionId: session.id });

@@ -1,37 +1,31 @@
-import { builtinAgents, builtinAgent } from './agents/index.mjs';
 import { normalizeAgentIcon } from './agent-icons.mjs';
 import { translateKnownMessage } from './i18n.mjs';
 
-export { builtinAgents } from './agents/index.mjs';
-
 export function agentFor(config, id) {
-  return config.pluginsRuntime ? config.pluginsRuntime.agent(id) : builtinAgent(id);
-}
-
-export function isBuiltinAgent(plugin) {
-  const builtin = builtinAgent(plugin?.id);
-  return Boolean(builtin && plugin.run === builtin.run && plugin.probe === builtin.probe);
+  return config.pluginsRuntime ? config.pluginsRuntime.agent(id) : undefined;
 }
 
 export function providerStates(config, locale = config.locale) {
-  const agents = config.pluginsRuntime ? config.pluginsRuntime.agents() : builtinAgents;
+  const agents = config.pluginsRuntime ? config.pluginsRuntime.agents() : [];
   return agents.map((plugin) => {
     let state;
-    let bridgeReason = isBuiltinAgent(plugin);
     try {
       state = plugin.probe(config);
       if (state?.then) {
         // A mistaken async probe cannot hold up /api/state or produce an
         // unhandled rejection. The plugin contract requires a sync result.
         Promise.resolve(state).catch(() => {});
-        bridgeReason = true;
         state = { available: false, reason: '插件状态检查必须同步返回' };
       }
-    } catch { bridgeReason = true; state = { available: false, reason: `${plugin.label} 状态检查失败` }; }
+    } catch { state = { available: false, reason: `${plugin.label} 状态检查失败` }; }
     return {
       id: plugin.id, label: plugin.label, icon: normalizeAgentIcon(plugin.icon),
       available: state?.available === true,
-      reason: typeof state?.reason === 'string' ? (bridgeReason ? translateKnownMessage(state.reason, locale) : state.reason).slice(0, 512) : '',
+      // 桥接器规范文案（bridgeStrings 插件）在输出边界翻译；第三方插件自有
+      // 提示原样返回，即使碰巧撞上桥接器文案也不改写。
+      reason: typeof state?.reason === 'string'
+        ? (plugin.bridgeStrings === true ? translateKnownMessage(state.reason, locale) : state.reason).slice(0, 512)
+        : '',
       mode: typeof state?.mode === 'string' ? state.mode.slice(0, 64) : 'plugin',
       capabilities: {
         session: plugin.capabilities.session, model: plugin.capabilities.model,
@@ -44,14 +38,6 @@ export function providerStates(config, locale = config.locale) {
       canCancelRunning: plugin.capabilities.cancel,
     };
   });
-}
-
-// Compatibility for existing stream tests and embedders. Actual parsing belongs
-// to each plugin and adding an agent never adds another branch here.
-export function createCliEventStream(provider, onProgress, onSession) {
-  const plugin = builtinAgent(provider);
-  if (!plugin?.createEvents) throw new Error(`编程工具不支持 CLI 事件：${provider}`);
-  return plugin.createEvents(onProgress, onSession);
 }
 
 export function createRunner(config) {

@@ -6,6 +6,7 @@ import dgram from 'node:dgram';
 import os from 'node:os';
 import path from 'node:path';
 import { readSprite, spriteChunk, SPRITE_MAX_TOTAL_BYTES, SPRITE_MAX_CHUNK } from '../src/agent-sprites.mjs';
+import { testRegistry } from './helpers/fixture-agents.mjs';
 
 const PNG_1PX = Buffer.from([
   0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52,
@@ -130,7 +131,15 @@ test('设备端全链路：/device/config 暴露 sprite 清单，manifest 与分
 
   const configPath = path.join(directory, 'config.json');
   fs.writeFileSync(configPath, JSON.stringify({ projects: [{ id: 'demo', path: directory }], plugins: [path.join(packageDir, 'plugin.mjs')] }));
-  const config = loadConfig({ VIBE_CONFIG: configPath, VIBE_STATE_DIR: path.join(directory, 'state'), VIBE_ASR_MODE: 'off' });
+  const config = loadConfig({ VIBE_CONFIG: configPath, VIBE_STATE_DIR: path.join(directory, 'state'), VIBE_ASR_MODE: 'off', MADE_HOME: path.join(directory, 'made') });
+  // 内置编程助手已插件化：默认助手 codex 由临时 madeHome 里的插件包提供。
+  const madeHome = path.join(directory, 'made');
+  fs.mkdirSync(path.join(madeHome, 'plugins'), { recursive: true });
+  fs.writeFileSync(path.join(madeHome, 'plugins', 'codex.mjs'), `export default {
+    apiVersion: 1, kind: 'coding-agent', id: 'codex', label: 'Codex',
+    capabilities: { session: 'native', model: true, cancel: true, progress: true },
+    probe: () => ({ available: true }), run: async () => ({ status: 'completed', result: '完成' })
+  };`);
   config.pluginsRuntime = await loadConfiguredPlugins(config);
   config.port = await freeTcpPort();
   do { config.devicePort = await freeTcpPort(); } while (config.port === config.devicePort);

@@ -3,13 +3,15 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { createCliEventStream } from '../src/providers.mjs';
 import { JobStore } from '../src/jobs.mjs';
+import { codexFixture, cursorFixture, qoderFixture } from './helpers/fixture-agents.mjs';
+import { testRegistry } from './helpers/fixture-agents.mjs';
 
 function streamFor(provider) {
+  const plugin = { codex: codexFixture, cursor: cursorFixture, qoder: qoderFixture }[provider];
   const progress = [];
   const sessions = [];
-  const stream = createCliEventStream(provider, (message) => progress.push(message), (id) => sessions.push(id));
+  const stream = plugin.createEvents((message) => progress.push(message), (id) => sessions.push(id));
   return { stream, progress, sessions };
 }
 
@@ -89,7 +91,7 @@ test('任务运行时及时更新 progress，最终 result 不混入流式进度
       return { status: 'completed', result: '最终答复' };
     };
     const store = new JobStore({ file, projects, defaultProject: 'demo', defaultProvider: 'codex',
-      run: runner, providerAvailable: () => ({ available: true }) });
+      run: runner, pluginsRuntime: testRegistry(), providerAvailable: () => ({ available: true }) });
     const sessionId = store.createSession({}).id;
     const job = store.submit({ instruction: '检查项目文件', sessionId });
     store.confirm(job.id);

@@ -104,7 +104,12 @@ test('桥接器把 runtime 交给插件，且不可被改写', (t) => {
   const config = loadConfig({ VIBE_CONFIG: file, VIBE_STATE_DIR: path.join(directory, 'state') });
   assert.equal(typeof config.runtime.findCommand, 'function');
   assert.equal(typeof config.runtime.runNpm, 'function');
+  // CLI 工具箱也经 runtime 注入：插件化后的 CLI 助手从这里拿执行机制。
+  assert.equal(typeof config.runtime.runCli, 'function');
+  assert.equal(typeof config.runtime.probeCli, 'function');
+  assert.equal(typeof config.runtime.jsonLineEvents, 'function');
+  assert.equal(typeof config.runtime.gitState, 'function');
   assert.equal(config.runtime.platform, process.platform);
-  assert.equal(Object.isFrozen(pluginRuntime), true);
-  assert.equal(config.runtime, pluginRuntime);
+  assert.equal(Object.isFrozen(config.runtime), true);
+  assert.equal(config.runtime.findCommand, pluginRuntime.findCommand);
 });
