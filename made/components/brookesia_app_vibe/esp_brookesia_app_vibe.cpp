@@ -4551,7 +4551,13 @@ void VibeCoding::startThemeApply(const std::string &name)
 // 拷贝到 PSRAM 后开独立任务以 RGB565 裸帧 POST /device/screenshot，桥接器转 PNG 落盘。
 void VibeCoding::startScreenshotUpload()
 {
-    if (screenshot_busy_.exchange(true)) return;
+    const uint32_t now_ms = static_cast<uint32_t>(esp_timer_get_time() / 1000);
+    if (screenshot_busy_.exchange(true)) {
+        // 已有截屏在跑：刷新“卡死看门狗”起点，避免误伤正常进行的上传。
+        screenshot_busy_since_ms_.store(now_ms);
+        return;
+    }
+    screenshot_busy_since_ms_.store(now_ms);
     lv_obj_t *screen = lv_screen_active();
     if (!screen) {
         screenshot_busy_.store(false);
@@ -4786,6 +4792,17 @@ void VibeCoding::sendHeartbeat()
     std::string response;
     int status = 0;
     const uint32_t now_ms = static_cast<uint32_t>(esp_timer_get_time() / 1000);
+    // 截屏看门狗：上传任务若被中断（桥接器被杀 / USB 断开导致请求任务未走到复位分支）
+    // 会把 screenshot_busy_ 永久卡在 true，使后续 debug.screenshot 全部静默 early-return。
+    // 超过阈值（正常上传 ≤20s 超时）强制复位，自愈卡死。
+    if (screenshot_busy_.load()) {
+        const uint32_t age = now_ms - screenshot_busy_since_ms_.load();
+        if (age > 25000) {
+            ESP_LOGW("vibe_shot", "[screenshot] 看门狗复位卡死标志（已卡 %ums）", age);
+            screenshot_busy_.store(false);
+            screenshot_busy_since_ms_.store(0);
+        }
+    }
     const std::string path = "/device/heartbeat?uiStage=" + std::to_string(ui_stage_.load()) +
         "&uiAge=" + std::to_string(now_ms - ui_tick_ms_.load()) +
         "&bootAge=" + std::to_string(now_ms - boot_tick_ms_.load()) +

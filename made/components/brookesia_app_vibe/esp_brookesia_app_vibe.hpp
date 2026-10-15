@@ -383,6 +383,7 @@ private:
     std::vector<vibe_theme::ThemeInfo> theme_live_list_; // 桥接器实时列表（model_mutex_ 保护）。
     std::atomic<bool> theme_list_loading_{false};
     std::atomic<bool> screenshot_busy_{false};
+    std::atomic<uint32_t> screenshot_busy_since_ms_{0}; // 看门狗：卡死超过阈值强制复位。
     std::atomic<bool> theme_reboot_pending_{false};
     std::atomic<bool> theme_reboot_started_{false};
     int32_t theme_loading_since_ms_ = 0; // LVGL task only.
