@@ -721,6 +721,35 @@ void artUpdate(Parts *parts, uint32_t elapsed_ms, int mood) {
 
 } // namespace
 
+// 内存 PNG 字节解码为 ARGB8888（与文件版 decodePngArgb 同一管线，供图片附件用）。
+// 必须在匿名命名空间之外（made_sprite 命名空间级别），否则符号变为内部链接，
+// 与 made_sprite.hpp 的外部声明不匹配，链接器报 undefined。
+uint8_t *decodePngArgbMem(const uint8_t *data, size_t size, int &width, int &height) {
+    if (!data || size < 8) return nullptr;
+    png_image image;
+    std::memset(&image, 0, sizeof(image));
+    image.version = PNG_IMAGE_VERSION;
+    if (!png_image_begin_read_from_memory(&image, data, size)) {
+        png_image_free(&image);
+        return nullptr;
+    }
+    image.format = PNG_FORMAT_BGRA;
+    const size_t bytes = static_cast<size_t>(image.width) * image.height * 4;
+    auto *buffer = static_cast<uint8_t *>(heap_caps_malloc(bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+    if (!buffer) {
+        png_image_free(&image);
+        return nullptr;
+    }
+    if (!png_image_finish_read(&image, nullptr, buffer, 0, nullptr)) {
+        png_image_free(&image);
+        heap_caps_free(buffer);
+        return nullptr;
+    }
+    width = static_cast<int>(image.width);
+    height = static_cast<int>(image.height);
+    return buffer;
+}
+
 lv_obj_t *create(lv_obj_t *parent) {
     auto *parts = new (std::nothrow) Parts;
     if (!parts) return nullptr;

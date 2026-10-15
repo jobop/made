@@ -37,6 +37,10 @@ bool applyArtwork(lv_obj_t *root, const std::string &manifest_json, const std::s
 // 回到内置绿豆并释放下发素材的位图（PSRAM）。
 void clearArtwork(lv_obj_t *root);
 
+// PNG 字节（内存）解码为 ARGB8888（LVGL COLOR_FORMAT_ARGB8888 字节序与
+// PNG BGRA 一致）。失败返回 nullptr。调用方负责 heap_caps_free。
+uint8_t *decodePngArgbMem(const uint8_t *data, size_t size, int &width, int &height);
+
 // 当前是否处于分层素材模式。
 bool artworkActive(lv_obj_t *root);
 

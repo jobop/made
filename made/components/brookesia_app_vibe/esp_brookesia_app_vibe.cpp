@@ -373,6 +373,10 @@ bool VibeCoding::run()
     lv_obj_add_event_cb(screen, providerSwipeCallback, LV_EVENT_GESTURE, this);
     // 主页上滑拉出抽屉；任务切换手势收进抽屉内部处理。
     lv_obj_add_event_cb(screen, drawerSwipeCallback, LV_EVENT_GESTURE, this);
+    // 翻屏跟手：按下记录起点，拖动平移首页，松手按阈值吸附/切助手。
+    lv_obj_add_event_cb(screen, homeDragCallback, LV_EVENT_PRESSED, this);
+    lv_obj_add_event_cb(screen, homeDragCallback, LV_EVENT_PRESSING, this);
+    lv_obj_add_event_cb(screen, homeDragCallback, LV_EVENT_RELEASED, this);
 
     // 近全屏小精灵：主页的绝对主角（docs/SPRITES.md 的素材机制接入前用程序化形象）。
     sprite_stage_ = made_sprite::create(screen);
@@ -1349,6 +1353,8 @@ void VibeCoding::providerSwipeCallback(lv_event_t *event)
 {
     auto *self = static_cast<VibeCoding *>(lv_event_get_user_data(event));
     if (!self || !self->canOperate() || self->settings_open_.load()) return;
+    // 跟手拖动已经处理过这次横向手势，避免松手时重复切助手。
+    if (self->drag_end_ms_ != 0 && lv_tick_get() - self->drag_end_ms_ < 400) return;
     lv_indev_t *indev = lv_indev_active();
     if (!indev) return;
     const lv_dir_t direction = lv_indev_get_gesture_dir(indev);
@@ -1405,6 +1411,126 @@ void VibeCoding::sessionSwipeCallback(lv_event_t *event)
     if (self->last_session_swipe_ms_ != 0 && now - self->last_session_swipe_ms_ < 350) return;
     self->last_session_swipe_ms_ = now;
     self->chooseSession(direction == LV_DIR_TOP ? 1 : -1);
+}
+
+// 横向翻屏跟手：按下记录起点；拖动时整体平移 screen，精灵层反向平移让绿豆不动；
+// 松手若超过阈值（屏宽 18%）则切到上一/下一助手并吸附，否则弹回。
+void VibeCoding::homeDragCallback(lv_event_t *event)
+{
+    auto *self = static_cast<VibeCoding *>(lv_event_get_user_data(event));
+    if (!self || !self->canOperate() || self->settings_open_.load() || self->drawer_open_.load())
+        return;
+    lv_indev_t *indev = lv_indev_active();
+    if (!indev) return;
+    const lv_event_code_t code = lv_event_get_code(event);
+    lv_obj_t *screen = lv_scr_act();
+
+    if (code == LV_EVENT_PRESSED) {
+        lv_point_t p;
+        lv_indev_get_point(indev, &p);
+        self->home_dragging_ = false;
+        self->drag_dx_ = 0;
+        self->drag_start_x_ = p.x;
+        self->drag_start_y_ = p.y;
+        self->screen_base_x_ = lv_obj_get_x(screen);
+        self->sprite_base_x_ = self->sprite_stage_ ? lv_obj_get_x(self->sprite_stage_) : 0;
+        return;
+    }
+    if (code == LV_EVENT_PRESSING) {
+        lv_point_t p;
+        lv_indev_get_point(indev, &p);
+        const int dx = p.x - self->drag_start_x_;
+        const int dy = p.y - self->drag_start_y_;
+        if (!self->home_dragging_) {
+            if (std::abs(dx) < 6 && std::abs(dy) < 6) return;
+            // 纵向为主的手势交给 sessionSwipe，不抢。
+            if (std::abs(dy) > std::abs(dx)) { self->home_dragging_ = false; return; }
+            self->home_dragging_ = true;
+        }
+        const int w = made_screen_w();
+        const int clamped = std::max(-w, std::min(w, dx));
+        self->drag_dx_ = clamped;
+        lv_obj_set_x(screen, self->screen_base_x_ + clamped);
+        if (self->sprite_stage_) lv_obj_set_x(self->sprite_stage_, self->sprite_base_x_ - clamped);
+        return;
+    }
+    if (code == LV_EVENT_RELEASED) {
+        if (!self->home_dragging_) return;
+        self->home_dragging_ = false;
+        const int w = made_screen_w();
+        const int dx = self->drag_dx_;
+        self->drag_end_ms_ = lv_tick_get();
+        bool switched = false;
+        if (std::abs(dx) > w * 0.18) {
+            // 左滑（dx<0）切到下一助手，右滑切上一助手，复用 chooseProvider。
+            self->chooseProvider(dx < 0 ? 1 : -1);
+            switched = true;
+        }
+        // 位置归零（切助手后 render 会重建内容，原位即可）。
+        lv_obj_set_x(screen, self->screen_base_x_);
+        if (self->sprite_stage_) lv_obj_set_x(self->sprite_stage_, self->sprite_base_x_);
+        // 切助手已设置 last_provider_swipe_ms_ 抑制重复；这里统一再保一次。
+        if (switched) self->last_provider_swipe_ms_ = lv_tick_get();
+    }
+}
+
+// 从文本里抽出 URL，按扩展名分 image / link 两类附件。
+std::vector<VibeCoding::Attachment> VibeCoding::parseUrlAttachments(const std::string &text)
+{
+    std::vector<Attachment> out;
+    static const char *kImgExt[] = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"};
+    const size_t n = text.size();
+    for (size_t i = 0; i + 4 < n; ++i) {
+        if ((text[i] == 'h' && text.compare(i, 7, "http://") == 0) ||
+            (text[i] == 'h' && text.compare(i, 8, "https://") == 0)) {
+            size_t j = i;
+            while (j < n && !isspace((unsigned char)text[j]) && text[j] != '"' &&
+                   text[j] != '`' && text[j] != '<' && text[j] != '>')
+                ++j;
+            std::string url = text.substr(i, j - i);
+            // 去掉常见的句末标点
+            while (!url.empty() && (url.back() == '.' || url.back() == ',' || url.back() == ')' ||
+                                    url.back() == ']' || url.back() == ';'))
+                url.pop_back();
+            if (url.size() < 8) { i = j; continue; }
+            Attachment a;
+            a.url = url;
+            a.type = "link";
+            std::string lower = url;
+            std::transform(lower.begin(), lower.end(), lower.begin(), ::tolower);
+            for (const char *ext : kImgExt) {
+                if (lower.size() > strlen(ext) &&
+                    lower.compare(lower.size() - strlen(ext), strlen(ext), ext) == 0) {
+                    a.type = "image";
+                    break;
+                }
+            }
+            out.push_back(std::move(a));
+            i = j;
+        }
+    }
+    return out;
+}
+
+// 从 job JSON 的 attachments 数组解析（桥接器显式下发）。
+std::vector<VibeCoding::Attachment> VibeCoding::parseAttachments(const cJSON *job)
+{
+    std::vector<VibeCoding::Attachment> out;
+    if (!job) return out;
+    const cJSON *arr = cJSON_GetObjectItemCaseSensitive(job, "attachments");
+    if (!cJSON_IsArray(arr)) return out;
+    cJSON *item = nullptr;
+    cJSON_ArrayForEach(item, arr) {
+        if (!cJSON_IsObject(item)) continue;
+        Attachment a;
+        a.type = jsonString(item, "type");
+        a.url = jsonString(item, "url");
+        a.text = jsonString(item, "text");
+        if (a.url.empty()) continue;
+        if (a.type != "image" && a.type != "link") a.type = "link";
+        out.push_back(std::move(a));
+    }
+    return out;
 }
 
 void VibeCoding::chooseSession(int direction)
@@ -3173,6 +3299,241 @@ void VibeCoding::showAnswer(const std::string &scope, const std::string &text)
     ui_stage_.store(44);
 }
 
+// —— 回复区富内容：图片 / 链接二维码 + 点击放大浮层 ——
+
+// 释放上一轮解码出来的图片位图，避免泄漏与悬垂。
+void VibeCoding::freeDecodedImages() {
+    for (auto *dsc : decoded_dscs_) {
+        if (dsc) {
+            heap_caps_free(const_cast<uint8_t *>(dsc->data));
+            delete dsc;
+        }
+    }
+    decoded_dscs_.clear();
+    attachment_dscs_.clear();
+}
+
+void VibeCoding::renderAttachments(const std::vector<Attachment> &atts) {
+    // 指纹：仅当附件集合（类型+URL+文案）变化时重建，避免每次 render 重拉图/闪屏。
+    std::string sig;
+    for (const auto &a : atts) sig += a.type + '\x1f' + a.url + '\x1f' + a.text + '\x1e';
+    // 放大浮层打开期间：绝不重建、绝不释放 dsc（浮层图像正引用它），直接保留现状。
+    if (zoom_overlay_) return;
+    if (sig == attachment_sig_ && attachments_box_) return; // 无变化，维持已渲染内容
+    // 集合已变（或首次）：先清旧内容再按新集合重建。
+    for (auto *o : attachment_objs_) lv_obj_del(o);
+    attachment_objs_.clear();
+    freeDecodedImages();
+    attachment_sig_ = sig;
+    current_attachments_ = atts;
+    attachment_dscs_.assign(atts.size(), nullptr);
+    if (!answer_area_ || atts.empty()) {
+        if (attachments_box_) lv_obj_add_flag(attachments_box_, LV_OBJ_FLAG_HIDDEN);
+        return;
+    }
+
+    lv_obj_update_layout(answer_area_);
+    const int label_h = lv_obj_get_height(result_label_);
+    const int box_w = lv_obj_get_width(answer_area_) - 12;
+    if (!attachments_box_) {
+        attachments_box_ = lv_obj_create(answer_area_);
+        lv_obj_set_style_bg_opa(attachments_box_, LV_OPA_TRANSP, 0);
+        lv_obj_set_style_border_width(attachments_box_, 0, 0);
+        lv_obj_set_style_pad_all(attachments_box_, 0, 0);
+        lv_obj_set_style_pad_row(attachments_box_, 8, 0);
+        lv_obj_set_flex_flow(attachments_box_, LV_FLEX_FLOW_COLUMN);
+        lv_obj_set_flex_align(attachments_box_, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
+        lv_obj_remove_flag(attachments_box_, LV_OBJ_FLAG_SCROLLABLE);
+    }
+    lv_obj_set_pos(attachments_box_, 6, label_h + 8);
+    lv_obj_set_size(attachments_box_, box_w, LV_SIZE_CONTENT);
+    lv_obj_clear_flag(attachments_box_, LV_OBJ_FLAG_HIDDEN);
+
+    for (size_t i = 0; i < atts.size(); ++i) {
+        const Attachment &a = atts[i];
+        lv_obj_t *row = lv_obj_create(attachments_box_);
+        lv_obj_set_size(row, box_w, LV_SIZE_CONTENT);
+        lv_obj_set_style_bg_opa(row, LV_OPA_20, 0);
+        lv_obj_set_style_bg_color(row, lv_color_hex(VT(btn_normal)), 0);
+        lv_obj_set_style_border_width(row, 0, 0);
+        lv_obj_set_style_radius(row, 6, 0);
+        lv_obj_set_style_pad_all(row, 5, 0);
+        lv_obj_set_style_pad_column(row, 8, 0);
+        lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
+        lv_obj_set_flex_align(row, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_START);
+        lv_obj_add_flag(row, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_remove_flag(row, LV_OBJ_FLAG_GESTURE_BUBBLE);
+        lv_obj_set_user_data(row, reinterpret_cast<void *>(i));  // 用索引回查 current_attachments_
+        lv_obj_add_event_cb(row, attachmentTapCallback, LV_EVENT_CLICKED, this);
+        attachment_objs_.push_back(row);
+
+        if (a.type == "image") {
+            lv_obj_t *img = lv_image_create(row);
+            lv_obj_set_size(img, 84, 84);
+            lv_obj_t *cap = lv_label_create(row);
+            lv_label_set_text(cap, "图片加载中…");
+            lv_obj_set_width(cap, box_w - 100);
+            lv_label_set_long_mode(cap, LV_LABEL_LONG_DOT);
+            lv_obj_set_style_text_color(cap, lv_color_hex(VT(text_hint)), 0);
+            startImageFetch(a.url, img, i);
+        } else {
+            lv_obj_t *qr = lv_qrcode_create(row);
+            lv_qrcode_set_size(qr, 84);
+            lv_qrcode_set_dark_color(qr, lv_color_black());
+            lv_qrcode_set_light_color(qr, lv_color_white());
+            lv_qrcode_set_quiet_zone(qr, true);
+            lv_qrcode_update(qr, a.url.c_str(), a.url.size());
+            lv_obj_t *cap = lv_label_create(row);
+            lv_label_set_text(cap, a.text.empty() ? a.url.c_str() : a.text.c_str());
+            lv_obj_set_width(cap, box_w - 100);
+            lv_label_set_long_mode(cap, LV_LABEL_LONG_DOT);
+            lv_obj_set_style_text_color(cap, lv_color_hex(VT(text_hint)), 0);
+        }
+    }
+    lv_obj_update_layout(answer_area_);
+}
+
+void VibeCoding::attachmentTapCallback(lv_event_t *event) {
+    auto *self = static_cast<VibeCoding *>(lv_event_get_user_data(event));
+    if (!self) return;
+    lv_obj_t *row = static_cast<lv_obj_t *>(lv_event_get_target(event));
+    const size_t idx = reinterpret_cast<size_t>(lv_obj_get_user_data(row));
+    if (idx < self->current_attachments_.size()) self->openZoom(idx);
+}
+
+void VibeCoding::zoomCloseCallback(lv_event_t *event) {
+    auto *self = static_cast<VibeCoding *>(lv_event_get_user_data(event));
+    if (!self) return;
+    if (self->zoom_overlay_) {
+        lv_obj_del(self->zoom_overlay_);
+        self->zoom_overlay_ = nullptr;
+    }
+}
+
+void VibeCoding::openZoom(size_t idx) {
+    if (idx >= current_attachments_.size()) return;
+    const Attachment &a = current_attachments_[idx];
+    if (zoom_overlay_) lv_obj_del(zoom_overlay_);
+    zoom_overlay_ = lv_obj_create(lv_scr_act());
+    lv_obj_set_size(zoom_overlay_, made_screen_w(), made_screen_h());
+    lv_obj_set_style_bg_color(zoom_overlay_, lv_color_black(), 0);
+    lv_obj_set_style_bg_opa(zoom_overlay_, LV_OPA_90, 0);
+    lv_obj_set_style_border_width(zoom_overlay_, 0, 0);
+    lv_obj_set_style_pad_all(zoom_overlay_, 0, 0);
+    lv_obj_remove_flag(zoom_overlay_, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_remove_flag(zoom_overlay_, LV_OBJ_FLAG_GESTURE_BUBBLE);
+    lv_obj_add_flag(zoom_overlay_, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_event_cb(zoom_overlay_, zoomCloseCallback, LV_EVENT_CLICKED, this);
+
+    lv_obj_t *content = nullptr;
+    if (a.type == "image") {
+        lv_obj_t *img = lv_image_create(zoom_overlay_);
+        // 按索引取本附件对应的已解码图（dsc 由 freeDecodedImages 托管生命周期；
+        // 浮层打开期间不会被清理，因为 renderAttachments 在重建前会先关掉旧浮层）。
+        lv_image_dsc_t *dsc = (idx < attachment_dscs_.size()) ? attachment_dscs_[idx] : nullptr;
+        if (dsc) {
+            lv_image_set_src(img, dsc);
+            lv_obj_set_size(img, std::min<int>(made_screen_w() - 20, static_cast<int>(dsc->header.w)),
+                                  std::min<int>(made_screen_h() - 60, static_cast<int>(dsc->header.h)));
+            content = img;
+        } else {
+            lv_label_set_text(lv_label_create(zoom_overlay_),
+                ("图片加载中或不可用\n" + a.url).c_str());
+        }
+    } else {
+        lv_obj_t *qr = lv_qrcode_create(zoom_overlay_);
+        lv_qrcode_set_size(qr, std::min(made_screen_w() - 24, 280));
+        lv_qrcode_set_dark_color(qr, lv_color_black());
+        lv_qrcode_set_light_color(qr, lv_color_white());
+        lv_qrcode_set_quiet_zone(qr, true);
+        lv_qrcode_update(qr, a.url.c_str(), a.url.size());
+        content = qr;
+    }
+    if (content) lv_obj_center(content);
+    lv_obj_t *hint = lv_label_create(zoom_overlay_);
+    lv_label_set_text(hint, "点击任意处关闭");
+    lv_obj_set_style_text_color(hint, lv_color_white(), 0);
+    lv_obj_align(hint, LV_ALIGN_BOTTOM_MID, 0, -12);
+}
+
+// 图片附件：后台拉取 + 解码，完成后切回 LVGL 线程设置到目标 lv_image。
+struct ImageFetchArg {
+    std::string url;
+    lv_obj_t *img;
+    VibeCoding *self;
+    size_t index; // 对应 current_attachments_ 中的序号，用于回写 attachment_dscs_
+    std::vector<uint8_t> buf;
+};
+
+// lv_async_call 的回调必须是自由函数（非成员），签名为 void(*)(void*)。
+// 解码由本函数完成，建 dsc / 写私有成员交给成员方法 onImageFetched（可访问私有数据）。
+static void imageFetchDoneCb(void *arg_void) {
+    auto *arg = static_cast<ImageFetchArg *>(arg_void);
+    if (!arg || !arg->self) { delete arg; return; }
+    if (arg->img && lv_obj_is_valid(arg->img) && !arg->buf.empty()) {
+        int w = 0, h = 0;
+        uint8_t *px = made_sprite::decodePngArgbMem(arg->buf.data(), arg->buf.size(), w, h);
+        if (px) arg->self->onImageFetched(arg->index, px, w, h, arg->img);
+    }
+    delete arg;
+}
+
+void VibeCoding::onImageFetched(size_t index, uint8_t *px, int w, int h, lv_obj_t *img) {
+    auto *dsc = new lv_image_dsc_t();
+    dsc->header.magic = LV_IMAGE_HEADER_MAGIC;
+    dsc->header.cf = LV_COLOR_FORMAT_ARGB8888;
+    dsc->header.w = static_cast<uint32_t>(w);
+    dsc->header.h = static_cast<uint32_t>(h);
+    dsc->header.stride = static_cast<uint32_t>(w) * 4;
+    dsc->data_size = static_cast<uint32_t>(w) * h * 4;
+    dsc->data = px;
+    decoded_dscs_.push_back(dsc);
+    // 回写按索引映射：异步回调可能晚于下一次 render，需防越界。
+    if (index < attachment_dscs_.size()) attachment_dscs_[index] = dsc;
+    if (img && lv_obj_is_valid(img)) {
+        lv_image_set_src(img, dsc);
+        lv_obj_set_size(img, 84, 84);
+    }
+}
+
+void VibeCoding::startImageFetch(const std::string &url, lv_obj_t *img, size_t index) {
+    auto *arg = new ImageFetchArg{url, img, this, index, {}};
+    if (xTaskCreate([](void *p) {
+            auto *a = static_cast<ImageFetchArg *>(p);
+            a->buf = a->self->fetchUrlBytes(a->url, 512 * 1024);
+            lv_async_call(imageFetchDoneCb, a);
+            vTaskDelete(nullptr);
+        }, "img_fetch", 8192, arg, 2, nullptr) != pdPASS) {
+        delete arg;
+    }
+}
+
+// 直接拉取任意 http(s) URL 的字节（图片附件用）。返回空表示失败。
+std::vector<uint8_t> VibeCoding::fetchUrlBytes(const std::string &url, size_t max) {
+    std::vector<uint8_t> out;
+    esp_http_client_config_t cfg = {};
+    cfg.url = url.c_str();
+    cfg.timeout_ms = 8000;
+    cfg.buffer_size = 4096;
+    auto *client = esp_http_client_init(&cfg);
+    if (!client) return out;
+    if (esp_http_client_open(client, 0) != ESP_OK) { esp_http_client_cleanup(client); return out; }
+    const int len = esp_http_client_fetch_headers(client);
+    if (len < 0) { esp_http_client_cleanup(client); return out; }
+    int total = 0;
+    char buf[1024];
+    int r;
+    while ((r = esp_http_client_read(client, buf, sizeof(buf))) > 0) {
+        if (static_cast<size_t>(total + r) > max) { esp_http_client_cleanup(client); return out; }
+        out.insert(out.end(), buf, buf + r);
+        total += r;
+    }
+    esp_http_client_cleanup(client);
+    return out;
+}
+
+
+
 void VibeCoding::render()
 {
     ui_stage_.store(2);
@@ -3422,6 +3783,7 @@ void VibeCoding::render()
                 std::lock_guard<std::mutex> lock(model_mutex_);
                 visible_task_id_.clear();
             }
+            renderAttachments({}); // 提交态无回显，清空可能残留的旧附件（放大浮层打开时安全跳过）
             layoutReadableText();
             drawn_revision_ = snapshot.revision;
             return;
@@ -3443,6 +3805,7 @@ void VibeCoding::render()
             provider.external_unscoped ? T("此助手任务隔离受限，请在电脑端核对。") :
             T("上滑拉出抽屉查看任务与回显。左右滑切助手。");
         showAnswer(selected_session_id + "/empty", result);
+        renderAttachments({}); // 无任务时清空可能残留的旧附件
     } else {
         // The bridge returns newest first. Show only the latest exchange.
         const Task &task = snapshot.tasks.front();
@@ -3480,6 +3843,13 @@ void VibeCoding::render()
         ui_stage_.store(30);
         showAnswer(selected_session_id + "/" + task.id + "/" + task.status,
                    result);
+        // 富内容：仅在实际 AI 回显（非反馈/错误/排队）时渲染；其它状态清空旧附件。
+        if (showing_task_result) {
+            renderAttachments(task.attachments.empty() ? parseUrlAttachments(task.result)
+                                                       : task.attachments);
+        } else {
+            renderAttachments({});
+        }
     }
     {
         std::lock_guard<std::mutex> lock(model_mutex_);
@@ -4696,6 +5066,7 @@ void VibeCoding::refreshTasks()
             jsonString(job, "vibeSessionId"),
             cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(job, "resultTruncated")) != 0,
             cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(job, "instructionTruncated")) != 0,
+            parseAttachments(job),
         };
         if (validTaskId(task.id) && task.provider == provider_id &&
             task.session_id == session_id) {

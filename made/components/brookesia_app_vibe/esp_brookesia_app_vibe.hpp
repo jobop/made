@@ -27,6 +27,13 @@ public:
     static bool startOnDisplay();
     ~VibeCoding() override = default;
 
+    // 回复区富内容附件：图片/链接二维码，桥接器下发或固件从 result 文本回退解析。
+    struct Attachment {
+        std::string type;   // "image" | "link"
+        std::string url;    // 图片地址 / 链接地址
+        std::string text;   // 链接展示文案（可选）
+    };
+
 protected:
     VibeCoding();
     bool run() override;
@@ -54,6 +61,7 @@ private:
         std::string session_id;
         bool result_truncated = false;
         bool instruction_truncated = false;
+        std::vector<Attachment> attachments;  // 桥接器解析/下发，或固件从 result 文本回退解析
     };
     struct PendingAction {
         std::string id;
@@ -79,6 +87,21 @@ private:
     static void displayDiagnostic(lv_event_t *event);
     static void providerSwipeCallback(lv_event_t *event);
     static void sessionSwipeCallback(lv_event_t *event);
+    static void homeDragCallback(lv_event_t *event); // 翻屏跟手：按下/拖动/松手
+    static void attachmentTapCallback(lv_event_t *event); // 点击附件→放大浮层
+    static void zoomCloseCallback(lv_event_t *event);     // 点击浮层→关闭
+    static std::vector<Attachment> parseUrlAttachments(const std::string &text);
+    static std::vector<Attachment> parseAttachments(const cJSON *job); // 桥接器显式下发的 attachments
+    // 富内容渲染与异步拉图：图片解码后驻留 PSRAM，浮层复用同一份 dsc。
+    void freeDecodedImages();
+    void renderAttachments(const std::vector<Attachment> &atts);
+    void openZoom(size_t index);
+    void startImageFetch(const std::string &url, lv_obj_t *target_img, size_t index);
+    std::vector<uint8_t> fetchUrlBytes(const std::string &url, size_t max);
+public:
+    // 后台线程解码完成后在 LVGL 线程回调：建 dsc 并写入 decoded/attachment 列表，设置到目标 image。
+    void onImageFetched(size_t index, uint8_t *px, int w, int h, lv_obj_t *img);
+private:
     static void newSessionCallback(lv_event_t *event);
     static void deleteSessionCallback(lv_event_t *event);
     static void deleteSessionConfirmCallback(lv_event_t *event);
@@ -413,6 +436,22 @@ private:
     bool reply_watch_ready_ = false;
     bool reply_saw_pending_ = false;
     bool reply_wait_new_ = false;
+    // 横向翻屏跟手：拖动时整体平移 screen，精灵层反向平移保持绿豆不动。
+    bool home_dragging_ = false;
+    int drag_start_x_ = 0;
+    int drag_start_y_ = 0;
+    int drag_dx_ = 0;
+    lv_coord_t screen_base_x_ = 0;
+    lv_coord_t sprite_base_x_ = 0;
+    uint32_t drag_end_ms_ = 0; // 抑制同一手势触发的重复 providerSwipe
+    // 回复区富内容（图片/链接二维码）与点击放大浮层。
+    std::vector<lv_obj_t *> attachment_objs_;
+    lv_obj_t *attachments_box_ = nullptr;
+    std::vector<Attachment> current_attachments_;
+    lv_obj_t *zoom_overlay_ = nullptr;
+    std::vector<lv_image_dsc_t *> decoded_dscs_; // 异步解码结果，freeDecodedImages 释放
+    std::vector<lv_image_dsc_t *> attachment_dscs_; // 与 current_attachments_ 平行，按索引回查已解码图
+    std::string attachment_sig_; // 附件集合指纹，避免每次 render 重拉图/闪屏
     void noteComputerReply(const Task &task);
     void updateStatusIndicators(bool provider_ready);
     std::string rendered_session_id_;
