@@ -368,8 +368,17 @@ bool VibeCoding::run()
     // swipes beginning on blank space or a non-clickable label reach Vibe.
     lv_obj_add_flag(screen, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_remove_flag(screen, LV_OBJ_FLAG_SCROLLABLE);
+    // 兜底：任何异常路径残留的横向偏移在重建界面时归位，避免整屏卡在边上。
+    if (!home_dragging_) lv_obj_set_x(screen, 0);
     lv_obj_set_style_bg_color(screen, lv_color_hex(VT(bg_page)), 0);
     lv_obj_set_style_bg_opa(screen, LV_OPA_COVER, 0);
+    // 拖动翻屏时移出屏幕边缘露出的 bottom layer：LVGL 默认是白色，
+    // 改成页面底色，滑动过渡才不会闪白层。
+    lv_obj_t *bottom_layer = lv_display_get_layer_bottom(lv_display_get_default());
+    if (bottom_layer) {
+        lv_obj_set_style_bg_color(bottom_layer, lv_color_hex(VT(bg_page)), 0);
+        lv_obj_set_style_bg_opa(bottom_layer, LV_OPA_COVER, 0);
+    }
     lv_obj_add_event_cb(screen, providerSwipeCallback, LV_EVENT_GESTURE, this);
     // 主页上滑拉出抽屉；任务切换手势收进抽屉内部处理。
     lv_obj_add_event_cb(screen, drawerSwipeCallback, LV_EVENT_GESTURE, this);
@@ -384,7 +393,7 @@ bool VibeCoding::run()
 
     // Artwork arrives with the authorized bridge catalog. Only the selected
     // image is expanded; the other entries retain their bounded packed pixels.
-    // 顶部的助手头像徽章已撤掉：绿豆本身就是助手本体，切助手时换豆色。
+    // 顶部的助手头像徽章已撤掉：精灵素材本身就是助手本体。
     rendered_catalog_ready_ = false;
 
     page_label_ = lv_label_create(screen);
@@ -1103,6 +1112,7 @@ bool VibeCoding::close()
         artwork_attempted_ = false;  // 重新进入后允许再校验一轮缓存
         cached_apply_provider_.clear();  // 缓存直换的记忆一并作废
         cached_apply_version_ = 0;
+        cached_apply_attempts_ = 0;
     }
     drawer_ = nullptr;
     drawer_grip_ = nullptr;
@@ -1353,6 +1363,12 @@ void VibeCoding::providerSwipeCallback(lv_event_t *event)
 {
     auto *self = static_cast<VibeCoding *>(lv_event_get_user_data(event));
     if (!self || !self->canOperate() || self->settings_open_.load()) return;
+    // 同一次物理滑动只允许一条路径裁决：跟手拖动（homeDragCallback）一旦
+    // 激活（拖过 6px 就激活，远早于 LVGL 手势的 50px 阈值），本次按住的
+    // 横向手势就归它管——LVGL 的 GESTURE 事件在手指还按着时就会发出，
+    // 这里若再切一次，长距离慢滑必然「一下划两屏」。松手时由拖动距离
+    // 统一裁决（见 homeDragCallback 的 RELEASED 分支）。
+    if (self->home_dragging_) return;
     // 跟手拖动已经处理过这次横向手势，避免松手时重复切助手。
     if (self->drag_end_ms_ != 0 && lv_tick_get() - self->drag_end_ms_ < 400) return;
     lv_indev_t *indev = lv_indev_active();
@@ -1415,17 +1431,52 @@ void VibeCoding::sessionSwipeCallback(lv_event_t *event)
     self->chooseSession(direction == LV_DIR_TOP ? 1 : -1);
 }
 
-// 横向翻屏跟手：按下记录起点；拖动时整体平移 screen，精灵层反向平移让绿豆不动；
-// 松手若超过阈值（屏宽 18%）则切到上一/下一助手并吸附，否则弹回。
+// 横向翻屏跟手：按下记录起点；拖动时整体平移 screen（素材是子对象，
+// 随屏一起走）；松手按位置裁决——拖过半屏切到相邻助手，不满半屏弹回。
 void VibeCoding::homeDragCallback(lv_event_t *event)
 {
     auto *self = static_cast<VibeCoding *>(lv_event_get_user_data(event));
-    if (!self || !self->canOperate() || self->settings_open_.load() || self->drawer_open_.load())
+    if (!self) return;
+    const lv_event_code_t code = lv_event_get_code(event);
+    lv_obj_t *screen = lv_scr_act();
+
+    // 松手/手势被打断（滑出屏幕、弹窗抢走触摸等都会发 PRESS_LOST）：
+    // 无论当时系统处于什么状态，先把整屏归位——否则一次被截断的拖动
+    // 会把屏幕永久卡在偏移处（偏一半=素材贴边，偏一屏=整页空白）。
+    if (code == LV_EVENT_RELEASED || code == LV_EVENT_PRESS_LOST) {
+        if (!self->home_dragging_) return;
+        self->home_dragging_ = false;
+        const int w = made_screen_w();
+        const int dx = self->drag_dx_;
+        self->drag_end_ms_ = lv_tick_get();
+        bool switched = false;
+        if (code == LV_EVENT_RELEASED && !self->drawer_open_.load() &&
+            std::abs(dx) > w * 0.5) {
+            // 松手时哪一屏占住屏幕超过一半就切到哪一屏：拖过半屏（|dx|>w/2）
+            // 说明目标屏已占据大半显示区，切过去；否则弹回当前屏。
+            // 拖动激活期间手势路径已让位（providerSwipeCallback 的
+            // home_dragging_ 门），这里是唯一的切换裁决点。350ms 窗口只
+            // 兜底极端快滑：采样点一帧跨过 50px 时 GESTURE 可能在拖动
+            // 激活前抢先发出并已切换。
+            const uint32_t now = lv_tick_get();
+            if (self->last_provider_swipe_ms_ == 0 ||
+                now - self->last_provider_swipe_ms_ >= 350) {
+                self->last_provider_swipe_ms_ = now;
+                self->chooseProvider(dx < 0 ? 1 : -1);
+                switched = true;
+            }
+        }
+        // 位置归零（切助手后 render 会重建内容，原位即可）。
+        lv_obj_set_x(screen, self->screen_base_x_);
+        // 切助手已设置 last_provider_swipe_ms_ 抑制重复；这里统一再保一次。
+        if (switched) self->last_provider_swipe_ms_ = lv_tick_get();
+        return;
+    }
+
+    if (!self->canOperate() || self->settings_open_.load() || self->drawer_open_.load())
         return;
     lv_indev_t *indev = lv_indev_active();
     if (!indev) return;
-    const lv_event_code_t code = lv_event_get_code(event);
-    lv_obj_t *screen = lv_scr_act();
 
     if (code == LV_EVENT_PRESSED) {
         lv_point_t p;
@@ -1435,12 +1486,13 @@ void VibeCoding::homeDragCallback(lv_event_t *event)
         self->drag_start_x_ = p.x;
         self->drag_start_y_ = p.y;
         self->screen_base_x_ = lv_obj_get_x(screen);
-        self->sprite_base_x_ = self->sprite_stage_ ? lv_obj_get_x(self->sprite_stage_) : 0;
+        self->last_pressing_ms_ = lv_tick_get();
         return;
     }
     if (code == LV_EVENT_PRESSING) {
         lv_point_t p;
         lv_indev_get_point(indev, &p);
+        self->last_pressing_ms_ = lv_tick_get();  // 按压心跳：给 render() 的看门狗用
         const int dx = p.x - self->drag_start_x_;
         const int dy = p.y - self->drag_start_y_;
         if (!self->home_dragging_) {
@@ -1453,26 +1505,8 @@ void VibeCoding::homeDragCallback(lv_event_t *event)
         const int clamped = std::max(-w, std::min(w, dx));
         self->drag_dx_ = clamped;
         lv_obj_set_x(screen, self->screen_base_x_ + clamped);
-        if (self->sprite_stage_) lv_obj_set_x(self->sprite_stage_, self->sprite_base_x_ - clamped);
+        // 素材是 screen 的子对象，随屏幕整体平移：用户要求滑动时素材跟手一起走。
         return;
-    }
-    if (code == LV_EVENT_RELEASED) {
-        if (!self->home_dragging_) return;
-        self->home_dragging_ = false;
-        const int w = made_screen_w();
-        const int dx = self->drag_dx_;
-        self->drag_end_ms_ = lv_tick_get();
-        bool switched = false;
-        if (std::abs(dx) > w * 0.18) {
-            // 左滑（dx<0）切到下一助手，右滑切上一助手，复用 chooseProvider。
-            self->chooseProvider(dx < 0 ? 1 : -1);
-            switched = true;
-        }
-        // 位置归零（切助手后 render 会重建内容，原位即可）。
-        lv_obj_set_x(screen, self->screen_base_x_);
-        if (self->sprite_stage_) lv_obj_set_x(self->sprite_stage_, self->sprite_base_x_);
-        // 切助手已设置 last_provider_swipe_ms_ 抑制重复；这里统一再保一次。
-        if (switched) self->last_provider_swipe_ms_ = lv_tick_get();
     }
 }
 
@@ -1613,7 +1647,16 @@ void VibeCoding::drawerSwipeCallback(lv_event_t *event)
     if (!indev) return;
     const lv_dir_t direction = lv_indev_get_gesture_dir(indev);
     // 主页上滑拉出抽屉；抽屉内下拉收起（同一回调挂在两个对象上）。
-    if (direction == LV_DIR_TOP && !self->drawer_open_.load()) self->showDrawer(true);
+    if (direction == LV_DIR_TOP && !self->drawer_open_.load()) {
+        // 斜滑可能先激活了翻屏拖动（横向分量先过 6px 阈值），随后手势判定
+        // 为上滑拉抽屉：必须立即终止拖动并归位，否则拖动标志悬着、screen
+        // 卡在偏移处（松手事件若再丢，看门狗也要再等 400ms）。
+        if (self->home_dragging_) {
+            self->home_dragging_ = false;
+            lv_obj_set_x(lv_scr_act(), 0);
+        }
+        self->showDrawer(true);
+    }
     else if (direction == LV_DIR_BOTTOM && self->drawer_open_.load()) self->showDrawer(false);
 }
 
@@ -3546,6 +3589,20 @@ void VibeCoding::render()
         if (inactive > screen_off_timeout_s_ * 1000U) applyScreenOff(true);
     }
     if (!instruction_label_) return;
+    // 拖动看门狗：手指按住期间 PRESSING 事件每帧必到；断流超过 400ms 说明
+    // 这次按压已经死亡（松手/丢失事件被丢，触摸驱动卡死等），home_dragging_
+    // 若不强制清掉，归位逻辑全被跳过——整屏永久卡在偏移处，而后续触摸落在
+    // 子控件上不会触发 screen 的 PRESSED 来复位。
+    if (home_dragging_ && lv_tick_get() - last_pressing_ms_ > 400) {
+        ESP_LOGW(BUTTON_TAG, "[ui] drag watchdog: pressing stale %ums, force release",
+            static_cast<unsigned>(lv_tick_get() - last_pressing_ms_));
+        home_dragging_ = false;
+    }
+    // 兑底：拖动被打断后若有残留的横向偏移，在下一帧强制归位。
+    if (!home_dragging_) {
+        lv_obj_t *scr = lv_scr_act();
+        if (lv_obj_get_x(scr) != 0) lv_obj_set_x(scr, 0);
+    }
     const auto voice = vibe_voice::status();
     // 精灵动效按回合驱动；必须放在 revision 提前返回之前，否则空闲时动画冻结。
     if (sprite_stage_) {
@@ -3630,12 +3687,8 @@ void VibeCoding::render()
     lv_label_set_text(page_label_, page_number.c_str());
     if (catalog_ready && provider_count) {
         lv_obj_remove_flag(page_label_, LV_OBJ_FLAG_HIDDEN);
-        // 滑动切换的就是绿豆本身：每个助手一种豆色（0 = 默认绿）。
-        static constexpr uint32_t kBeanTints[] = {0, 0x5AB8FF, 0xFFAE5A, 0xC79BFF, 0xFF8FB8};
-        made_sprite::setTint(sprite_stage_, kBeanTints[provider_index % 5]);
     } else {
         lv_obj_add_flag(page_label_, LV_OBJ_FLAG_HIDDEN);
-        made_sprite::setTint(sprite_stage_, 0);
         lv_obj_add_flag(new_session_button_, LV_OBJ_FLAG_HIDDEN);
         lv_obj_add_flag(delete_session_button_, LV_OBJ_FLAG_HIDDEN);
         lv_obj_set_style_text_font(provider_label_, text_font, 0);
@@ -4103,6 +4156,94 @@ bool VibeCoding::artworkRetryDue() const
     return at != 0 && static_cast<uint32_t>(esp_timer_get_time() / 1000) >= at;
 }
 
+// 开机预加载（worker 线程）：目录就绪后把所有带素材的助手排队，后台逐个
+// 把素材缓存拉齐——滑动切换走 tryApplyCachedArtwork 只看本地 manifest，
+// 缓存齐了就是秒换，不用现等下载。约束：每轮循环只处理一个（下载最坏
+// 30s，不能把 worker 循环堵住 delaying 命令下发）；待确认任务在屏上等
+// BOOT 时不抢链路；已缓存（manifest 版本一致）直接跳过，不做哈希复核。
+void VibeCoding::preloadArtworkCache()
+{
+    const uint64_t epoch = catalog_epoch_.load();
+    {
+        std::lock_guard<std::mutex> lock(model_mutex_);
+        if (!config_loaded_.load() || providers_.empty()) return;
+        if (artwork_preload_epoch_ != epoch) {
+            artwork_preload_epoch_ = epoch;
+            artwork_preload_queue_.clear();
+            for (const auto &entry : providers_)
+                if (entry.sprite.valid())
+                    artwork_preload_queue_.push_back({entry.id, entry.sprite.version, 0});
+        }
+        // 待确认在屏上时与 syncArtwork 同一策略：不占链路，本轮放弃。
+        if (!model_.tasks.empty() && model_.tasks.front().status == "waiting_confirmation")
+            return;
+        if (artwork_preload_queue_.empty()) return;
+    }
+    for (;;) {
+        std::string provider;
+        uint32_t version = 0;
+        uint8_t attempts = 0;
+        {
+            std::lock_guard<std::mutex> lock(model_mutex_);
+            if (artwork_preload_queue_.empty()) return;
+            provider = artwork_preload_queue_.front().provider;
+            version = artwork_preload_queue_.front().version;
+            attempts = artwork_preload_queue_.front().attempts;
+        }
+        // 目录刷新后助手可能消失或版本已变：过期条目直接丢弃。
+        vibe_provider::SpriteInfo sprite;
+        bool valid = false;
+        {
+            std::lock_guard<std::mutex> lock(model_mutex_);
+            const auto *entry = findProviderLocked(provider);
+            valid = entry && entry->sprite.valid() && entry->sprite.version == version;
+            if (valid) sprite = entry->sprite;
+        }
+        bool done = true;
+        if (!valid) {
+            // 丢掉，继续看下一个（本轮内循环，队列很快清空）。
+        } else {
+            uint32_t cached = 0;
+            if (made_sprite_cache::cachedVersion(provider, cached) && cached == version) {
+                // 已就绪，无需网络。若正是当前选中助手，syncArtwork 在管它。
+            } else if (attempts >= 2) {
+                ESP_LOGW(BUTTON_TAG, "[sprite] preload_exhausted provider=%s", provider.c_str());
+            } else {
+                ESP_LOGI(BUTTON_TAG, "[sprite] preload provider=%s version=%u attempt=%u",
+                    provider.c_str(), static_cast<unsigned>(version),
+                    static_cast<unsigned>(attempts + 1));
+                const auto fetch = [this](const std::string &path, std::string &out, int &status) {
+                    return request(path, false, out, status, "", 200 * 1024, 30000);
+                };
+                done = made_sprite_cache::ensure(provider, sprite, fetch);
+                if (!done) {
+                    // 失败挪到队尾重试（同版本预算 2 次），本轮到此为止。
+                    std::lock_guard<std::mutex> lock(model_mutex_);
+                    for (auto it = artwork_preload_queue_.begin();
+                         it != artwork_preload_queue_.end(); ++it) {
+                        if (it->provider == provider && it->version == version) {
+                            ArtworkPreloadEntry retry{*it};
+                            retry.attempts = static_cast<uint8_t>(attempts + 1);
+                            artwork_preload_queue_.erase(it);
+                            artwork_preload_queue_.push_back(std::move(retry));
+                            break;
+                        }
+                    }
+                    return;
+                }
+            }
+        }
+        std::lock_guard<std::mutex> lock(model_mutex_);
+        for (auto it = artwork_preload_queue_.begin(); it != artwork_preload_queue_.end(); ++it) {
+            if (it->provider == provider && it->version == version) {
+                artwork_preload_queue_.erase(it);
+                break;
+            }
+        }
+        return;  // 一轮只处理一个助手，保持 worker 循环响应
+    }
+}
+
 // 素材应用与清理（LVGL 线程）。provider 切走时立刻撤下旧素材；
 // 下载完成的素材在下一帧淡入（这里是直接换，圆屏上视觉上就是一次闪切）。
 void VibeCoding::maybeApplyArtwork(const std::string &selected_provider)
@@ -4116,17 +4257,17 @@ void VibeCoding::maybeApplyArtwork(const std::string &selected_provider)
         ready = artwork_ready_provider_;
         if (dirty) {
             // worker 刚提交了新缓存（下载完成或校验通过）：清掉直换的
-            // 「同版本只试一次」记忆。否则首次加载走「绿豆+下载」老路时
-            // 记下的失败会永久屏蔽直换，之后每次切回都退回慢路闪绿豆。
+            // 「同版本只试一次」记忆。否则首次加载失败记下的 memo 会永久
+            // 屏蔽直换，之后每次切回都退回慢路闪空白。
             cached_apply_provider_.clear();
             cached_apply_version_ = 0;
         }
     }
     if (artwork_applied_ != selected_provider) {
         // 缓存直换：本地 manifest 版本与目录一致就直接整体换装（commitArt
-        // 原子换容器，旧素材仍在显示时不闪绿豆），不再等 worker 的 ensure()
+        // 原子换容器，旧素材仍在显示时不闪空白），不再等 worker 的 ensure()
         // 逐文件 SPIFFS 读 + SHA-256 复核——那要好几秒，实机表现为「切到
-        // 旺财先显示绿豆，过几秒才换装」。缓存的完整性不变量是 manifest
+        // 旺财先显示空白，过几秒才换装」。缓存的完整性不变量是 manifest
         // 最后写、写前每个文件都已验过哈希，版本一致即可信。
         if (tryApplyCachedArtwork(selected_provider)) {
             artwork_applied_ = selected_provider;
@@ -4152,7 +4293,7 @@ void VibeCoding::maybeApplyArtwork(const std::string &selected_provider)
 
 // LVGL 线程。同一条流水线的快速通道：读缓存 manifest 的 version，与目录
 // 下发的一致就立即解码应用。同一 (provider, version) 只试一次（记忆在
-// cached_apply_*），失败或没缓存就回退「绿豆 + worker 校验下载」的老路，
+// cached_apply_*），失败或没缓存就回退 worker 校验下载的老路，
 // PNG 损坏等落盘级损坏会在 applyArtwork 解码失败时暴露出来走回退。
 bool VibeCoding::tryApplyCachedArtwork(const std::string &provider)
 {
@@ -4165,12 +4306,26 @@ bool VibeCoding::tryApplyCachedArtwork(const std::string &provider)
     }
     {
         std::lock_guard<std::mutex> lock(artwork_mutex_);
-        // 退避：上次失败后 300ms 内不重复读 SPIFFS/解码。memo 只代表
-        // 「上次失败」，不代表「试过了就永远别试」——否则从绿豆页切回
-        // （绿豆不覆盖 memo）会被自己的成功记录永久锁死直换路径。
         const uint32_t now = static_cast<uint32_t>(esp_timer_get_time() / 1000);
-        if (cached_apply_provider_ == provider && cached_apply_version_ == version &&
-            static_cast<int32_t>(now - cached_retry_at_ms_) < 300) return false;
+        if (cached_apply_provider_ == provider && cached_apply_version_ == version) {
+            if (cached_apply_attempts_ >= 2) {
+                // 同版本连败 2 次：缓存大概率损坏（预加载只比对 manifest
+                // 版本号，文件本身坏了发现不了）。请 worker 整套删除重下；
+                // LVGL 侧停止反复解码——否则每 300ms 一次的全量 SPIFFS 读
+                // + PNG 解码会把 LVGL 线程打满，截图/命令全部饿死。
+                if (!artwork_purge_pending_.load()) {
+                    artwork_purge_provider_ = provider;
+                    artwork_purge_pending_.store(true);
+                    ESP_LOGW(BUTTON_TAG,
+                        "[sprite] cached_apply_dead provider=%s version=%u -> purge+redownload",
+                        provider.c_str(), static_cast<unsigned>(version));
+                }
+                return false;
+            }
+            if (static_cast<int32_t>(now - cached_retry_at_ms_) < 300) return false;
+        } else {
+            cached_apply_attempts_ = 0;
+        }
         cached_retry_at_ms_ = now;
     }
     uint32_t cached = 0;
@@ -4185,17 +4340,20 @@ bool VibeCoding::tryApplyCachedArtwork(const std::string &provider)
         return false;
     }
     if (!made_sprite::applyArtwork(sprite_stage_, manifest, made_sprite_cache::baseDir(provider))) {
-        ESP_LOGW(BUTTON_TAG, "[sprite] cached_apply_failed provider=%s version=%u",
-            provider.c_str(), static_cast<unsigned>(version));
+        ESP_LOGW(BUTTON_TAG, "[sprite] cached_apply_failed provider=%s version=%u psram_free=%u",
+            provider.c_str(), static_cast<unsigned>(version),
+            static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_SPIRAM)));
         std::lock_guard<std::mutex> lock(artwork_mutex_);
         cached_apply_provider_ = provider;
         cached_apply_version_ = version;
+        ++cached_apply_attempts_;
         return false;
     }
     {
         std::lock_guard<std::mutex> lock(artwork_mutex_);
         cached_apply_provider_.clear();  // 成功即清：切走再切回仍可秒换
         cached_apply_version_ = 0;
+        cached_apply_attempts_ = 0;
     }
     ESP_LOGI(BUTTON_TAG, "[sprite] cached_applied provider=%s version=%u",
         provider.c_str(), static_cast<unsigned>(version));
@@ -5366,6 +5524,22 @@ void VibeCoding::workerLoop()
         }
         if (canOperate() &&
             (artwork_request_.exchange(false) || artworkRetryDue())) syncArtwork();
+        if (artwork_purge_pending_.exchange(false)) {
+            // LVGL 判定缓存损坏（解码连败）：整套删掉，标记 dirty 让
+            // syncArtwork/preload 走 ensure() 完整重下（ensure 逐文件验哈希）。
+            std::string purge_provider;
+            {
+                std::lock_guard<std::mutex> lock(artwork_mutex_);
+                purge_provider = std::move(artwork_purge_provider_);
+                artwork_purge_provider_.clear();
+            }
+            if (!purge_provider.empty()) {
+                made_sprite_cache::purge(purge_provider);
+                artwork_dirty_.store(true);
+                artwork_request_.store(true);
+            }
+        }
+        preloadArtworkCache();
         PendingAction action;
         {
             std::lock_guard<std::mutex> lock(model_mutex_);

@@ -139,6 +139,17 @@ void purgeExcept(const std::string &prefix, const std::vector<std::string> &keep
 
 } // namespace
 
+void purge(const std::string &provider)
+{
+    const std::string prefix = prefixFor(provider);
+    int removed = 0;
+    for (const auto &name : listPrefixed(prefix)) {
+        unlink(pathFor(prefix, name).c_str());
+        ++removed;
+    }
+    ESP_LOGW(kTag, "[sprite] purged provider=%s files=%d", provider.c_str(), removed);
+}
+
 std::string baseDir(const std::string &provider)
 {
     return std::string(kMount) + "/" + prefixFor(provider);

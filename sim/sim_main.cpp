@@ -25,9 +25,10 @@ namespace {
 // MADE_SIM_SPRITE_DIR=<dir>：独立精灵测试模式——不走 App，直接在活动屏幕上
 // 建 made_sprite 舞台并加载 <dir>/manifest.json 分层素材，验证真实素材的
 // 解码/烘焙/帧轮播渲染（AI 自查花屏/错位用）。
+void captureShot(const std::string &path, lv_display_t *disp);
+
 std::string read_file(const std::string &path)
-{
-    FILE *fp = fopen(path.c_str(), "rb");
+{    FILE *fp = fopen(path.c_str(), "rb");
     if (!fp) return std::string();
     std::string json;
     char buf[4096];
@@ -46,6 +47,7 @@ int run_sprite_test()
         fprintf(stderr, "sim: no manifest.json in %s\n", dir);
         return 1;
     }
+    lv_display_t *disp = lv_display_get_default();
     lv_obj_t *stage = made_sprite::create(lv_screen_active());
     std::string base = dir;
     if (base.empty() || base.back() != '/') base += '/';
@@ -61,6 +63,46 @@ int run_sprite_test()
         SDL_Delay(30);
         elapsed += 33;
         made_sprite::update(stage, elapsed, made_sprite::Mood::kIdle);
+    }
+
+    // MADE_SIM_SWIPE_DEMO=1：左右滑跟手演示。复刻 homeDragCallback 的拖动路径
+    // （screen 整体平移，素材是子对象随之跟手；露出区是 bottom layer 底色），
+    // 每一步截图，供合成 GIF 检查滑动过渡。第二套素材走 MADE_SIM_SPRITE_DIR2，
+    // 模拟松手超阈值切助手后的换装。
+    if (getenv("MADE_SIM_SWIPE_DEMO")) {
+        const char *prefix = getenv("MADE_SIM_SHOT_PREFIX");
+        std::string tag = prefix && *prefix ? prefix : "/tmp/swipe";
+        lv_obj_t *screen = lv_screen_active();
+        const int w = 240;
+        auto pump = [&]() {
+            SDL_PumpEvents(); lv_tick_inc(33); lv_timer_handler(); SDL_Delay(30);
+            elapsed += 33;
+            made_sprite::update(stage, elapsed, made_sprite::Mood::kIdle);
+        };
+        auto pan = [&](int dx, const std::string &path) {
+            lv_obj_set_x(screen, dx);
+            pump();
+            pump();
+            captureShot(path, disp);
+        };
+        auto apply = [&](const char *d) {
+            std::string m = read_file(std::string(d) + "/manifest.json");
+            std::string b = d;
+            if (b.empty() || b.back() != '/') b += '/';
+            made_sprite::applyArtwork(stage, m, b);
+            for (int i = 0; i < 20; ++i) pump();   // 等解码/烘焙稳定
+        };
+        pan(0, tag + "_00.bmp");                       // 起点：素材完整可见
+        for (int k = 1; k <= 6; ++k) pan(-w * k / 6, tag + "_a" + std::to_string(k) + ".bmp");
+        apply(getenv("MADE_SIM_SPRITE_DIR2"));         // 松手过阈值：切助手换装
+        lv_obj_set_x(screen, 0);
+        pump();
+        captureShot(tag + "_b0.bmp", disp);
+        for (int k = 1; k <= 6; ++k) pan(-w * (6 - k) / 6, tag + "_b" + std::to_string(k) + ".bmp");
+        pan(0, tag + "_c0.bmp");                       // 反向滑回起点素材
+        apply(dir);
+        for (int i = 0; i < 10; ++i) pump();
+        captureShot(tag + "_c1.bmp", disp);
     }
     return 0;
 }

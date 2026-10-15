@@ -32,4 +32,9 @@ bool loadManifest(const std::string &provider, std::string &json);
 // 无版本号时返回 false。切助手时用它判断「本地缓存即可信」，直接换装。
 bool cachedVersion(const std::string &provider, uint32_t &version);
 
+// 整套删除该助手的缓存（含 manifest.json）。用于解码连败等「缓存不可信」
+// 场景：删完后 cachedVersion/ loadManifest 都失败，ensure() 会完整重下。
+// worker 线程专用（LVGL 侧只置请求标志）。
+void purge(const std::string &provider);
+
 } // namespace made_sprite_cache

@@ -18,18 +18,9 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
-#include "assets/img_sprite_bean.h"
-
-// 内置绿豆不是特例：它与第三方助手的素材（docs/SPRITES.md）走同一条分层
-// 管线，只是素材编在固件里（img_sprite_bean.c）而不是从桥接器拉取。
-// 固件里没有任何写死的五官坐标——眨眼/说话都是特征层切帧，眼位来自
-// manifest 的 x/y（内置豆的坐标由 split-bean-layers.py 生成到 img_sprite_bean.h）。
-
-LV_IMG_DECLARE(img_bean_body);
-LV_IMG_DECLARE(img_bean_eyes_open);
-LV_IMG_DECLARE(img_bean_eyes_closed);
-LV_IMG_DECLARE(img_bean_mouth_closed);
-LV_IMG_DECLARE(img_bean_mouth_open);
+// 内置绿豆已按产品要求移除：素材缺失时舞台留空（只显示助手名与页码），
+// 不再回退到绿豆占位。固件里没有任何写死的五官坐标——眨眼/说话都是
+// 特征层切帧，眼位来自 manifest 的 x/y。
 
 namespace made_sprite {
 namespace {
@@ -66,7 +57,7 @@ struct ArtLayer {
 struct Parts {
     lv_obj_t *root = nullptr;      // 舞台根对象
     lv_obj_t *glow = nullptr;      // 待确认/运行时的光圈（accent 色，脉冲）
-    bool builtin = true;           // 当前显示内置绿豆（setTint 只对它生效）
+    bool builtin = false;          // 兼容保留：内置素材已删除，恒为 false
     int last_mood = -1;
     uint32_t last_anim_ms = 0;     // 上次动效驱动的 elapsed（10Hz 节流）
     struct Art {
@@ -154,6 +145,8 @@ uint8_t *decodePngArgb(const std::string &path, int &width, int &height) {
     std::memset(&image, 0, sizeof(image));
     image.version = PNG_IMAGE_VERSION;
     if (!png_image_begin_read_from_file(&image, path.c_str())) {
+        ESP_LOGE("made_sprite", "[sprite] png_begin_failed path=%s msg=%s",
+            path.c_str(), image.message);
         png_image_free(&image);
         return nullptr;
     }
@@ -161,10 +154,16 @@ uint8_t *decodePngArgb(const std::string &path, int &width, int &height) {
     const size_t bytes = static_cast<size_t>(image.width) * image.height * 4;
     auto *buffer = static_cast<uint8_t *>(heap_caps_malloc(bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
     if (!buffer) {
+        ESP_LOGE("made_sprite", "[sprite] png_alloc_failed path=%s bytes=%u psram_free=%u largest=%u",
+            path.c_str(), static_cast<unsigned>(bytes),
+            static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_SPIRAM)),
+            static_cast<unsigned>(heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM)));
         png_image_free(&image);
         return nullptr;
     }
     if (!png_image_finish_read(&image, nullptr, buffer, 0, nullptr)) {
+        ESP_LOGE("made_sprite", "[sprite] png_read_failed path=%s msg=%s",
+            path.c_str(), image.message);
         png_image_free(&image);
         heap_caps_free(buffer);
         return nullptr;
@@ -569,6 +568,9 @@ bool commitArt(Parts *parts, const MotionSpec &motion, std::vector<LayerSpec> &&
 
 fail:
     // 只回收本轮已建成的层：旧素材与旧层表保持可用，等下一次提交再换。
+    ESP_LOGE("made_sprite", "[sprite] commit_failed layers=%u psram_free=%u",
+        static_cast<unsigned>(layers.size()),
+        static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_SPIRAM)));
     for (auto &layer : layers) {
         freeFrames(layer.frames);
         freeFrames(layer.baked_frames);
@@ -581,53 +583,6 @@ void destroy(lv_event_t *event) {
     auto *parts = static_cast<Parts *>(lv_event_get_user_data(event));
     lv_obj_set_user_data(lv_event_get_target_obj(event), nullptr);
     delete parts;
-}
-
-// 内置绿豆：一份用 SPRITES 格式表达的普通素材（分层 + manifest 语义），
-// 与桥接器下发的助手素材走完全相同的提交与驱动路径。
-bool applyBeanArt(Parts *parts) {
-    // 特征层坐标是 112 基准的全画布坐标；素材铺到 336 设计像素（×3）。
-    constexpr int kMul = 3;
-    const int body_w = img_bean_body.header.w * kMul;
-    const int body_h = img_bean_body.header.h * kMul;
-    const int origin_x = (made_design - body_w) / 2;
-    const int origin_y = (made_design - body_h) / 2;
-
-    std::vector<LayerSpec> specs;
-    LayerSpec body;
-    body.x = origin_x;
-    body.y = origin_y;
-    body.scale_mul = kMul;
-    body.frames.push_back(Frame{});
-    body.frames.back().dsc = img_bean_body;
-    specs.push_back(std::move(body));
-
-    LayerSpec eyes;
-    eyes.x = origin_x + IMG_BEAN_EYES_X * kMul;
-    eyes.y = origin_y + IMG_BEAN_EYES_Y * kMul;
-    eyes.scale_mul = kMul;
-    eyes.blink = true;
-    eyes.blink_period = 4200;
-    eyes.blink_closed = 130;
-    eyes.frames.push_back(Frame{});
-    eyes.frames.back().dsc = img_bean_eyes_open;
-    eyes.frames.push_back(Frame{});
-    eyes.frames.back().dsc = img_bean_eyes_closed;
-    specs.push_back(std::move(eyes));
-
-    LayerSpec mouth;
-    mouth.x = origin_x + IMG_BEAN_MOUTH_X * kMul;
-    mouth.y = origin_y + IMG_BEAN_MOUTH_Y * kMul;
-    mouth.scale_mul = kMul;
-    mouth.talk = true;
-    mouth.frames.push_back(Frame{});
-    mouth.frames.back().dsc = img_bean_mouth_closed;
-    mouth.frames.push_back(Frame{});
-    mouth.frames.back().dsc = img_bean_mouth_open;
-    specs.push_back(std::move(mouth));
-
-    MotionSpec motion;  // 缺省动效：呼吸 8% / 3000ms，摆 7px / 1800ms
-    return commitArt(parts, motion, std::move(specs), true);
 }
 
 // 素材模式的动效驱动。呼吸/轻摆作用于容器（位置 + 单次缩放变换，支点在
@@ -774,7 +729,6 @@ lv_obj_t *create(lv_obj_t *parent) {
     // 满屏精灵身后的一整圈光环。
     parts->glow = shape(root, 18, 4, 324, 324, palette.accent, LV_OPA_TRANSP);
 
-    applyBeanArt(parts);
     return root;
 }
 
@@ -812,6 +766,18 @@ bool applyArtwork(lv_obj_t *root, const std::string &manifest_json, const std::s
         cJSON_Delete(manifest);
         return false;
     }
+
+    // 旧素材先行退场：新帧若在旧帧还活着时解码，两套 324×324×ARGB 叠加
+    // 会把 PSRAM 峰值推到双倍（实机切换时解码失败回退空白）。先撤旧层，
+    // 解码峰值只剩新素材一套；失败时本来就停在空白等下次重试。
+    if (parts->art.container) lv_obj_delete(parts->art.container);
+    parts->art.container = nullptr;
+    for (auto &layer : parts->art.layers) {
+        freeFrames(layer.frames);
+        freeFrames(layer.baked_frames);
+    }
+    parts->art.layers.clear();
+    parts->art.active = false;
 
     MotionSpec motion;
     motion.canvas_w = canvas_w->valueint;
@@ -927,29 +893,13 @@ void clearArtwork(lv_obj_t *root) {
     }
     parts->art.layers.clear();
     parts->art.active = false;
-    applyBeanArt(parts);        // 回到内置绿豆（同一条管线）
+    // 内置绿豆已删除：素材撤下后舞台留空，等待下一套素材。
 }
 
 bool artworkActive(lv_obj_t *root) {
     if (!root) return false;
     auto *parts = static_cast<Parts *>(lv_obj_get_user_data(root));
     return parts && parts->art.active && !parts->builtin;
-}
-
-void setTint(lv_obj_t *root, uint32_t color) {
-    if (!root) return;
-    auto *parts = static_cast<Parts *>(lv_obj_get_user_data(root));
-    if (!parts || !parts->builtin || !parts->art.active) return;
-    for (auto &layer : parts->art.layers) {
-        if (!layer.obj) continue;
-        if (color == 0) {
-            lv_obj_set_style_img_recolor_opa(layer.obj, LV_OPA_TRANSP, 0);
-        } else {
-            lv_obj_set_style_img_recolor(layer.obj, lv_color_hex(color), 0);
-            lv_obj_set_style_img_recolor_opa(layer.obj, LV_OPA_60, 0);
-        }
-    }
-    lv_obj_invalidate(root);
 }
 
 } // namespace made_sprite

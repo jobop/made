@@ -192,6 +192,7 @@ private:
     void refreshTasks();
     void refreshConfig();
     void syncArtwork();
+    void preloadArtworkCache();
     bool artworkRetryDue() const;
     bool tryApplyCachedArtwork(const std::string &provider);
     void maybeApplyArtwork(const std::string &selected_provider);
@@ -244,6 +245,20 @@ private:
     std::string cached_apply_provider_;
     uint32_t cached_apply_version_ = 0;
     uint32_t cached_retry_at_ms_ = 0;
+    int cached_apply_attempts_ = 0;  // 同版本连败计数；≥2 触发 purge 重下
+    // LVGL 判定缓存损坏后的整套重下请求（worker 线程消费）。
+    std::atomic<bool> artwork_purge_pending_{false};
+    std::string artwork_purge_provider_;  // artwork_mutex_ 内读写
+    // 开机预加载（仅 worker 线程 + model_mutex_）：目录刷新后把所有带素材的
+    // 助手排队，每轮循环下载一个（见 preloadArtworkCache），滑动切换时
+    // tryApplyCachedArtwork 直接命中本地缓存秒换，不用现等下载。
+    struct ArtworkPreloadEntry {
+        std::string provider;
+        uint32_t version = 0;
+        uint8_t attempts = 0;
+    };
+    std::vector<ArtworkPreloadEntry> artwork_preload_queue_;
+    uint64_t artwork_preload_epoch_ = 0;
     std::mutex voice_action_mutex_; // Serializes BOOT/touch voice actions with app pause/close.
     Snapshot model_;
     PendingAction pending_action_;
@@ -437,14 +452,14 @@ private:
     bool reply_watch_ready_ = false;
     bool reply_saw_pending_ = false;
     bool reply_wait_new_ = false;
-    // 横向翻屏跟手：拖动时整体平移 screen，精灵层反向平移保持绿豆不动。
+    // 横向翻屏跟手：拖动时整体平移 screen（素材是子对象，随屏一起走）。
     bool home_dragging_ = false;
     int drag_start_x_ = 0;
     int drag_start_y_ = 0;
     int drag_dx_ = 0;
     lv_coord_t screen_base_x_ = 0;
-    lv_coord_t sprite_base_x_ = 0;
     uint32_t drag_end_ms_ = 0; // 抑制同一手势触发的重复 providerSwipe
+    uint32_t last_pressing_ms_ = 0; // 按压心跳：PRESSING 断流=松手事件丢失，看门狗强制收尾
     // 回复区富内容（图片/链接二维码）与点击放大浮层。
     std::vector<lv_obj_t *> attachment_objs_;
     lv_obj_t *attachments_box_ = nullptr;
