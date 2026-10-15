@@ -30,9 +30,19 @@ struct Frame {
     uint8_t *pixels = nullptr;   // PSRAM 堆分配（下发素材）；内置素材为 null（静态）
 };
 
+// 情绪表的帧选择：frame >= 0 表示该情绪下固定显示这一帧；cycle 表示按
+// talk 的节奏循环全部帧。默认 {-1,false} = 回退到无情绪表的旧行为。
+struct EmotionSel {
+    int8_t frame = -1;
+    bool cycle = false;
+};
+
 struct ArtLayer {
     lv_obj_t *obj = nullptr;
     std::vector<Frame> frames;
+    std::string id;              // 层标识（emotions 按它引用层）
+    bool has_emotions = false;   // manifest 里本层被 emotions 引用过
+    std::vector<EmotionSel> mood_sel;   // kMoodCount 项，按下标取
     int base_scale = 256;        // 设计像素 → 屏幕像素
     int base_x = 0;              // 未呼吸缩放时的屏幕位置（呼吸补偿的基准）
     int base_y = 0;
@@ -101,6 +111,8 @@ struct LayerSpec {
     bool alert = false;
     uint32_t blink_period = 4000;
     uint32_t blink_closed = 120;
+    std::string id;
+    std::vector<EmotionSel> mood_sel;   // 有情绪选择时 size = kMoodCount
     std::vector<Frame> frames;
 };
 
@@ -532,6 +544,9 @@ bool commitArt(Parts *parts, const MotionSpec &motion, std::vector<LayerSpec> &&
         ArtLayer layer;
         layer.obj = object;
         layer.frames = std::move(spec.frames);
+        layer.id = std::move(spec.id);
+        layer.mood_sel = std::move(spec.mood_sel);
+        layer.has_emotions = !layer.mood_sel.empty();
         layer.base_scale = base_scale;
         layer.base_x = made_x(spec.x);
         layer.base_y = made_home_y(spec.y);
@@ -568,8 +583,9 @@ bool commitArt(Parts *parts, const MotionSpec &motion, std::vector<LayerSpec> &&
     parts->art.epoch = g_art_epoch.fetch_add(1) + 1;
 
     for (const auto &layer : parts->art.layers) {
-        ESP_LOGI("made_sprite", "[art] layer frames=%u blink=%d period=%u closed=%u",
-            static_cast<unsigned>(layer.frames.size()), layer.blink ? 1 : 0,
+        ESP_LOGI("made_sprite", "[art] layer id=%s frames=%u blink=%d emotions=%d period=%u closed=%u",
+            layer.id.c_str(), static_cast<unsigned>(layer.frames.size()), layer.blink ? 1 : 0,
+            layer.has_emotions ? 1 : 0,
             static_cast<unsigned>(layer.blink_period), static_cast<unsigned>(layer.blink_closed));
     }
     lv_obj_invalidate(parts->root);
@@ -610,6 +626,12 @@ void artUpdate(Parts *parts, uint32_t elapsed_ms, int mood) {
         sway_period = sway_period * 3 / 4;
     } else if (mood == Mood::kWaitingConfirm) {
         sway_period = sway_period * 6 / 5;
+        sway_amp -= 2;
+    } else if (mood == Mood::kSuccess) {
+        sway_period = sway_period * 5 / 6;   // 完成：轻快一点
+        bounce_amp += 3;
+    } else if (mood == Mood::kSad) {
+        sway_period = sway_period * 7 / 6;   // 失败：蔫一点
         sway_amp -= 2;
     }
     const int sway = wave(elapsed_ms, sway_period, sway_amp);
@@ -656,13 +678,38 @@ void artUpdate(Parts *parts, uint32_t elapsed_ms, int mood) {
     for (auto &layer : art.layers) {
         // 烘焙层的 src 由上面的帧轮播管理，这里只处理 blink/talk/alert 切帧层
         if (!layer.obj || layer.baked || layer.frames.empty()) continue;
+        static const EmotionSel kNone;
+        const EmotionSel &sel = layer.mood_sel.size() == made_sprite::Mood::kMoodCount
+            ? layer.mood_sel[static_cast<size_t>(mood)] : kNone;
+        const int frame_count = static_cast<int>(layer.frames.size());
         int frame = 0;
         if (layer.blink) {
-            frame = (elapsed_ms % layer.blink_period) < layer.blink_closed ? 1 : 0;
+            // 眨眼 = 选中帧 ↔ 闭眼帧（frames[1]，素材规范约定）。无情绪表时
+            // 选中帧恒为 0；有情绪表时待机 mood 保留眨眼节律（选中帧不是
+            // 闭眼帧本身才眨），其余情绪固定在选中帧（睡觉/惊讶不再眨）。
+            const int open = sel.frame >= 0 ? sel.frame : 0;
+            const int closed = frame_count > 1 ? 1 : open;
+            if (sel.frame >= 0 && mood != Mood::kIdle) {
+                frame = open;
+            } else if (open != closed &&
+                       (elapsed_ms % layer.blink_period) < layer.blink_closed) {
+                frame = closed;
+            } else {
+                frame = open;
+            }
         } else if (layer.talk && (mood == Mood::kTalking || mood == Mood::kRunning)) {
-            frame = static_cast<int>((elapsed_ms / 180) % layer.frames.size());
+            // 说话循环全部帧；情绪表可指定固定帧（如惊讶张嘴不循环）
+            if (sel.frame >= 0 && !sel.cycle) {
+                frame = sel.frame;
+            } else {
+                frame = static_cast<int>((elapsed_ms / 180) % static_cast<uint32_t>(frame_count));
+            }
+        } else if (sel.frame >= 0) {
+            frame = sel.frame;
+        } else if (sel.cycle) {
+            frame = static_cast<int>((elapsed_ms / 180) % static_cast<uint32_t>(frame_count));
         }
-        frame = std::min(std::max(frame, 0), static_cast<int>(layer.frames.size()) - 1);
+        frame = std::min(std::max(frame, 0), frame_count - 1);
         if (frame != layer.last_frame) {
             layer.last_frame = frame;
             ESP_LOGD("made_sprite", "[frame] blink=%d talk=%d mood=%d frame=%d elapsed=%u",
@@ -825,6 +872,8 @@ static bool buildSpecsFromManifest(const std::string &manifest_json, const std::
             if (cJSON_IsString(file) && file->valuestring) files.push_back(file->valuestring);
         }
         LayerSpec spec;
+        const cJSON *id = cJSON_GetObjectItemCaseSensitive(layer, "id");
+        if (cJSON_IsString(id) && id->valuestring) spec.id = id->valuestring;
         const cJSON *blink = cJSON_GetObjectItemCaseSensitive(layer, "blink");
         if (cJSON_IsObject(blink)) {
             const cJSON *period = cJSON_GetObjectItemCaseSensitive(blink, "period_ms");
@@ -864,6 +913,47 @@ static bool buildSpecsFromManifest(const std::string &manifest_json, const std::
         spec.x = x->valueint;
         spec.y = y->valueint;
         specs.push_back(std::move(spec));
+    }
+
+    // —— 情绪表（可选）——
+    // "emotions": { "<mood>": { "<layerId>": <帧序号 | "cycle"> } }。
+    // mood 名与 Mood::Value 一一对应（idle/talking/running/waiting/success/
+    // sad/offline）。帧序号越界或引用未知层：丢弃该条（桥接器已做严格校验，
+    // 这里宽容处理，不让单个坏条目毁掉整套素材）。
+    {
+        static const struct { const char *name; int mood; } kMoods[] = {
+            {"idle", Mood::kIdle},           {"talking", Mood::kTalking},
+            {"running", Mood::kRunning},     {"waiting", Mood::kWaitingConfirm},
+            {"success", Mood::kSuccess},     {"sad", Mood::kSad},
+            {"offline", Mood::kOffline},
+        };
+        const cJSON *emotions = cJSON_GetObjectItemCaseSensitive(manifest, "emotions");
+        if (cJSON_IsObject(emotions)) {
+            for (auto &entry : kMoods) {
+                const cJSON *mood_entry =
+                    cJSON_GetObjectItemCaseSensitive(emotions, entry.name);
+                if (!cJSON_IsObject(mood_entry)) continue;
+                for (const cJSON *sel = mood_entry->child; sel; sel = sel->next) {
+                    if (!sel->string) continue;
+                    LayerSpec *target = nullptr;
+                    for (auto &spec : specs)
+                        if (spec.id == sel->string) { target = &spec; break; }
+                    if (!target) continue;
+                    if (target->mood_sel.empty())
+                        target->mood_sel.assign(Mood::kMoodCount, EmotionSel{});
+                    EmotionSel &slot =
+                        target->mood_sel[static_cast<size_t>(entry.mood)];
+                    if (cJSON_IsString(sel) && sel->valuestring &&
+                        std::strcmp(sel->valuestring, "cycle") == 0) {
+                        slot.cycle = true;
+                    } else if (cJSON_IsNumber(sel)) {
+                        if (sel->valueint >= 0 &&
+                            sel->valueint < static_cast<int>(target->frames.size()))
+                            slot.frame = static_cast<int8_t>(sel->valueint);
+                    }
+                }
+            }
+        }
     }
 
     cJSON_Delete(manifest);

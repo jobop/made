@@ -350,6 +350,12 @@ private:
     // LVGL objects are accessed exclusively from the LVGL task.
     lv_obj_t *sprite_stage_ = nullptr;
     uint32_t sprite_started_ms_ = 0;
+    // 精灵瞬时情绪（成功/失败）：盯最前面的任务，状态从进行中翻到终态时
+    // 播一小段表情。仅 LVGL 线程访问。
+    std::string sprite_watch_id_;
+    std::string sprite_watch_status_;
+    int sprite_transient_mood_ = -1;          // made_sprite::Mood 值，-1=无
+    uint32_t sprite_transient_until_ = 0;     // lv_tick_get() 毫秒
     lv_obj_t *drawer_ = nullptr;
     lv_obj_t *drawer_grip_ = nullptr;
     lv_obj_t *drawer_hint_ = nullptr;

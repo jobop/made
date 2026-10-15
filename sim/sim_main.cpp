@@ -65,6 +65,47 @@ int run_sprite_test()
         made_sprite::update(stage, elapsed, made_sprite::Mood::kIdle);
     }
 
+    // MADE_SIM_MOODS="idle,running,..."：逐个情绪渲染 ~3s 后截图
+    // <prefix>_<序号>_<mood>.bmp——情绪表切帧的离线验证（配合
+    // MADE_SIM_SPRITE_DIR / MADE_SIM_SHOT_PREFIX 使用）。
+    if (const char *moods = getenv("MADE_SIM_MOODS"); moods && *moods) {
+        const char *prefix = getenv("MADE_SIM_SHOT_PREFIX");
+        std::string tag = prefix && *prefix ? prefix : "/tmp/mood";
+        struct Named { const char *name; int mood; };
+        static const Named kNamed[] = {
+            {"idle", made_sprite::Mood::kIdle},
+            {"talking", made_sprite::Mood::kTalking},
+            {"running", made_sprite::Mood::kRunning},
+            {"waiting", made_sprite::Mood::kWaitingConfirm},
+            {"success", made_sprite::Mood::kSuccess},
+            {"sad", made_sprite::Mood::kSad},
+            {"offline", made_sprite::Mood::kOffline},
+        };
+        std::string list = moods;
+        int index = 0;
+        for (size_t start = 0; start <= list.size();) {
+            size_t comma = list.find(',', start);
+            std::string name = list.substr(start,
+                comma == std::string::npos ? std::string::npos : comma - start);
+            if (name.empty()) break;
+            const Named *found = nullptr;
+            for (const auto &entry : kNamed)
+                if (name == entry.name) { found = &entry; break; }
+            if (!found) {
+                fprintf(stderr, "sim: unknown mood '%s'\n", name.c_str());
+                return 1;
+            }
+            for (int i = 0; i < 90; ++i) {   // ~3s：跨过眨眼周期取稳定帧
+                SDL_PumpEvents(); lv_tick_inc(33); lv_timer_handler(); SDL_Delay(30);
+                elapsed += 33;
+                made_sprite::update(stage, elapsed, found->mood);
+            }
+            captureShot(tag + "_" + std::to_string(index++) + "_" + name + ".bmp", disp);
+            if (comma == std::string::npos) break;
+            start = comma + 1;
+        }
+    }
+
     // MADE_SIM_SWIPE_DEMO=1：左右滑跟手 + 真翻页演示。侧舞台（第二套素材）
     // 停在屏外 ±1 屏宽，拖动平移 screen 时从屏边滑入视野；松手晋升（换指针）。
     // 每步截图，供检查滑动过渡与翻页预览。

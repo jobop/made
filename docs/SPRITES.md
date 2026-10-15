@@ -50,6 +50,9 @@ manifest 的 `x`/`y`。给任何新助手做形象，照本文规范提供分层
 - **推荐**：`body` + `eyes`（open/closed 两帧）+ `mouth`（closed/open 两帧）。
   眨眼 = 固件按 `blink.period_ms` 切换 eyes 层的两帧；说话 = 按 `talk` 切换
   mouth 层两帧。**位置全部由 manifest 的 `x`/`y` 声明，固件零写死坐标**
+- **进阶（情绪表）**：把 `eyes`/`mouth` 层的 `frames` 扩到最多 8 帧
+  （专注/惊讶/开心/垂眼……），配 `emotions` 表按助手状态切帧——见下文，
+  不加层、不改坐标，老固件安全忽略
 - **特征层硬契约**：`eyes`/`mouth` 各帧的 PNG **只含特征像素，其余全透明**；
   `body` 必须把五官擦掉。设备按 z 序叠加各层——若把整幅立绘拷贝当特征层用，
   上层会永远盖住下层的表情帧（实测：固件在切帧、屏幕永远睁眼）
@@ -87,6 +90,15 @@ manifest 的 `x`/`y`。给任何新助手做形象，照本文规范提供分层
     "breath": { "scale_pct": 108, "period_ms": 3000 },
     "sway_deg": 3,
     "sway_period_ms": 1800
+  },
+  "emotions": {
+    "idle":    { "eyes": 0 },
+    "talking": { "mouth": "cycle" },
+    "running": { "eyes": 2 },
+    "waiting": { "eyes": 3, "mouth": 1 },
+    "offline": { "eyes": 1 },
+    "success": { "eyes": 4, "mouth": 2 },
+    "sad":     { "eyes": 5, "mouth": 3 }
   }
 }
 ```
@@ -100,10 +112,46 @@ manifest 的 `x`/`y`。给任何新助手做形象，照本文规范提供分层
 | `layers[].id` | 是 | 层标识。`body` / `eyes` / `mouth` / `accessory` 是保留名，其余自定义 |
 | `layers[].file` / `frames` | 二选一 | 单帧层用 `file`；动画层用 `frames`（按帧序循环或按状态切换） |
 | `layers[].x` / `y` / `z` | 是 | 位置与叠放次序，z 小的在下 |
-| `layers[].blink` | 否 | 眨眼节奏：每 `period_ms` 闭眼 `closed_ms`。只对 `eyes` 层生效 |
+| `layers[].blink` | 否 | 眨眼节奏：每 `period_ms` 闭眼 `closed_ms`。只对 `eyes` 层生效；闭眼帧约定为 `frames[1]` |
 | `layers[].talk` | 否 | `true` 时录音/说话状态下循环播 `frames`（嘴型） |
 | `layers[].alert` | 否 | `pulse`：待确认任务时该层做透明度脉冲提醒 |
 | `motion` | 否 | 整体动效参数；缺省用固件默认值（呼吸 8% / 摆动 3° / 1800ms） |
+| `emotions` | 否 | 情绪表：把助手状态映射到各层的帧（见下节）。缺省时所有状态共用第一套帧（兼容旧素材） |
+
+## 情绪表（emotions）
+
+`emotions` 让同一个助手在不同状态下换表情——关键是**换的是既有层显示哪一帧**，
+不加新层、不改坐标。结构：`状态 → 层id → 帧选择`，帧选择是帧序号（0 起）
+或字符串 `"cycle"`（循环该层全部帧，同 `talk` 节奏）。
+
+- 状态名（与固件情绪一一对应）：`idle` 待机 / `talking` 录音·说话 /
+  `running` 任务运行中 / `waiting` 任务待确认 / `offline` 断连 /
+  `success` 任务刚完成（瞬时约 3.5s）/ `sad` 任务刚失败·取消（瞬时约 3.5s）
+- 未写的「状态×层」组合回退默认行为：`blink` 层第一帧 + 眨眼节律、
+  `talk` 层第一帧、其余层第一帧
+- `blink` 层的闭眼帧固定用 `frames[1]`；某状态选中的帧**就是** `frames[1]`
+  时（如 `offline` 选闭眼帧当睡觉），该状态下不再眨眼
+- `talk` 层在说话/运行中默认循环全部帧；情绪条目给了帧序号则固定显示该帧
+  （如 `waiting` 固定张嘴），写 `"cycle"` 恢复循环
+- 桥接器会校验：状态名、层引用、帧序号越界；`emotions` 引用的帧必须已在
+  某层的 `frames`/`file` 里声明（不新增文件引用）
+- 老固件忽略整个 `emotions` 字段（只见多几帧素材），可安全升级素材
+
+素材包实例（内置绿豆回归包，含生成脚本）：
+`assets/branding/bean-emotions.py` 可从基帧自动派生一套绿豆情绪帧
+（专注/惊讶/开心/垂泪眼 + 微笑/撇嘴），并写好 `emotions` 表。
+
+### 各状态素材建议
+
+| 状态 | 眼睛 | 嘴 |
+| --- | --- | --- |
+| idle | 睁眼（index 0），按 `blink` 节律眨眼 | 第一帧 |
+| talking | 睁眼 | 循环全部嘴帧 |
+| running | 半闭/专注眼 | 循环（跟随 talk）或固定 |
+| waiting | 惊讶（小瞳孔） | 张嘴/固定 |
+| offline | 闭眼（当睡觉） | 第一帧 |
+| success | 开心眼（^ ^） | 微笑 |
+| sad | 垂眼/泪 | 撇嘴 |
 
 ## 图片格式与尺寸约束
 
@@ -123,13 +171,15 @@ manifest 的 `x`/`y`。给任何新助手做形象，照本文规范提供分层
 
 | 助手状态 | 固件动效 | 消费的素材 |
 | --- | --- | --- |
-| 待机 | 呼吸缩放 + 左右轻摆 + 定时眨眼 | 全部层 |
-| 录音/说话中 | 轻微跳动 + 嘴层循环 | `talk: true` 的层 |
-| 任务运行中 | 呼吸加快（周期减半） | 全部层 |
-| 任务待确认 | `alert: pulse` 层脉冲 + 身后光圈 | `alert` 层 |
-| 断连/离线 | 动效停止，静态显示 | 全部层 |
+| 待机 | 呼吸缩放 + 左右轻摆 + 定时眨眼 | 全部层；`emotions.idle` |
+| 录音/说话中 | 轻微跳动 + 嘴层循环 | `talk: true` 的层；`emotions.talking` |
+| 任务运行中 | 呼吸加快 | 全部层；`emotions.running` |
+| 任务待确认 | `alert: pulse` 层脉冲 + 身后光圈 | `alert` 层；`emotions.waiting` |
+| 任务刚完成 | 瞬时（~3.5s）轻快摇摆 | `emotions.success` |
+| 任务刚失败/取消 | 瞬时（~3.5s）蔫缓摇摆 | `emotions.sad` |
+| 断连/离线 | 动效停止，静态显示 | 全部层；`emotions.offline` |
 
-`blink` / `talk` / `alert` 之外的层固定显示第一帧（单帧层）或首帧（多帧层）。
+`emotions` 之外的层固定显示第一帧（单帧层）或首帧（多帧层）。
 
 ## 桥接器与传输协议
 

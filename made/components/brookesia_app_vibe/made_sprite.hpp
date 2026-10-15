@@ -16,8 +16,12 @@ enum Value {
     kTalking,         // 录音/说话：轻快跳动
     kRunning,         // 任务运行中：呼吸加快
     kWaitingConfirm,  // 任务待确认：身后光圈脉冲提醒（BOOT 双击确认/三击取消）
+    kSuccess,         // 任务刚完成（瞬时 ~3.5s）：素材有 emotions.success 时换笑脸
+    kSad,             // 任务刚失败/取消（瞬时 ~3.5s）：素材有 emotions.sad 时换哭脸
     kOffline,         // 断连：静止
 };
+// 情绪表（manifest 的 emotions）按下标索引，新增情绪追加在 kOffline 之前。
+constexpr int kMoodCount = kOffline + 1;
 }
 
 // LVGL-thread only. Returns a full-screen, non-scrollable sprite stage.

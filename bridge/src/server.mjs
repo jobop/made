@@ -869,6 +869,7 @@ export function createApp(config, { run, transcribe, tunnel: providedTunnel, ena
           deviceSend(res, 200, {
             version: plugin.sprite.version, canvas: plugin.sprite.canvas,
             layers: plugin.sprite.layers, ...(plugin.sprite.motion ? { motion: plugin.sprite.motion } : {}),
+            ...(plugin.sprite.emotions ? { emotions: plugin.sprite.emotions } : {}),
           });
           return;
         }

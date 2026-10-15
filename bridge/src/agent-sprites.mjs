@@ -17,7 +17,9 @@ export const SPRITE_MAX_CHUNK = 192 * 1024;
 export const SPRITE_MAX_FILE_BYTES = 256 * 1024;
 const MANIFEST_MAX_BYTES = 16 * 1024;
 const MAX_LAYERS = 8;
-const MAX_FRAMES = 4;
+const MAX_FRAMES = 8;
+// 情绪表允许的状态名（与固件 Mood 枚举一一对应）。
+const MOOD_NAMES = new Set(['idle', 'talking', 'running', 'waiting', 'success', 'sad', 'offline']);
 // ≤20 字符：固件 SPIFFS 缓存对象名 = '/' + "s<hash6>_" + 文件名 + "~"，
 // 而 SPIFFS 只给 31 字节，20 是留了 1 字节余量的上限。
 const FILE_NAME = /^[A-Za-z0-9_-]{1,16}\.png$/i;
@@ -51,7 +53,7 @@ function readManifestFile(dir) {
 
 function validateManifest(raw) {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new SpriteError('manifest 必须是对象');
-  if (Object.keys(raw).some((key) => !['version', 'canvas', 'layers', 'motion'].includes(key))) {
+  if (Object.keys(raw).some((key) => !['version', 'canvas', 'layers', 'motion', 'emotions'].includes(key))) {
     throw new SpriteError('manifest 包含不支持的字段');
   }
   if (!isInt(raw.version, 1, 2147483647)) throw new SpriteError('manifest.version 必须是正整数');
@@ -123,7 +125,32 @@ function validateManifest(raw) {
       throw new SpriteError('motion.sway_period_ms 范围 200–10000');
     }
   }
-  return { version: raw.version, canvas: canvas, layers: raw.layers, motion: raw.motion ?? null };
+  if (raw.emotions !== undefined) {
+    const emotions = raw.emotions;
+    if (!emotions || typeof emotions !== 'object' || Array.isArray(emotions)) {
+      throw new SpriteError('emotions 必须是对象');
+    }
+    for (const [mood, entry] of Object.entries(emotions)) {
+      if (!MOOD_NAMES.has(mood)) throw new SpriteError(`emotions 含未知状态：${mood}`);
+      if (!entry || typeof entry !== 'object' || Array.isArray(entry) ||
+          Object.keys(entry).length < 1) {
+        throw new SpriteError(`emotions.${mood} 必须是非空对象（层id → 帧序号 | "cycle"）`);
+      }
+      for (const [layerId, sel] of Object.entries(entry)) {
+        const layer = raw.layers.find((item) => item.id === layerId);
+        if (!layer) throw new SpriteError(`emotions.${mood} 引用未知层：${layerId}`);
+        const frameCount = (layer.frames !== undefined ? layer.frames : [layer.file]).length;
+        if (sel === 'cycle') continue;
+        if (!isInt(sel, 0, frameCount - 1)) {
+          throw new SpriteError(`emotions.${mood}.${layerId} 需要帧序号 0–${frameCount - 1} 或 "cycle"`);
+        }
+      }
+    }
+  }
+  return {
+    version: raw.version, canvas: canvas, layers: raw.layers, motion: raw.motion ?? null,
+    emotions: raw.emotions ?? null,
+  };
 }
 
 /** 按目录内容 mtime 缓存读取结果；素材被替换时自动失效。
@@ -184,7 +211,7 @@ export function readSprite(packageDir) {
   }
   const value = Object.freeze({
     dir: spriteDir, version: manifest.version, canvas: manifest.canvas,
-    layers: manifest.layers, motion: manifest.motion,
+    layers: manifest.layers, motion: manifest.motion, emotions: manifest.emotions,
     files: Object.freeze(files.map((file) => Object.freeze(file))),
   });
   cache.set(spriteDir, { stamp, value });

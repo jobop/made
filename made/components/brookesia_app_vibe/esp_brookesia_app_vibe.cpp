@@ -3664,10 +3664,48 @@ void VibeCoding::render()
                 selected_provider.c_str());
         }
         maybeApplyArtwork(selected_provider);
+        // 瞬时情绪：盯最前面的任务，进行中 → 终态的翻转换来 ~3.5s 的
+        // 成功/失败表情。素材没配对应 emotions 条目时，固件只是动效节奏
+        // 略有不同，安全无害。
+        {
+            std::string watch_id;
+            std::string watch_status;
+            {
+                std::lock_guard<std::mutex> lock(model_mutex_);
+                if (!model_.tasks.empty()) {
+                    watch_id = model_.tasks.front().id;
+                    watch_status = model_.tasks.front().status;
+                }
+            }
+            if (watch_id != sprite_watch_id_) {
+                sprite_watch_id_ = watch_id;
+                sprite_watch_status_ = watch_status;
+                sprite_transient_mood_ = -1;   // 新任务：旧表情立刻让位
+            } else if (watch_status != sprite_watch_status_) {
+                const bool was_pending = sprite_watch_status_ == "queued" ||
+                    sprite_watch_status_ == "running" ||
+                    sprite_watch_status_ == "waiting_confirmation";
+                if (was_pending && watch_status == "completed") {
+                    sprite_transient_mood_ = made_sprite::Mood::kSuccess;
+                    sprite_transient_until_ = lv_tick_get() + 3500;
+                } else if (was_pending && (watch_status == "failed" ||
+                                           watch_status == "cancelled")) {
+                    sprite_transient_mood_ = made_sprite::Mood::kSad;
+                    sprite_transient_until_ = lv_tick_get() + 3500;
+                }
+                sprite_watch_status_ = watch_status;
+            }
+            const bool pending_now = watch_status == "queued" ||
+                watch_status == "running" || watch_status == "waiting_confirmation";
+            if (pending_now) sprite_transient_mood_ = -1;   // 又有活干：表情收起
+        }
         int mood = made_sprite::Mood::kIdle;
         if (!connection_error.empty()) mood = made_sprite::Mood::kOffline;
         else if (voice.phase == vibe_voice::Phase::Recording || voice.phase == vibe_voice::Phase::Uploading)
             mood = made_sprite::Mood::kTalking;
+        else if (sprite_transient_mood_ >= 0 &&
+                 static_cast<int32_t>(lv_tick_get() - sprite_transient_until_) < 0)
+            mood = sprite_transient_mood_;
         else if (task_status == "waiting_confirmation") mood = made_sprite::Mood::kWaitingConfirm;
         else if (task_status == "running" || task_status == "queued") mood = made_sprite::Mood::kRunning;
         made_sprite::update(sprite_stage_, lv_tick_get() - sprite_started_ms_, mood);
