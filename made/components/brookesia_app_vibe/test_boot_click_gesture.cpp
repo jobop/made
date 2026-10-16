@@ -131,11 +131,12 @@ int main()
     {
         Fixture f;
         f.feed(true, 1300);
-        assert((f.decisions == std::vector<Decision>{Decision::Home}));
+        // 长按语义：500ms 先 Hold（开始录音），1200ms Home（取消录音）。
+        assert((f.decisions == std::vector<Decision>{Decision::Hold, Decision::Home}));
         f.feed(false, 60);
-        assert((f.decisions == std::vector<Decision>{Decision::Home}));
+        assert((f.decisions == std::vector<Decision>{Decision::Hold, Decision::Home}));
         f.feed(false, 600);
-        assert(f.decisions.size() == 1);
+        assert(f.decisions.size() == 2);
     }
     {
         BootClickGesture gesture;
@@ -157,12 +158,29 @@ int main()
         f.feed(false, 120);
         f.feed(true, 1250);
         f.feed(false, 600);
-        assert((f.decisions == std::vector<Decision>{Decision::Home}));
+        assert((f.decisions == std::vector<Decision>{Decision::Hold, Decision::Home}));
     }
     {
         Fixture f;
-        f.feed(true, 900); // A medium hold is neither a click nor an exit.
+        f.feed(true, 900); // A medium hold now records: Hold at 500ms.
         f.feed(false, 600);
-        assert(f.decisions.empty());
+        assert((f.decisions == std::vector<Decision>{Decision::Hold, Decision::Release}));
+    }
+    {
+        // 长按说话主流程：按住 2s 说话、松手 → Hold + Release，无 Home。
+        Fixture f;
+        f.feed(true, 2000);
+        f.feed(false, 100);
+        assert((f.decisions == std::vector<Decision>{Decision::Hold, Decision::Home}));
+        // 按住超过 home_press_ms 已 Home（取消），松手不再是 Release。
+        f.feed(false, 600);
+        assert(f.decisions.size() == 2);
+    }
+    {
+        // 按住 700ms（未到 home 阈值）松手 → 干净的 Hold + Release。
+        Fixture f;
+        f.feed(true, 700);
+        f.feed(false, 100);
+        assert((f.decisions == std::vector<Decision>{Decision::Hold, Decision::Release}));
     }
 }

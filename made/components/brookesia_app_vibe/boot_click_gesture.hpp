@@ -11,12 +11,15 @@ namespace esp_brookesia::apps {
 // window open, so a slow follow-up release cannot trigger an earlier action.
 class BootClickGesture {
 public:
-    enum class Decision { None, Voice, Confirm, Cancel, Home };
+    enum class Decision { None, Voice, Confirm, Cancel, Home, Hold, Release };
 
     static constexpr uint32_t debounce_ms = 30;
     static constexpr uint32_t click_gap_ms = 420;
     static constexpr uint32_t max_press_ms = 650;
     static constexpr uint32_t home_press_ms = 1200;
+    // 长按说话：按住该时长即进入录音（Hold），松手结束并发送（Release）。
+    // 按住继续超过 home_press_ms 仍报 Home（=取消录音，与旧语义一致）。
+    static constexpr uint32_t voice_hold_ms = 500;
 
     void reset()
     {
@@ -25,6 +28,7 @@ public:
         stable_pressed_ = false;
         ignore_initial_press_ = false;
         home_sent_ = false;
+        hold_sent_ = false;
         clicks_ = 0;
         raw_changed_ms_ = 0;
         press_started_ms_ = 0;
@@ -58,14 +62,22 @@ public:
             } else if (home_sent_) {
                 // The hold already requested exit. Its release is not a click.
                 home_sent_ = false;
+                hold_sent_ = false;
                 ignore_initial_press_ = false;
                 clicks_ = 0;
             } else if (now_ms - press_started_ms_ >= home_press_ms) {
                 // Fallback if the task sampled the release just after the
                 // threshold and missed the exact held-state transition.
                 ignore_initial_press_ = false;
+                hold_sent_ = false;
                 clicks_ = 0;
                 return Decision::Home;
+            } else if (hold_sent_) {
+                // 长按录音的松手：结束录音并上传（app 层调 vibe_voice::finish()）。
+                hold_sent_ = false;
+                ignore_initial_press_ = false;
+                clicks_ = 0;
+                return Decision::Release;
             } else if (ignore_initial_press_) {
                 ignore_initial_press_ = false;
                 clicks_ = 0;
@@ -78,6 +90,15 @@ public:
             } else {
                 clicks_ = 0;
             }
+        }
+
+        // 长按说话：按住达到阈值即开始录音（在 Home 之前判定，松手由
+        // Release 分支收尾）。快速单击/双击/三击因按压时长不足而不触发。
+        if (stable_pressed_ && !home_sent_ && !hold_sent_ &&
+            now_ms - press_started_ms_ >= voice_hold_ms) {
+            hold_sent_ = true;
+            clicks_ = 0;
+            return Decision::Hold;
         }
 
         // Trigger while BOOT is held. Requiring a release made a long press
@@ -109,6 +130,7 @@ private:
     bool stable_pressed_ = false;
     bool ignore_initial_press_ = false;
     bool home_sent_ = false;
+    bool hold_sent_ = false;
     unsigned clicks_ = 0;
     uint64_t raw_changed_ms_ = 0;
     uint64_t press_started_ms_ = 0;

@@ -1300,7 +1300,18 @@ void VibeCoding::buttonLoop()
                 } else if (settings_open_.load() || delete_dialog_open_.load()) {
                     // The settings keyboard owns touch input; no task action
                     // should be triggered by a stray BOOT click while editing.
+                } else if (decision == BootClickGesture::Decision::Hold) {
+                    // 长按说话：按住开始录音，松手（Release）立即发送。
+                    startVoice(/*hold_mode=*/true);
+                } else if (decision == BootClickGesture::Decision::Release) {
+                    {
+                        std::lock_guard<std::mutex> lock(voice_action_mutex_);
+                        vibe_voice::finish();
+                    }
                 } else if (decision == BootClickGesture::Decision::Voice) {
+                    // 兼容路径：单击仍可点击式录音（VAD 自动停），且承担
+                    // 未配对时的 BOOT 配对重试（startVoice 内部处理）。主交互
+                    // 已改为长按说话，UI 文案引导新方式。
                     startVoice();
                 } else {
                     std::lock_guard<std::mutex> lock(voice_action_mutex_);
@@ -3073,7 +3084,7 @@ void VibeCoding::requestNewSession()
     ++model_.revision;
 }
 
-void VibeCoding::startVoice()
+void VibeCoding::startVoice(bool hold_mode)
 {
     std::lock_guard<std::mutex> voice_lock(voice_action_mutex_);
     if (!canOperate()) return;
@@ -3124,7 +3135,7 @@ void VibeCoding::startVoice()
             hint = T("当前任务没有项目，请在电脑端设置");
         } else {
             if (vibe_voice::start(pairing.url, pairing.token,
-                                  provider_id, project_id, session_id)) {
+                                  provider_id, project_id, session_id, hold_mode)) {
                 submitted_task_seen_ = false;
                 started = true;
                 started_session_id = session_id;
@@ -3890,7 +3901,7 @@ void VibeCoding::render()
         const std::string empty_message = !snapshot.connection_error.empty() ? own_error :
             !snapshot.session_notice.empty() ? own_session_notice :
             !provider_ready ? (provider.reason.empty() ? T("请先在电脑端启用此助手") : provider.reason) :
-            T("先创建任务，再单击 BOOT 说话。左右滑动换助手。");
+            T("先创建任务，再按住 BOOT 说话。左右滑动换助手。");
         showAnswer(provider.id + "/no-session", empty_message);
         {
             std::lock_guard<std::mutex> lock(model_mutex_);
@@ -3933,12 +3944,13 @@ void VibeCoding::render()
         displayed_task_id_.clear();
         lv_label_set_text(instruction_label_, !snapshot.session_notice.empty() ? own_session_notice.c_str() :
                           !voice_notice.empty() ? voice_notice.c_str() :
-                          provider_ready ? T("还没有对话 · 单击 BOOT 说话") : T("电脑端助手不可用"));
+                          provider_ready ? T("还没有对话 · 按住 BOOT 说话") : T("电脑端助手不可用"));
         const std::string result = !snapshot.connection_error.empty() ? own_error :
             !config_loaded_.load() ? T("正在读取电脑设置") :
             !snapshot.session_notice.empty() ? own_session_notice :
             !voice_available_.load() ? T("在电脑工作台设置语音识别") :
-            voice.phase == vibe_voice::Phase::Recording ? T("说完后稍等，会自动发送。") :
+            voice.phase == vibe_voice::Phase::Recording ?
+                (voice.hold_mode ? T("按住说话中，松手即发送。") : T("说完后稍等，会自动发送。")) :
             voice.phase == vibe_voice::Phase::Uploading ? T("正在识别语音…") :
             !voice_notice.empty() ? voice_notice :
             provider.external_unscoped ? T("此助手任务隔离受限，请在电脑端核对。") :
@@ -5428,7 +5440,7 @@ void VibeCoding::createSession(const std::string &provider_id, const std::string
                 visible_task_id_.clear();
                 model_.session_notice = provider->external_unscoped ?
                     T("此助手任务上下文可能共享，请在电脑端核对") :
-                    T("任务已创建，单击 BOOT 说话");
+                    T("任务已创建，按住 BOOT 说话");
             }
         } else if (selectedProviderLocked().id == provider_id) {
             model_.session_notice = std::move(notice);

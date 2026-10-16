@@ -38,9 +38,11 @@ const char* kTag = "vibe_voice";
 portMUX_TYPE state_lock = portMUX_INITIALIZER_UNLOCKED;
 std::atomic<bool> busy{false};
 std::atomic<bool> cancel_requested{false};
+std::atomic<bool> finish_requested{false};
+std::atomic<bool> hold_mode{false};
 std::atomic<bool> usb_upload_active{false};
 Phase current_phase = Phase::Idle;
-char current_message[128] = "单击 BOOT 开始录音";
+char current_message[128] = "按住 BOOT 说话，松手发送";
 char current_task_id[41] = {};
 
 struct Parameters {
@@ -336,8 +338,9 @@ void record_task(void* argument) {
         auto* mono = reinterpret_cast<int16_t*>(wav + kWavHeaderSize);
         alignas(4) int16_t tdm[256 * 4] = {};
         VoiceActivityDetector detector;
-        set_status(Phase::Recording, "正在听，请说话");
-        while (!cancel_requested.load() && samples < kMaxSamples) {
+        const bool holding = hold_mode.load();
+        set_status(Phase::Recording, holding ? "按住说话，松手即发送" : "正在听，请说话");
+        while (!cancel_requested.load() && !finish_requested.load() && samples < kMaxSamples) {
             size_t bytes = 0;
             const esp_err_t read = bsp_extra_i2s_read(tdm, sizeof(tdm), &bytes, 250);
             if (read != ESP_OK || bytes == 0) {
@@ -358,10 +361,14 @@ void record_task(void* argument) {
             samples += accepted_frames;
             const auto event = detector.observe(mono + first_sample, samples - first_sample);
             if (event == VoiceActivityDetector::Event::SpeechStarted) {
-                set_status(Phase::Recording, "已听到语音，停顿后自动发送");
+                set_status(Phase::Recording, holding ? "松手即发送" : "已听到语音，停顿后自动发送");
             } else if (event == VoiceActivityDetector::Event::Complete) {
-                break;
+                // 长按模式完全由松手控制结束（用户明确要求不等静音）；
+                // VAD 模式保留静音自动上传作为兜底。
+                if (!holding) break;
             } else if (event == VoiceActivityDetector::Event::NoSpeech) {
+                // 长按模式用户还按着，可能只是在组织语言，不自动终止。
+                if (holding) continue;
                 ESP_LOGW(kTag, "No speech: MIC1 max level=%u, MIC2 max level=%u, MIC2 blocks=%u",
                          mic1_max_level, mic2_max_level, mic2_blocks);
                 set_status(Phase::Error, "没听到语音，请单击 BOOT 重试");
@@ -378,8 +385,9 @@ void record_task(void* argument) {
             break;
         }
         if (status().phase == Phase::Error) break;
+        if (finish_requested.load()) finish_requested.store(false);
         if (!detector.heardSpeech()) {
-            set_status(Phase::Error, "没听到语音，请单击 BOOT 重试");
+            set_status(Phase::Error, "没听到语音，请按住 BOOT 重试");
             break;
         }
         if (samples < kMinSamples) {
@@ -421,7 +429,7 @@ void record_task(void* argument) {
 
 bool start(const std::string& bridge_url, const std::string& token,
            const std::string& provider, const std::string& project_id,
-           const std::string& session_id) {
+           const std::string& session_id, bool hold) {
     if (busy.exchange(true)) return false;
     if ((bridge_url.rfind("http://", 0) != 0 && bridge_url.rfind("https://", 0) != 0) ||
         (bridge_url.rfind("https://", 0) == 0 && !vibe_pairing::tls_time_ready()) ||
@@ -440,7 +448,10 @@ bool start(const std::string& bridge_url, const std::string& token,
     }
     while (!parameters->url.empty() && parameters->url.back() == '/') parameters->url.pop_back();
     cancel_requested.store(false);
-    ESP_LOGI(kTag, "Recording requested for provider=%s", provider.c_str());
+    finish_requested.store(false);
+    hold_mode.store(hold);
+    ESP_LOGI(kTag, "Recording requested for provider=%s, mode=%s", provider.c_str(),
+             hold ? "hold-to-talk" : "vad");
     ESP_LOGW(kTag, "Memory before voice task: free=%lu largest_internal=%lu total_internal=%lu",
              (unsigned long)esp_get_free_heap_size(),
              (unsigned long)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
@@ -459,6 +470,14 @@ bool start(const std::string& bridge_url, const std::string& token,
         return false;
     }
     return true;
+}
+
+void finish() {
+    // 长按模式的松手：Recording 阶段置位即可让 record_task 跳出循环进入
+    // 上传路径；其余阶段（Uploading/Submitted）忽略——松手晚了不该重复提交。
+    if (busy.load() && current_phase == Phase::Recording) {
+        finish_requested.store(true);
+    }
 }
 
 void cancel() {
@@ -482,12 +501,13 @@ Status status() {
     char message[sizeof(current_message)] = {};
     char task_id[sizeof(current_task_id)] = {};
     Phase phase;
+    const bool holding = hold_mode.load();
     portENTER_CRITICAL(&state_lock);
     phase = current_phase;
     std::memcpy(message, current_message, sizeof(message));
     std::memcpy(task_id, current_task_id, sizeof(task_id));
     portEXIT_CRITICAL(&state_lock);
-    return {phase, vibe_i18n::message(message), task_id};
+    return {phase, vibe_i18n::message(message), task_id, holding};
 }
 
 }  // namespace vibe_voice

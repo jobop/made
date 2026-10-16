@@ -218,7 +218,7 @@ private:
     void setConnectionError(std::string error);
     void queueActionForId(const char *verb, const std::string &task_id);
     void queueSubmittedVoiceCancel(const std::string &task_id);
-    void startVoice();
+    void startVoice(bool hold_mode = false);
     void showAnswer(const std::string &scope, const std::string &text);
     void render();
     void layoutReadableText();
