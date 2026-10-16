@@ -45,6 +45,35 @@ test('Codex 分段 JSONL 提供阶段进度，最终答复完整保留，命令�
   assert.equal(failed.stream.finish().error, '编程工具报告任务失败');
 });
 
+test('Codex 瞬时 error 事件后 turn.completed 收尾：成功，不误判失败', () => {
+  // 回归（2026-10-16 小鱼任务）：codex --json 流中途吐过可恢复 error（流重试），
+  // 最终 task_complete；桥接器只看首个错误把任务判死。终局以最后 outcome 为准。
+  const recovered = streamFor('codex');
+  recovered.stream.write(line({ type: 'thread.started', thread_id: '0199a213-81c0-7800-8aa1-bbab2a035a99' }));
+  recovered.stream.write(line({ type: 'turn.started' }));
+  recovered.stream.write(line({ type: 'error', message: 'stream disconnected before completion' }));
+  recovered.stream.write(line({ type: 'item.completed', item: { type: 'agent_message', text: '完成了。' } }));
+  recovered.stream.write(line({ type: 'turn.completed' }));
+  const finished = recovered.stream.finish();
+  assert.equal(finished.error, '');
+  assert.equal(finished.result, '完成了。');
+
+  // 反向：先成功后真失败，仍然算失败（最后 outcome 定胜负）。
+  const failedLate = streamFor('codex');
+  failedLate.stream.write(line({ type: 'turn.completed' }));
+  failedLate.stream.write(line({ type: 'turn.failed', message: 'boom' }));
+  assert.equal(failedLate.stream.finish().error, '编程工具报告任务失败');
+});
+
+test('result 终态事件：先错误后成功同样以最后 outcome 为准', () => {
+  const recovered = streamFor('qoder');
+  recovered.stream.write(line({ type: 'result', subtype: 'error_during_execution', is_error: true, errors: ['transient'] }));
+  recovered.stream.write(line({ type: 'result', subtype: 'success', is_error: false, result: '最终答复' }));
+  const finished = recovered.stream.finish();
+  assert.equal(finished.error, '');
+  assert.equal(finished.result, '最终答复');
+});
+
 test('Cursor stream-json 解析工具事件和最后结果，忽略正文中的伪造会话号', () => {
   const { stream, progress, sessions } = streamFor('cursor');
   const id = 'c6b62c6f-7ead-4fd6-9922-e952131177ff';

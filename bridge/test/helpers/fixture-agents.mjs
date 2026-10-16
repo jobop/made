@@ -19,6 +19,9 @@ function cliAgent({ id, label, icon, command, classifyExit, probe, model }) {
     id === 'codex' ? (event, state) => {
           const sessionId = event.type === 'thread.started' ? event.thread_id : undefined;
           if (event.item?.type === 'agent_message' && event.type === 'item.completed' && typeof event.item.text === 'string') state.lastMessage = event.item.text;
+          // 终局以最后一个 outcome 为准：codex 的 --json 流里 error 事件可能是
+          // 可恢复的瞬时错误（流断开重试），turn.completed 才是本回合结局。
+          if (event.type === 'turn.completed') state.terminalError = '';
           if (event.type === 'turn.failed' || event.type === 'error') state.terminalError = '编程工具报告任务失败';
           let activity = '';
           if (event.type === 'turn.started') activity = '正在分析任务';

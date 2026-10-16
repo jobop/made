@@ -88,5 +88,9 @@ export function assistantEvent(event, state, { append = false } = {}) {
   } else if (event.type === 'result') {
     if (typeof event.result === 'string') state.finalResult = event.result;
     if (event.is_error || (event.subtype && event.subtype !== 'success')) state.terminalError = '编程工具报告任务失败';
+    // 终局事件以最后 outcome 为准：部分 CLI 会先吐可恢复错误（如流断开重试）、
+    // 随后仍以 success 收尾（实测 2026-10-16 小鱼任务：codex 自身 task_complete，
+    // 桥接器却因早前的 error 事件判死）。先失败后成功 = 成功；只看首个终态会假失败。
+    else if (event.subtype === 'success' || event.is_error === false) state.terminalError = '';
   } else if (event.type === 'turn.failed') state.terminalError = '编程工具报告任务失败';
 }
