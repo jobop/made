@@ -12,6 +12,8 @@
 #include <esp_log.h>
 #include <mbedtls/sha256.h>
 
+#include "vibe_wifi.hpp"
+
 #include <vector>
 
 namespace made_sprite_cache {
@@ -187,6 +189,8 @@ bool ensure(const std::string &provider, const vibe_provider::SpriteInfo &sprite
     }
 
     // 慢路径：逐文件分片下载 → 哈希校验 → 原子落盘。
+    // 下载窗口关 WiFi 省电：弱信号 + 300ms listen interval 曾致分片超时。
+    vibe_wifi::WifiThroughput wifi_boost;
     std::vector<std::string> downloaded;
     for (const auto &file : sprite.files) {
         const std::string target = pathFor(prefix, file.file);

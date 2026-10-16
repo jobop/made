@@ -30,6 +30,20 @@ bool receiver_active();
 // True after the user joins a network from 网络设置, until they explicitly
 // connect the receiver hotspot again.
 bool station_held();
+
+// 传输敏感期临时关闭 Wi-Fi modem 省电（默认 MIN_MODEM 的 listen interval
+// 约 300ms，弱信号下 HTTP 建连与分片传输频繁超时：语音上传、素材下载
+// 实测 RSSI -83 时全部卡死）。引用计数支持嵌套；设备常供电，PS_NONE
+// 期间功耗上升可接受。RAII guard 见下方 WifiThroughput。
+void begin_high_throughput();
+void end_high_throughput();
+
+struct WifiThroughput {
+    WifiThroughput() { begin_high_throughput(); }
+    ~WifiThroughput() { end_high_throughput(); }
+    WifiThroughput(const WifiThroughput&) = delete;
+    WifiThroughput& operator=(const WifiThroughput&) = delete;
+};
 int disconnect_reason();
 
 enum class ReceiverScanState { Idle, Scanning, Done, Failed };

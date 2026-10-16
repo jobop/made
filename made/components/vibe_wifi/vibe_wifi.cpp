@@ -813,4 +813,29 @@ bool is_connected() {
     return connected.load();
 }
 
+namespace {
+std::mutex throughput_mutex;
+int throughput_users = 0;
+}  // namespace
+
+void begin_high_throughput() {
+    std::lock_guard<std::mutex> lock(throughput_mutex);
+    ++throughput_users;
+    if (throughput_users == 1) {
+        // 未连接时调用会报 ESP_ERR_WIFI_IF 之类，无碍：连接后的首个
+        // begin 再切也来得及（guard 常驻整个传输窗口）。
+        const esp_err_t error = esp_wifi_set_ps(WIFI_PS_NONE);
+        ESP_LOGD(kTag, "high throughput on: esp_wifi_set_ps(NONE)=%s", esp_err_to_name(error));
+    }
+}
+
+void end_high_throughput() {
+    std::lock_guard<std::mutex> lock(throughput_mutex);
+    if (throughput_users <= 0) return;  // 不平衡调用防御
+    --throughput_users;
+    if (throughput_users == 0) {
+        (void)esp_wifi_set_ps(WIFI_PS_MIN_MODEM);
+    }
+}
+
 } // namespace vibe_wifi

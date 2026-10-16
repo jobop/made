@@ -22,6 +22,7 @@
 #include "tdm_mic_selector.hpp"
 #include "vibe_pairing.hpp"
 #include "vibe_usb.hpp"
+#include "vibe_wifi.hpp"
 #include "voice_activity_detector.hpp"
 
 namespace vibe_voice {
@@ -303,6 +304,10 @@ bool upload(const Parameters& parameters, const uint8_t* wav, size_t size,
 
 void record_task(void* argument) {
     std::unique_ptr<Parameters> parameters(static_cast<Parameters*>(argument));
+    // 录音到上传全程关 WiFi 省电：弱信号下 MIN_MODEM 的 300ms listen
+    // interval 会让上传建连超时（2026-10-17 实测 RSSI -83 时语音/素材
+    // 全部卡死）。guard 到任务出口统一释放。
+    vibe_wifi::WifiThroughput wifi_boost;
     uint8_t* wav = nullptr;
     bool audio_owned = false;
     size_t samples = 0;
