@@ -131,12 +131,12 @@ int main()
     {
         Fixture f;
         f.feed(true, 1300);
-        // 长按语义：500ms 先 Hold（开始录音），1200ms Home（取消录音）。
-        assert((f.decisions == std::vector<Decision>{Decision::Hold, Decision::Home}));
+        // hold 武装时长按完全归录音：500ms Hold，无 Home（实测旧版会在
+        // 1.2s 发 Home 取消录音，说话必被杀）。
+        assert((f.decisions == std::vector<Decision>{Decision::Hold}));
         f.feed(false, 60);
-        assert((f.decisions == std::vector<Decision>{Decision::Hold, Decision::Home}));
         f.feed(false, 600);
-        assert(f.decisions.size() == 2);
+        assert((f.decisions == std::vector<Decision>{Decision::Hold, Decision::Release}));
     }
     {
         BootClickGesture gesture;
@@ -147,10 +147,23 @@ int main()
             const auto step = gesture.update(true, now += 10);
             if (step != Decision::None) decision = step;
         }
-        assert(decision == Decision::Home);
-        for (int i = 0; i < 20; ++i) {
-            assert(gesture.update(false, now += 10) == Decision::None);
+        // hold 武装：开场即按住也走录音（Hold）。
+        assert(decision == Decision::Hold);
+        // 松手收尾 Release（旧版这里被 Home 吞掉，导致松手不发送——实测踩坑）。
+        Decision release = Decision::None;
+        for (int i = 0; i < 40; ++i) {
+            const auto step = gesture.update(false, now += 10);
+            if (step != Decision::None) release = step;
         }
+        assert(release == Decision::Release);
+    }
+    {
+        // hold 不武装（voice 不可用）：长按保留旧 Home 语义。
+        Fixture f;
+        f.gesture.setHoldArmed(false);
+        f.feed(true, 1300);
+        f.feed(false, 600);
+        assert((f.decisions == std::vector<Decision>{Decision::Home}));
     }
     {
         Fixture f;
@@ -158,7 +171,7 @@ int main()
         f.feed(false, 120);
         f.feed(true, 1250);
         f.feed(false, 600);
-        assert((f.decisions == std::vector<Decision>{Decision::Hold, Decision::Home}));
+        assert((f.decisions == std::vector<Decision>{Decision::Hold, Decision::Release}));
     }
     {
         Fixture f;
@@ -171,10 +184,7 @@ int main()
         Fixture f;
         f.feed(true, 2000);
         f.feed(false, 100);
-        assert((f.decisions == std::vector<Decision>{Decision::Hold, Decision::Home}));
-        // 按住超过 home_press_ms 已 Home（取消），松手不再是 Release。
-        f.feed(false, 600);
-        assert(f.decisions.size() == 2);
+        assert((f.decisions == std::vector<Decision>{Decision::Hold, Decision::Release}));
     }
     {
         // 按住 700ms（未到 home 阈值）松手 → 干净的 Hold + Release。

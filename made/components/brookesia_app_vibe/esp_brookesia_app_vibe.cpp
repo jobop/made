@@ -1281,6 +1281,10 @@ void VibeCoding::buttonLoop()
         }
 
         const bool pressed = gpio_get_level(GPIO_NUM_0) == 0;
+        // hold 是否武装：voice 可用且不在设置/删除弹窗时，长按归说话；
+        // 否则长按保留旧 Home 语义。
+        gesture.setHoldArmed(voice_available_.load() &&
+                             !settings_open_.load() && !delete_dialog_open_.load());
         const bool had_sequence = gesture.sequenceActive();
         const auto decision = gesture.update(pressed, esp_timer_get_time() / 1000);
         if (!had_sequence && gesture.sequenceActive()) {
@@ -1309,10 +1313,9 @@ void VibeCoding::buttonLoop()
                         vibe_voice::finish();
                     }
                 } else if (decision == BootClickGesture::Decision::Voice) {
-                    // 兼容路径：单击仍可点击式录音（VAD 自动停），且承担
-                    // 未配对时的 BOOT 配对重试（startVoice 内部处理）。主交互
-                    // 已改为长按说话，UI 文案引导新方式。
-                    startVoice();
+                    // 单击不再录音（长按说话是主交互），但保留配对重试与
+                    // 各类提示；配对/配置正常时只提示新交互方式。
+                    startVoice(/*hold_mode=*/false, /*allow_record=*/false);
                 } else {
                     std::lock_guard<std::mutex> lock(voice_action_mutex_);
                     const auto voice = vibe_voice::status();
@@ -3084,7 +3087,7 @@ void VibeCoding::requestNewSession()
     ++model_.revision;
 }
 
-void VibeCoding::startVoice(bool hold_mode)
+void VibeCoding::startVoice(bool hold_mode, bool allow_record)
 {
     std::lock_guard<std::mutex> voice_lock(voice_action_mutex_);
     if (!canOperate()) return;
@@ -3133,6 +3136,10 @@ void VibeCoding::startVoice(bool hold_mode)
             hint = T("点右上角 + 创建任务");
         } else if (project_id.empty()) {
             hint = T("当前任务没有项目，请在电脑端设置");
+        } else if (!allow_record) {
+            // 单击路径：一切就绪也不录音，引导长按说话（录音仅由 Hold 触发
+            // 或远程 voice.start 发起）。
+            hint = T("请按住 BOOT 说话，松手即发送");
         } else {
             if (vibe_voice::start(pairing.url, pairing.token,
                                   provider_id, project_id, session_id, hold_mode)) {

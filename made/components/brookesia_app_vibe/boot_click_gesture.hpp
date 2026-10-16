@@ -18,7 +18,8 @@ public:
     static constexpr uint32_t max_press_ms = 650;
     static constexpr uint32_t home_press_ms = 1200;
     // 长按说话：按住该时长即进入录音（Hold），松手结束并发送（Release）。
-    // 按住继续超过 home_press_ms 仍报 Home（=取消录音，与旧语义一致）。
+    // hold_armed_（voice 可用）时长按完全归属录音：Home 不再触发，取消
+    // 录音用三击。hold 不可用时保留旧的长按 Home 语义。
     static constexpr uint32_t voice_hold_ms = 500;
 
     void reset()
@@ -29,11 +30,15 @@ public:
         ignore_initial_press_ = false;
         home_sent_ = false;
         hold_sent_ = false;
+        hold_armed_ = true;
         clicks_ = 0;
         raw_changed_ms_ = 0;
         press_started_ms_ = 0;
         last_released_ms_ = 0;
     }
+
+    // App 层每轮喂：voice 不可用/设置打开时 hold 不武装，长按回落到 Home。
+    void setHoldArmed(bool armed) { hold_armed_ = armed; }
 
     bool sequenceActive() const { return stable_pressed_ || clicks_ > 0; }
 
@@ -65,6 +70,14 @@ public:
                 hold_sent_ = false;
                 ignore_initial_press_ = false;
                 clicks_ = 0;
+            } else if (hold_sent_) {
+                // 长按录音的松手：结束录音并上传（app 层调 vibe_voice::finish()）。
+                // 必须先于 home fallback 判定：正常说话长按必然超过
+                // home_press_ms，顺序反了松手会被错判成 Home（实测踩坑）。
+                hold_sent_ = false;
+                ignore_initial_press_ = false;
+                clicks_ = 0;
+                return Decision::Release;
             } else if (now_ms - press_started_ms_ >= home_press_ms) {
                 // Fallback if the task sampled the release just after the
                 // threshold and missed the exact held-state transition.
@@ -72,12 +85,6 @@ public:
                 hold_sent_ = false;
                 clicks_ = 0;
                 return Decision::Home;
-            } else if (hold_sent_) {
-                // 长按录音的松手：结束录音并上传（app 层调 vibe_voice::finish()）。
-                hold_sent_ = false;
-                ignore_initial_press_ = false;
-                clicks_ = 0;
-                return Decision::Release;
             } else if (ignore_initial_press_) {
                 ignore_initial_press_ = false;
                 clicks_ = 0;
@@ -94,7 +101,7 @@ public:
 
         // 长按说话：按住达到阈值即开始录音（在 Home 之前判定，松手由
         // Release 分支收尾）。快速单击/双击/三击因按压时长不足而不触发。
-        if (stable_pressed_ && !home_sent_ && !hold_sent_ &&
+        if (hold_armed_ && stable_pressed_ && !home_sent_ && !hold_sent_ &&
             now_ms - press_started_ms_ >= voice_hold_ms) {
             hold_sent_ = true;
             clicks_ = 0;
@@ -104,7 +111,9 @@ public:
         // Trigger while BOOT is held. Requiring a release made a long press
         // appear broken on the physical board. A press already held when the
         // listener starts can still exit after the full hold interval.
-        if (stable_pressed_ && !home_sent_ &&
+        // hold_armed_ 时长按归属录音（Hold 已在 500ms 触发），Home 不参与——
+        // 否则说话超过 1.2s 会被当成 Home 取消录音（实测踩坑）。
+        if (!hold_armed_ && stable_pressed_ && !home_sent_ && !hold_sent_ &&
             now_ms - press_started_ms_ >= home_press_ms) {
             home_sent_ = true;
             clicks_ = 0;
@@ -131,6 +140,7 @@ private:
     bool ignore_initial_press_ = false;
     bool home_sent_ = false;
     bool hold_sent_ = false;
+    bool hold_armed_ = true;
     unsigned clicks_ = 0;
     uint64_t raw_changed_ms_ = 0;
     uint64_t press_started_ms_ = 0;
