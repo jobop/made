@@ -553,8 +553,10 @@ bool VibeCoding::run()
     lv_obj_center(settings_back_icon);
     lv_obj_remove_flag(settings_back_icon, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_t *settings_rows = lv_obj_create(settings_home_);
-    lv_obj_set_pos(settings_rows, made_page_x(24), made_page_y(76));
-    lv_obj_set_size(settings_rows, made_page_w(312), made_page_y(348) - made_page_y(76));
+    // 行宽与任务页回显卡片同几何（x12 宽 336）：行右缘离屏边 12 设计像素，
+    // chevron 与分隔线随之贴右，右侧不再留一整条空白带（2026-10-17 真机反馈）。
+    lv_obj_set_pos(settings_rows, made_page_x(12), made_page_y(76));
+    lv_obj_set_size(settings_rows, made_page_w(336), made_page_y(348) - made_page_y(76));
     lv_obj_set_style_bg_opa(settings_rows, LV_OPA_TRANSP, 0);
     lv_obj_set_style_border_width(settings_rows, 0, 0);
     lv_obj_set_style_pad_all(settings_rows, 0, 0);
@@ -571,7 +573,7 @@ bool VibeCoding::run()
         lv_obj_remove_flag(label, LV_OBJ_FLAG_CLICKABLE);
     };
     auto settings_row = [&](int y, const char *symbol, const char *key, lv_event_cb_t cb) {
-        lv_obj_t *row = touchButton(settings_rows, 0, 0, 312, 46, nullptr, cb, this);
+        lv_obj_t *row = touchButton(settings_rows, 0, 0, 336, 46, nullptr, cb, this);
         lv_obj_set_pos(row, 0, made_s(y));
         // Air 语言：行透明无边框，按下整行泛灰；底部 1px 分隔线从文字左缘
         // 开始（iOS 式），不再用实底胶囊行——界面从「色块堆叠」变「线条留白」。
@@ -1066,9 +1068,11 @@ bool VibeCoding::run()
     // 把平铺在主页的任务/回显/会话/设置控件整体搬进抽屉，重排为抽屉版式。
     // 纵向用 made_page_y 全高映射：矩形竖屏上内容铺满屏，不再挤在上半截。
     // 行序：提示 / 任务行(chip+徽章+标题) / 指令 / 活动条 / 回显。
+    // 左缘与标题行（x24）对齐：卡片内文字 = 卡片 12 + 内边距 12 = 24，
+    // 三层文本共用一条左基线（真机上「你：」比标题探出 8 设计像素，2026-10-17）。
     lv_obj_set_parent(instruction_label_, drawer_);
-    lv_obj_set_pos(instruction_label_, made_x(12), made_page_y(104));
-    lv_obj_set_width(instruction_label_, made_s(336));
+    lv_obj_set_pos(instruction_label_, made_x(24), made_page_y(104));
+    lv_obj_set_width(instruction_label_, made_s(312));
     // 指令行固定一行高（设计定稿）：超长 LONG_DOT 截断，省出的一行让给回显卡片。
     lv_obj_set_height(instruction_label_, lv_font_get_line_height(drawer_text_font) + 2);
     lv_obj_set_style_text_font(instruction_label_, drawer_text_font, 0);
@@ -4248,8 +4252,11 @@ void VibeCoding::applyDrawerAnswerLayout()
     lv_obj_set_style_border_width(answer_area_, 1, 0);
     lv_obj_set_style_radius(answer_area_, made_radius(16), 0);
     lv_obj_set_style_pad_all(answer_area_, made_s(12), 0);
-    // 内容内缩交给 pad，result_label_ 归位到内容区原点。
+    // 内容内缩交给 pad，result_label_ 归位到内容区原点；宽度必须显式钉在
+    // 内容区（卡片宽 - 左右内边距），否则沿用主页旧宽会把字画出卡片右缘。
     lv_obj_set_pos(result_label_, 0, 0);
+    lv_obj_set_width(result_label_, made_s(336) - made_s(24));
+    lv_label_set_long_mode(result_label_, LV_LABEL_LONG_WRAP);
 }
 
 void VibeCoding::renderStatusBadge(const std::string &status)
@@ -4275,12 +4282,14 @@ void VibeCoding::renderStatusBadge(const std::string &status)
     }
     lv_obj_set_style_bg_color(status_badge_, lv_color_hex(bg), 0);
     lv_obj_set_style_bg_color(status_badge_dot_, lv_color_hex(dot), 0);
-    // 右缘对齐：宽度随状态词变化，文字更新后按实际宽度贴右（留 2 设计像素边距）。
+    // 右缘对齐：先落文字再量宽（徽章是 SIZE_CONTENT，先定位后改字会用上一
+    // 个状态的旧宽——首帧宽度 0 直接把徽章定位到屏幕外，真机实锤），
+    // 边距 12 设计像素，与卡片右缘（x348）里外呼应。
+    lv_label_set_text(status_badge_label_, statusName(status));
     lv_obj_update_layout(status_badge_);
-    lv_obj_set_pos(status_badge_, made_screen_w() - lv_obj_get_width(status_badge_) - made_s(2),
+    lv_obj_set_pos(status_badge_, made_screen_w() - lv_obj_get_width(status_badge_) - made_s(12),
                    made_page_y(44));
     lv_obj_set_style_text_color(status_badge_label_, lv_color_hex(text), 0);
-    lv_label_set_text(status_badge_label_, statusName(status));
 }
 
 void VibeCoding::setActivityRunning(bool running)

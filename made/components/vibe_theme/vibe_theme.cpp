@@ -33,30 +33,30 @@ constexpr const char *kSoundPath = "/spiffs/theme_chime.wav";
 constexpr size_t kMaxSoundBytes = 256 * 1024;  // USB 帧转发单响应上限
 constexpr size_t kUsbResponseLimit = 256 * 1024;  // 与 vibe_usb kMaxResponse 对齐
 
-// 内置默认主题：浅色清新（米白微绿底 + 青绿点缀）。
-// 对比度按 puhui 16px 点阵小字核算：正文 ≥6:1，提示 ≥4.5:1。
+// 内置默认主题：莫兰迪灰调（暖燕麦底 + 灰绿点缀，整体低饱和不刺眼）。
+// 对比度按 puhui 16px 点阵小字核算：正文 ≥7:1，提示 ≥3.5:1。
 Palette defaults() {
     return Palette{
-        .accent = 0x12A182,
-        .btn_normal = 0xDDEBE4,
-        .btn_cancel = 0xE7EDE9,
-        .border = 0xD5E2DB,
-        .text_primary = 0x20302A,
-        .text_secondary = 0x54685E,
-        .text_hint = 0x7C9184,
-        .text_accent = 0x0B7D62,
-        .text_answer = 0x5C7168,
-        .text_on_accent = 0xFFFFFF,
-        .title = 0x16241E,
-        .bg_page = 0xF2F6F3,
-        .bg_panel = 0xFFFFFF,
-        .bg_row = 0xE6EEEA,
-        .home_bg = 0xE7F2EB,
-        .danger = 0xB3475C,
-        .chip_accent = 0xD5F0E4,
-        .danger_soft = 0xF8E3E8,
-        .warning = 0xDD8A12,
-        .success = 0x2BA05C,
+        .accent = 0x6F8F87,
+        .btn_normal = 0xE2DFD8,
+        .btn_cancel = 0xE9E6E0,
+        .border = 0xD7D3CA,
+        .text_primary = 0x3B403D,
+        .text_secondary = 0x6C736E,
+        .text_hint = 0x8D938C,
+        .text_accent = 0x5A7A72,
+        .text_answer = 0x737C76,
+        .text_on_accent = 0xF7F6F2,
+        .title = 0x333936,
+        .bg_page = 0xEFECE6,
+        .bg_panel = 0xF7F5F1,
+        .bg_row = 0xE4E1DA,
+        .home_bg = 0xE3E5DC,
+        .danger = 0xA5676E,
+        .chip_accent = 0xDDE3DD,
+        .danger_soft = 0xE9DEDC,
+        .warning = 0xC09566,
+        .success = 0x7E9B84,
     };
 }
 
