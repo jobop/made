@@ -4681,6 +4681,25 @@ void VibeCoding::ensureSide(int index)
     std::string target;
     uint32_t version = 0;
     sideTarget(index, target, version);
+    // 临时诊断：侧台不预载时这条日志直接指认是哪个静默分支拦的（5s 限频）。
+    {
+        static uint32_t diag_ms[2] = {0, 0};
+        const uint32_t now_diag = lv_tick_get();
+        if (now_diag - diag_ms[index] > 5000) {
+            diag_ms[index] = now_diag;
+            ESP_LOGI(BUTTON_TAG,
+                "[sprite][diag] side%+d stage=%d main=%d target='%s' ver=%u have='%s/%u' "
+                "defer_ms=%u drag=%d pf(prov='%s' inflight=%d ready=%d) free=%uKB",
+                slot.side, slot.stage ? 1 : 0, sprite_stage_ ? 1 : 0,
+                target.c_str(), (unsigned)version, slot.provider.c_str(),
+                (unsigned)slot.version,
+                (unsigned)(slot.defer_until > now_diag ? slot.defer_until - now_diag : 0),
+                drag_side_, prefetch_provider_.c_str(),
+                made_sprite::prefetchInFlight() ? 1 : 0,
+                made_sprite::prefetchReady() ? 1 : 0,
+                (unsigned)(heap_caps_get_free_size(MALLOC_CAP_SPIRAM) / 1024));
+        }
+    }
     // 常驻的就三套（左中右）。邻居没有素材、或只有一个助手（左右邻居
     // 都是 自己，不值得解码第二份）时，这一侧不该挂着任何东西——
     // 超出范围的旧素材就地回收，PSRAM 让出去。
@@ -4731,6 +4750,16 @@ void VibeCoding::ensureSide(int index)
             other.version = 0;
             other.defer_until = lv_tick_get() + 5000;
         }
+    }
+    // 背向侧补齐门槛（防解码振荡）。4 助手 3 舞台时若两侧全养，空闲会被
+    // 压到 ~880KB，且每次晋升都要回收背向侧重解码——日志实测「补齐后 0.2s
+    // 就被回收」的死循环。只养方向侧（拖动去向，用户马上要看）；背向侧
+    // 仅在空闲充裕（≥2.6MB，够养满 3 套还有富余）时才补，否则宁可留空——
+    // 用户反向滑到它时走缓存直换（~1s，SPIFFS 读+解码，可接受）。
+    // 副收益：空闲地板从 880KB 抬回 ~1.9MB，录音缓冲（940KB）不再贴悬崖。
+    if (index != drag_side_ &&
+        heap_caps_get_free_size(MALLOC_CAP_SPIRAM) < 2600 * 1024) {
+        return;
     }
     // 失败退避：起飞失败/解码失败后 1s 内不白试；重试前必须清 failed/done
     // 残留——prefetchBegin 见这些状态会直接拒绝，不清就是永久卡死。
