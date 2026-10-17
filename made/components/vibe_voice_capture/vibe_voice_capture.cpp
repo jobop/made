@@ -334,6 +334,13 @@ void record_task(void* argument) {
         }
         ESP_LOGI(kTag, "Microphone opened: 16 kHz, 4 TDM slots");
         (void)bsp_extra_codec_mute_set(true);
+        // PSRAM 紧张时打印明细账本（heap_caps_print_heap_info 按能力标志
+        // 分桶给出 free/largest/总量），用于回答「剩余内存去哪了」。
+        if (heap_caps_get_free_size(MALLOC_CAP_SPIRAM) < 1600 * 1024) {
+            ESP_LOGW(kTag, "PSRAM ledger before wav alloc (%u bytes needed):",
+                     (unsigned)(kWavHeaderSize + kMaxSamples * sizeof(int16_t)));
+            heap_caps_print_heap_info(MALLOC_CAP_SPIRAM);
+        }
         wav = static_cast<uint8_t*>(heap_caps_malloc(kWavHeaderSize + kMaxSamples * sizeof(int16_t),
                                                      MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
         if (wav == nullptr) {

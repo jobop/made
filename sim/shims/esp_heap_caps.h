@@ -27,3 +27,4 @@ static inline void heap_caps_free(void *ptr) { free(ptr); }
 static inline size_t heap_caps_get_free_size(uint32_t caps) { (void)caps; return 8 * 1024 * 1024; }
 static inline size_t heap_caps_get_largest_free_block(uint32_t caps) { (void)caps; return 4 * 1024 * 1024; }
 static inline size_t heap_caps_get_total_size(uint32_t caps) { (void)caps; return 8 * 1024 * 1024; }
+static inline void heap_caps_print_heap_info(uint32_t caps) { (void)caps; }

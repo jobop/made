@@ -292,6 +292,8 @@ private:
     void maybeStartPrefetch(int direction);
     void prefetchTick();                   // 每帧：解码完挂上归属侧台+对齐两侧
     void ensureSide(int index);            // 侧台内容对齐相邻助手（按需解码）
+    void reclaimSpriteMemoryForVoice();    // 录音前兜底：侧台/预取让位给录音缓冲
+    bool sprite_held_for_voice_ = false;   // 录音回收过侧台；录音结束后 prefetchTick 解除暂缓
     bool tryPromotePrefetch(const std::string &provider);  // 命中则三指针轮换
     bool sideTarget(int index, std::string &target, uint32_t &version);
     uint32_t spriteVersionOf(const std::string &provider); // 目录里素材的版本号

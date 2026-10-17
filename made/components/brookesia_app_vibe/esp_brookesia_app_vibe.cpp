@@ -3334,6 +3334,7 @@ void VibeCoding::startVoice(bool hold_mode, bool allow_record)
             // 或远程 voice.start 发起）。
             hint = T("请按住 BOOT 说话，松手即发送");
         } else {
+            reclaimSpriteMemoryForVoice();  // PSRAM 紧张时让侧台/预取先腾地方
             if (vibe_voice::start(pairing.url, pairing.token,
                                   provider_id, project_id, session_id, hold_mode)) {
                 submitted_task_seen_ = false;
@@ -4749,6 +4750,44 @@ void VibeCoding::ensureSide(int index)
     }
 }
 
+// 录音前兜底（LVGL 线程，vibe_voice::start 之前调用）。录音缓冲一次要
+// ~940KB PSRAM，而空闲常在 0.8~2.1MB 间波动——贴着悬崖边抽签，波动到
+// 谷底那一刻按下说话就报「录音内存不足」。空间不足时把**非显示中**的
+// 素材资源临时让位：两侧台各一套解码像素 + 在飞/就绪的预取暂存。
+// 主舞台（正显示的助手）不动。录音期间手势全部禁用，不存在边录边补齐
+// 的竞争；defer 30s 覆盖最长录音，结束后 prefetchTick 解除暂缓自动补齐。
+void VibeCoding::reclaimSpriteMemoryForVoice()
+{
+    const size_t kVoiceNeed = 1150 * 1024;  // 录音缓冲 ~940KB + 余量
+    const size_t free_psram = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
+    if (free_psram >= kVoiceNeed) return;
+
+    const uint32_t now = lv_tick_get();
+    if (made_sprite::prefetchInFlight() || made_sprite::prefetchReady() ||
+        !prefetch_provider_.empty()) {
+        made_sprite::prefetchCancel();
+        prefetch_provider_.clear();
+        prefetch_version_ = 0;
+        prefetch_slot_ = -1;
+        ESP_LOGI(BUTTON_TAG, "[voice] prefetch dropped for recording (free=%uKB)",
+                 (unsigned)(free_psram / 1024));
+    }
+    for (SideSlot &slot : sides_) {
+        if (slot.stage && !slot.provider.empty()) {
+            made_sprite::clearArtwork(slot.stage);
+            slot.provider.clear();
+            slot.version = 0;
+            slot.defer_until = now + 30000;  // 录音最长 30s，期间别来抢内存
+        }
+    }
+    drag_side_ = -1;  // 让 ensureSide 的 defer 条件对两侧同时生效
+    sprite_held_for_voice_ = true;
+    ESP_LOGW(BUTTON_TAG,
+             "[voice] sprite reclaim for recording: free=%uKB -> %uKB",
+             (unsigned)(free_psram / 1024),
+             (unsigned)(heap_caps_get_free_size(MALLOC_CAP_SPIRAM) / 1024));
+}
+
 // LVGL 线程。拖动方向已明确：优先补齐该方向的侧台。三舞台轮换的常态下
 // 侧台内容早已就绪，这里什么都不用做（零解码零等待）。
 void VibeCoding::maybeStartPrefetch(int direction)
@@ -4791,6 +4830,16 @@ void VibeCoding::maybeStartPrefetch(int direction)
 // 里自动补齐）。素材随即随拖动滑入视野——真翻页，不用等翻页提交。
 void VibeCoding::prefetchTick()
 {
+    // 录音让位回收过的侧台：录音（含上传）一结束就解除暂缓，别让用户
+    // 盯着空白侧台等满 30s。start 失败时同样在这里下一帧就恢复。
+    if (sprite_held_for_voice_) {
+        const auto vp = vibe_voice::status().phase;
+        if (vp != vibe_voice::Phase::Recording && vp != vibe_voice::Phase::Uploading) {
+            sprite_held_for_voice_ = false;
+            for (SideSlot &slot : sides_) slot.defer_until = 0;
+            ESP_LOGI(BUTTON_TAG, "[voice] sprite defer released after voice end");
+        }
+    }
     if (!prefetch_provider_.empty()) {
         if (made_sprite::prefetchReady()) {
             SideSlot &slot = sides_[prefetch_slot_ >= 0 ? prefetch_slot_ : 0];
