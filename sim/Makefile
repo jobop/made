@@ -44,7 +44,7 @@ COMMON_INC := -I. -Ishims \
   -I$(CJSON) \
   -I$(FONTS)
 
-CFLAGS   := $(WARN) -isysroot $(SYSROOT) -O1 -g -DLV_CONF_INCLUDE_SIMPLE -DLV_LVGL_H_INCLUDE_SIMPLE $(COMMON_INC) $(SDL_CFLAGS) $(PNG_CFLAGS) $(PNG_CFLAGS)
+CFLAGS   := $(WARN) -isysroot $(SYSROOT) -O1 -g -DLV_CONF_INCLUDE_SIMPLE -DLV_LVGL_H_INCLUDE_SIMPLE -DLV_FONT_FMT_TXT_LARGE=1 $(COMMON_INC) $(SDL_CFLAGS) $(PNG_CFLAGS) $(PNG_CFLAGS)
 CXXFLAGS := $(CFLAGS) -std=gnu++2b -fpermissive -include lv_compat.h
 # 所有源码都用「仓库根相对路径」表达，目标文件平移到 build/obj/ 下，
 # 避免目标路径里出现 ".."（沙箱/增量构建都不友好）。
@@ -59,6 +59,7 @@ APP_SRCS  := \
   made/components/vibe_theme/vibe_theme.cpp \
   made/managed_components/espressif__cjson/cJSON/cJSON.c \
   made/managed_components/78__xiaozhi-fonts/src/font_puhui_16_4.c \
+  made/managed_components/78__xiaozhi-fonts/src/font_puhui_20_4.c \
   sim/stubs/esp_stubs.cpp \
   sim/stubs/components_stubs.cpp \
   sim/sim_main.cpp

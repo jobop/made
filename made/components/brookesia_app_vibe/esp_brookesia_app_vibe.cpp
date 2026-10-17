@@ -40,6 +40,7 @@ using esp_brookesia::systems::phone::App;
 
 LV_IMG_DECLARE(img_app_vibe);
 LV_FONT_DECLARE(font_puhui_16_4);
+LV_FONT_DECLARE(font_puhui_20_4);
 
 namespace {
 using vibe_i18n::tr;
@@ -78,7 +79,16 @@ bool receiverVoiceUploading()
 
 // The bundled Puhui font includes common Han characters missing from LVGL's
 // small Source Han Sans subset. Its glyph data lives in flash, not PSRAM.
-const lv_font_t *const text_font = &font_puhui_16_4;
+// 中文点阵字号档由主题包 font 字段选择（16/20，20px 字库已内置）。
+// 注意：必须在任何控件创建之前赋值（run() 开头），控件高度随行高自适应。
+const lv_font_t *text_font = &font_puhui_16_4;
+
+// 主题风格半径：made_s(设计像素) 后再乘主题包的圆角缩放。
+int made_radius(int design_radius)
+{
+    const int scaled = made_s(design_radius) * vibe_theme::radiusScale() / 100;
+    return scaled > 0 ? scaled : 1;
+}
 
 constexpr uintptr_t kPageSurface = 0x50414745;
 
@@ -163,14 +173,16 @@ uint32_t mixColor(uint32_t a, uint32_t b, uint32_t weight_a, uint32_t weight_b)
 void styleSurface(lv_obj_t *button, uint32_t color)
 {
     const uint32_t highlight = mixColor(color, 0xFFFFFF, 7, 1);
+    // 浅色底上黑色投影会显得脏而沉重：换暖灰并大幅降低不透明度。
+    const bool light = vibe_theme::isLightBase();
     lv_obj_set_style_bg_color(button, lv_color_hex(color), 0);
     lv_obj_set_style_bg_grad_color(button, lv_color_hex(mixColor(color, 0x000000, 15, 1)), 0);
     lv_obj_set_style_bg_grad_dir(button, LV_GRAD_DIR_VER, 0);
     lv_obj_set_style_border_width(button, 0, 0);
-    lv_obj_set_style_shadow_color(button, lv_color_hex(0x000000), 0);
+    lv_obj_set_style_shadow_color(button, lv_color_hex(light ? 0x51655B : 0x000000), 0);
     lv_obj_set_style_shadow_width(button, made_s(14), 0);
     lv_obj_set_style_shadow_spread(button, made_s(1), 0);
-    lv_obj_set_style_shadow_opa(button, LV_OPA_50, 0);
+    lv_obj_set_style_shadow_opa(button, light ? LV_OPA_20 : LV_OPA_50, 0);
     lv_obj_set_style_shadow_offset_y(button, made_s(3), 0);
     lv_obj_set_style_bg_color(button, lv_color_hex(highlight), LV_STATE_PRESSED);
     lv_obj_set_style_shadow_width(button, made_s(5), LV_STATE_PRESSED);
@@ -192,13 +204,28 @@ lv_obj_t *touchButton(lv_obj_t *parent, int x, int y, int width, int height,
                       uint32_t color = 0)
 {
     const bool page = isPage(parent);
-    if (color == 0) color = VT(btn_normal);
     lv_obj_t *button = lv_btn_create(parent);
     lv_obj_set_pos(button, page ? made_page_x(x) : made_x(x), page ? made_page_y(y) : made_y(y));
     lv_obj_set_size(button, page ? made_page_w(width) : made_s(width), page ? made_page_h(height) : made_s(height));
-    lv_obj_set_style_radius(button, made_s(12) > 0 ? made_s(12) : 1, 0);
+    // 形状语言：square=2px 直角，circle=胶囊，rounded=主题缩放的圆角。
+    const int shape = vibe_theme::shapeMode();
+    const int radius = shape == vibe_theme::kShapeSquare ? 2 :
+        shape == vibe_theme::kShapeCircle ? made_s(width < height ? width : height) / 2 :
+        made_radius(12);
+    lv_obj_set_style_radius(button, radius, 0);
     lv_obj_set_overflow_visible(button, true);
-    styleSurface(button, color);
+    if (color == 0) {
+        // Ghost 次级按钮（Air 语言默认）：无底色 + 1px 细描边，按下泛灰。
+        // 去掉实底色块与投影，界面立刻轻下来；主操作才允许实底。
+        lv_obj_set_style_bg_opa(button, LV_OPA_TRANSP, 0);
+        lv_obj_set_style_border_color(button, lv_color_hex(VT(border)), 0);
+        lv_obj_set_style_border_width(button, 1, 0);
+        lv_obj_set_style_bg_color(button, lv_color_hex(VT(bg_row)), LV_STATE_PRESSED);
+        lv_obj_set_style_bg_opa(button, LV_OPA_COVER, LV_STATE_PRESSED);
+        lv_obj_set_style_shadow_width(button, 0, 0);
+    } else {
+        styleSurface(button, color);
+    }
     lv_obj_set_style_pad_all(button, 0, 0);
     lv_obj_remove_flag(button, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_add_flag(button, LV_OBJ_FLAG_GESTURE_BUBBLE);
@@ -346,6 +373,8 @@ bool VibeCoding::run()
         display_diag_registered_ = true;
     }
     vibe_i18n::initialize();
+    // 字号档必须在任何控件创建之前确定（控件高度随行高自适应）。
+    text_font = vibe_theme::fontPx() >= 20 ? &font_puhui_20_4 : &font_puhui_16_4;
     active_ = true;
     exit_requested_ = false;
     invalidateCatalog(true);
@@ -379,13 +408,15 @@ bool VibeCoding::run()
     lv_obj_refresh_ext_draw_size(screen);
     // 兜底：任何异常路径残留的横向偏移在重建界面时归位，避免整屏卡在边上。
     if (!home_dragging_) lv_obj_set_x(screen, 0);
-    lv_obj_set_style_bg_color(screen, lv_color_hex(VT(bg_page)), 0);
+    // 助手（精灵）舞台背景独立成 token（home_bg），主题包可单独给主页配色，
+    // 不跟抽屉/设置面板的 bg_page 混用。
+    lv_obj_set_style_bg_color(screen, lv_color_hex(VT(home_bg)), 0);
     lv_obj_set_style_bg_opa(screen, LV_OPA_COVER, 0);
     // 拖动翻屏时移出屏幕边缘露出的 bottom layer：LVGL 默认是白色，
-    // 改成页面底色，滑动过渡才不会闪白层。
+    // 改成助手背景色，滑动过渡才不会闪白层。
     lv_obj_t *bottom_layer = lv_display_get_layer_bottom(lv_display_get_default());
     if (bottom_layer) {
-        lv_obj_set_style_bg_color(bottom_layer, lv_color_hex(VT(bg_page)), 0);
+        lv_obj_set_style_bg_color(bottom_layer, lv_color_hex(VT(home_bg)), 0);
         lv_obj_set_style_bg_opa(bottom_layer, LV_OPA_COVER, 0);
     }
     lv_obj_add_event_cb(screen, providerSwipeCallback, LV_EVENT_GESTURE, this);
@@ -443,7 +474,7 @@ bool VibeCoding::run()
     lv_obj_add_event_cb(new_session_button_, newSessionCallback, LV_EVENT_CLICKED, this);
     lv_obj_t *new_session_mark = lv_label_create(new_session_button_);
     lv_label_set_text(new_session_mark, LV_SYMBOL_PLUS);
-    lv_obj_set_style_text_color(new_session_mark, lv_color_hex(VT(text_primary)), 0);
+    lv_obj_set_style_text_color(new_session_mark, lv_color_hex(VT(text_on_accent)), 0);
     lv_obj_set_style_text_font(new_session_mark, &lv_font_montserrat_26, 0);
     lv_obj_remove_flag(new_session_mark, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_center(new_session_mark);
@@ -500,7 +531,14 @@ bool VibeCoding::run()
     lv_obj_remove_flag(settings_home_, LV_OBJ_FLAG_SCROLLABLE);
     // 设置主页：分组行列表（连接/偏好/系统），行内 图标+名称+箭头；
     // 返回改顶部导航，释放底部空间给列表滚动。
-    settingsLabel(settings_home_, T("设置"), 92, 40, 176);
+    // Air 大标题：20px 点阵左对齐，与返回键同行；页面层级靠字号与留白。
+    lv_obj_t *settings_title = lv_label_create(settings_home_);
+    lv_label_set_text(settings_title, T("设置"));
+    bindLabel(settings_title, "设置");
+    lv_obj_set_style_text_color(settings_title, lv_color_hex(VT(title)), 0);
+    lv_obj_set_style_text_font(settings_title, &font_puhui_20_4, 0);
+    lv_obj_set_pos(settings_title, made_page_x(78), made_page_y(32));
+    lv_obj_set_style_text_color(settings_title, lv_color_hex(VT(title)), 0);
     lv_obj_t *settings_back = touchButton(settings_home_, 16, 30, 48, 36, nullptr, settingsCloseCallback, this);
     lv_obj_t *settings_back_icon = lv_label_create(settings_back);
     lv_label_set_text(settings_back_icon, LV_SYMBOL_LEFT);
@@ -527,28 +565,31 @@ bool VibeCoding::run()
         lv_obj_remove_flag(label, LV_OBJ_FLAG_CLICKABLE);
     };
     auto settings_row = [&](int y, const char *symbol, const char *key, lv_event_cb_t cb) {
-        lv_obj_t *row = touchButton(settings_rows, 0, 0, 312, 44, nullptr, cb, this);
+        lv_obj_t *row = touchButton(settings_rows, 0, 0, 312, 46, nullptr, cb, this);
         lv_obj_set_pos(row, 0, made_s(y));
-        lv_obj_t *icon_box = lv_obj_create(row);
-        lv_obj_remove_style_all(icon_box);
-        lv_obj_set_size(icon_box, made_s(26), made_s(26));
-        lv_obj_align(icon_box, LV_ALIGN_LEFT_MID, made_s(8), 0);
-        lv_obj_set_style_radius(icon_box, made_s(7), 0);
-        lv_obj_set_style_bg_color(icon_box, lv_color_hex(VT(chip_accent)), 0);
-        lv_obj_set_style_bg_opa(icon_box, LV_OPA_COVER, 0);
-        lv_obj_clear_flag(icon_box, LV_OBJ_FLAG_CLICKABLE);
-        lv_obj_t *icon = lv_label_create(icon_box);
+        // Air 语言：行透明无边框，按下整行泛灰；底部 1px 分隔线从文字左缘
+        // 开始（iOS 式），不再用实底胶囊行——界面从「色块堆叠」变「线条留白」。
+        lv_obj_set_style_bg_opa(row, LV_OPA_TRANSP, 0);
+        lv_obj_set_style_bg_color(row, lv_color_hex(VT(bg_row)), LV_STATE_PRESSED);
+        lv_obj_set_style_bg_opa(row, LV_OPA_COVER, LV_STATE_PRESSED);
+        lv_obj_set_style_radius(row, 0, 0);
+        lv_obj_set_style_border_color(row, lv_color_hex(VT(border)), 0);
+        lv_obj_set_style_border_width(row, 1, 0);
+        lv_obj_set_style_border_side(row, LV_BORDER_SIDE_BOTTOM, 0);
+        lv_obj_set_style_pad_all(row, 0, 0);
+        // 裸图标：直接用 tint 色线性图标，去掉 icon_box 色块。
+        lv_obj_t *icon = lv_label_create(row);
         lv_label_set_text(icon, symbol);
         lv_obj_set_style_text_color(icon, lv_color_hex(VT(text_accent)), 0);
-        lv_obj_set_style_text_font(icon, &lv_font_montserrat_14, 0);
-        lv_obj_center(icon);
+        lv_obj_set_style_text_font(icon, &lv_font_montserrat_16, 0);
+        lv_obj_align(icon, LV_ALIGN_LEFT_MID, made_s(10), 0);
         lv_obj_remove_flag(icon, LV_OBJ_FLAG_CLICKABLE);
         lv_obj_t *name = lv_label_create(row);
         lv_label_set_text(name, T(key));
         bindLabel(name, key);
         lv_obj_set_style_text_color(name, lv_color_hex(VT(text_primary)), 0);
         lv_obj_set_style_text_font(name, text_font, 0);
-        lv_obj_align(name, LV_ALIGN_LEFT_MID, made_s(44), 0);
+        lv_obj_align(name, LV_ALIGN_LEFT_MID, made_s(42), 0);
         lv_obj_remove_flag(name, LV_OBJ_FLAG_CLICKABLE);
         lv_obj_t *chevron = lv_label_create(row);
         lv_label_set_text(chevron, LV_SYMBOL_RIGHT);
@@ -590,7 +631,7 @@ bool VibeCoding::run()
     lv_obj_set_style_pad_all(theme_panel_, 0, 0);
     lv_obj_remove_flag(theme_panel_, LV_OBJ_FLAG_SCROLLABLE);
     settingsLabel(theme_panel_, T("主题设置"), 70, 34, 220);
-    touchButton(theme_panel_, 70, 60, 220, 32, T("从电脑同步主题"), themeSyncCallback, this, 0x42566B);
+    touchButton(theme_panel_, 70, 60, 220, 32, T("从电脑同步主题"), themeSyncCallback, this);
     theme_status_label_ = settingsLabel(theme_panel_, "", 40, 96, 280, VT(text_hint));
     theme_rows_ = lv_obj_create(theme_panel_);
     lv_obj_set_pos(theme_rows_, made_page_x(40), made_page_y(112));
@@ -791,7 +832,7 @@ bool VibeCoding::run()
         lv_obj_set_style_bg_color(field, lv_color_hex(VT(bg_row)), LV_PART_MAIN);
         lv_obj_set_style_bg_opa(field, LV_OPA_COVER, LV_PART_MAIN);
         lv_obj_set_style_text_color(field, lv_color_hex(VT(text_primary)), LV_PART_MAIN);
-        lv_obj_set_style_text_color(field, lv_color_hex(0xA8BED9), LV_PART_TEXTAREA_PLACEHOLDER);
+        lv_obj_set_style_text_color(field, lv_color_hex(VT(text_hint)), LV_PART_TEXTAREA_PLACEHOLDER);
         lv_obj_set_style_border_color(field, lv_color_hex(VT(border)), LV_PART_MAIN);
         lv_obj_set_style_border_width(field, 1, LV_PART_MAIN);
     }
@@ -839,7 +880,7 @@ bool VibeCoding::run()
     lv_obj_set_pos(status_dot_, made_x(22), made_y(14));
     lv_obj_set_style_radius(status_dot_, LV_RADIUS_CIRCLE, 0);
     lv_obj_set_style_bg_opa(status_dot_, LV_OPA_COVER, 0);
-    lv_obj_set_style_bg_color(status_dot_, lv_color_hex(0x4CD964), 0);
+    lv_obj_set_style_bg_color(status_dot_, lv_color_hex(VT(success)), 0);
     lv_obj_set_style_border_width(status_dot_, 2, 0);
     lv_obj_set_style_border_color(status_dot_, lv_color_hex(VT(bg_page)), 0);
     lv_obj_clear_flag(status_dot_, LV_OBJ_FLAG_CLICKABLE);
@@ -887,7 +928,7 @@ bool VibeCoding::run()
     lv_obj_set_pos(instruction_label_, made_x(50), made_y(169));
     lv_label_set_long_mode(instruction_label_, LV_LABEL_LONG_DOT);
     lv_obj_set_style_text_align(instruction_label_, LV_TEXT_ALIGN_CENTER, 0);
-    lv_obj_set_style_text_color(instruction_label_, lv_color_hex(0xB5CBE7), 0);
+    lv_obj_set_style_text_color(instruction_label_, lv_color_hex(VT(text_answer)), 0);
     lv_obj_set_style_text_font(instruction_label_, text_font, 0);
     made_text(instruction_label_, 260, false);
 
@@ -968,7 +1009,7 @@ bool VibeCoding::run()
     lv_obj_set_style_pad_all(bridge_picker_, 0, 0);
     lv_obj_remove_flag(bridge_picker_, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_remove_flag(bridge_picker_, LV_OBJ_FLAG_GESTURE_BUBBLE);
-    lv_obj_t *bridge_settings = touchButton(bridge_picker_, 48, 292, 120, 36, "settings.short", settingsCallback, this, VT(btn_cancel));
+    lv_obj_t *bridge_settings = touchButton(bridge_picker_, 48, 292, 120, 36, "settings.short", settingsCallback, this);
     lv_obj_t *bridge_title = settingsLabel(bridge_picker_, T("选择电脑"), 70, 36, 220);
     bridge_refresh_button_ = touchButton(bridge_picker_, 192, 292, 120, 36,
                                           T("刷新"), bridgeRefreshCallback, this, VT(accent));
@@ -1056,14 +1097,16 @@ bool VibeCoding::run()
     lv_obj_set_pos(settings_button_, made_x(44), made_page_y(296));
 
     // 分页 chip（左上）：「任务 1/3」，从标题行剥离出来。
+    // 分页 chip（左上）：「任务 1/3」，从标题行剥离出来。
+    // 高度随字号行高走（20px 档不裁字），宽度随内容自适应。
+    const int chip_h = lv_font_get_line_height(text_font) + made_s(8);
     session_chip_ = lv_obj_create(drawer_);
     lv_obj_remove_style_all(session_chip_);
     lv_obj_set_pos(session_chip_, made_x(24), made_page_y(44));
-    // 宽度随「任务 12/12」这类长序号自适应，固定宽会溢出底框（真机实锤）。
-    lv_obj_set_size(session_chip_, LV_SIZE_CONTENT, made_s(26));
+    lv_obj_set_size(session_chip_, LV_SIZE_CONTENT, chip_h);
     lv_obj_set_style_pad_left(session_chip_, made_s(10), 0);
     lv_obj_set_style_pad_right(session_chip_, made_s(10), 0);
-    lv_obj_set_style_radius(session_chip_, made_s(13), 0);
+    lv_obj_set_style_radius(session_chip_, chip_h / 2, 0);
     lv_obj_set_style_bg_color(session_chip_, lv_color_hex(VT(bg_row)), 0);
     lv_obj_set_style_bg_opa(session_chip_, LV_OPA_COVER, 0);
     lv_obj_clear_flag(session_chip_, LV_OBJ_FLAG_CLICKABLE);
@@ -1075,11 +1118,17 @@ bool VibeCoding::run()
     lv_obj_add_flag(session_chip_, LV_OBJ_FLAG_HIDDEN);
 
     // 状态徽章（右上）：状态点 + 状态词，双通道传达（不只靠颜色）。
+    // 高度随字号行高、宽度随状态词自适应（20px 档「等待确认」不溢出）。
+    const int badge_h = lv_font_get_line_height(text_font) + made_s(8);
     status_badge_ = lv_obj_create(drawer_);
     lv_obj_remove_style_all(status_badge_);
+    // 宽度随状态词自适应（SIZE_CONTENT），右缘对齐在 renderStatusBadge 里
+    // 文字落定后再定位（创建时宽度还是 0，算不准）。
     lv_obj_set_pos(status_badge_, made_x(218), made_page_y(44));
-    lv_obj_set_size(status_badge_, made_s(118), made_s(26));
-    lv_obj_set_style_radius(status_badge_, made_s(13), 0);
+    lv_obj_set_size(status_badge_, LV_SIZE_CONTENT, badge_h);
+    lv_obj_set_style_pad_left(status_badge_, made_s(10), 0);
+    lv_obj_set_style_pad_right(status_badge_, made_s(12), 0);
+    lv_obj_set_style_radius(status_badge_, badge_h / 2, 0);
     lv_obj_set_style_bg_color(status_badge_, lv_color_hex(VT(bg_row)), 0);
     lv_obj_set_style_bg_opa(status_badge_, LV_OPA_COVER, 0);
     lv_obj_clear_flag(status_badge_, LV_OBJ_FLAG_CLICKABLE);
@@ -1929,9 +1978,19 @@ void VibeCoding::refreshLanguage()
     drawn_revision_ = UINT32_MAX;
     const bool automatic = vibe_i18n::follows_bridge();
     const bool english = vibe_i18n::locale() == vibe_i18n::Locale::English;
-    lv_obj_set_style_bg_color(language_zh_button_, lv_color_hex(!automatic && !english ? VT(accent) : VT(btn_normal)), 0);
-    lv_obj_set_style_bg_color(language_en_button_, lv_color_hex(!automatic && english ? VT(accent) : VT(btn_normal)), 0);
-    lv_obj_set_style_bg_color(language_auto_button_, lv_color_hex(automatic ? VT(accent) : VT(btn_normal)), 0);
+    // 选中态：accent 实底 + text_on_accent；未选中回到 ghost（透明底）。
+    auto setSegmentSelected = [](lv_obj_t *button, bool selected) {
+        if (!button) return;
+        lv_obj_set_style_bg_color(button, lv_color_hex(selected ? VT(accent) : VT(btn_normal)), 0);
+        lv_obj_set_style_bg_opa(button, selected ? LV_OPA_COVER : LV_OPA_TRANSP, 0);
+        if (lv_obj_get_child_cnt(button) > 0) {
+            lv_obj_set_style_text_color(lv_obj_get_child(button, 0),
+                                        lv_color_hex(selected ? VT(text_on_accent) : VT(text_primary)), 0);
+        }
+    };
+    setSegmentSelected(language_zh_button_, !automatic && !english);
+    setSegmentSelected(language_en_button_, !automatic && english);
+    setSegmentSelected(language_auto_button_, automatic);
     lv_label_set_text(language_hint_, automatic ? T("离线沿用上次语言") : T("设备语言独立保存"));
 }
 
@@ -2616,14 +2675,20 @@ void VibeCoding::showAccess(bool visible)
 void VibeCoding::updateAccessModeButtons()
 {
     if (!access_panel_) return;
-    lv_obj_set_style_bg_color(access_auto_button_,
-        lv_color_hex(access_manual_selected_ || access_receiver_selected_ || access_usb_selected_ ? VT(btn_normal) : VT(accent)), 0);
-    lv_obj_set_style_bg_color(access_manual_button_,
-        lv_color_hex(access_manual_selected_ ? VT(accent) : VT(btn_normal)), 0);
-    lv_obj_set_style_bg_color(access_receiver_button_,
-        lv_color_hex(access_receiver_selected_ ? VT(accent) : VT(btn_normal)), 0);
-    lv_obj_set_style_bg_color(access_usb_button_,
-        lv_color_hex(access_usb_selected_ ? VT(accent) : VT(btn_normal)), 0);
+    // 选中态：accent 实底 + text_on_accent；未选中回到 ghost（透明底）。
+    auto setAccessSelected = [](lv_obj_t *button, bool selected) {
+        lv_obj_set_style_bg_color(button, lv_color_hex(selected ? VT(accent) : VT(btn_normal)), 0);
+        lv_obj_set_style_bg_opa(button, selected ? LV_OPA_COVER : LV_OPA_TRANSP, 0);
+        if (button && lv_obj_get_child_cnt(button) > 0) {
+            lv_obj_set_style_text_color(lv_obj_get_child(button, 0),
+                                        lv_color_hex(selected ? VT(text_on_accent) : VT(text_primary)), 0);
+        }
+    };
+    setAccessSelected(access_auto_button_,
+        !(access_manual_selected_ || access_receiver_selected_ || access_usb_selected_));
+    setAccessSelected(access_manual_button_, access_manual_selected_);
+    setAccessSelected(access_receiver_button_, access_receiver_selected_);
+    setAccessSelected(access_usb_button_, access_usb_selected_);
     for (lv_obj_t *item : {access_auto_button_, access_manual_button_,
                           access_receiver_button_, access_usb_button_, access_picker_hint_, phone_setup_button_}) {
         if (access_picker_open_) lv_obj_remove_flag(item, LV_OBJ_FLAG_HIDDEN);
@@ -3504,7 +3569,7 @@ void VibeCoding::updateStatusIndicators(bool provider_ready)
     const bool offline = !connection_error.empty();
     lv_obj_remove_flag(status_dot_, LV_OBJ_FLAG_HIDDEN);
     lv_obj_set_style_bg_color(status_dot_, lv_color_hex(
-        offline ? 0xE05B5B : working ? 0xFFAE5A : 0x4CD964), 0);
+        offline ? VT(danger) : working ? VT(warning) : VT(success)), 0);
     if (unread_reply_ && !offline) lv_obj_remove_flag(unread_mark_, LV_OBJ_FLAG_HIDDEN);
     else lv_obj_add_flag(unread_mark_, LV_OBJ_FLAG_HIDDEN);
 }
@@ -4173,6 +4238,16 @@ void VibeCoding::applyDrawerAnswerLayout()
     lv_obj_set_pos(answer_area_, made_x(24), made_page_y(160));
     lv_obj_set_size(answer_area_, made_s(312), made_page_y(256) - made_page_y(160));
     lv_obj_set_style_text_align(result_label_, LV_TEXT_ALIGN_LEFT, 0);
+    // Air 语言：回显装进白卡片（面板底 + 细描边 + 大圆角，无投影），
+    // 让「AI 说什么」有自己的容器层级，不再悬在页面上。
+    lv_obj_set_style_bg_color(answer_area_, lv_color_hex(VT(bg_panel)), 0);
+    lv_obj_set_style_bg_opa(answer_area_, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_color(answer_area_, lv_color_hex(VT(border)), 0);
+    lv_obj_set_style_border_width(answer_area_, 1, 0);
+    lv_obj_set_style_radius(answer_area_, made_radius(16), 0);
+    lv_obj_set_style_pad_all(answer_area_, made_s(12), 0);
+    // 内容内缩交给 pad，result_label_ 归位到内容区原点。
+    lv_obj_set_pos(result_label_, 0, 0);
 }
 
 void VibeCoding::renderStatusBadge(const std::string &status)
@@ -4188,16 +4263,20 @@ void VibeCoding::renderStatusBadge(const std::string &status)
     if (status == "running" || status == "completed" || status == "handed_off") {
         bg = VT(chip_accent);
         text = VT(text_accent);
-        dot = 0x4CD964;
+        dot = VT(success);
     } else if (status == "failed") {
         bg = VT(danger_soft);
         text = VT(text_primary);
-        dot = 0xE5484D;
+        dot = VT(danger);
     } else if (status == "waiting_confirmation") {
         dot = VT(warning);
     }
     lv_obj_set_style_bg_color(status_badge_, lv_color_hex(bg), 0);
     lv_obj_set_style_bg_color(status_badge_dot_, lv_color_hex(dot), 0);
+    // 右缘对齐：宽度随状态词变化，文字更新后按实际宽度贴右（留 2 设计像素边距）。
+    lv_obj_update_layout(status_badge_);
+    lv_obj_set_pos(status_badge_, made_screen_w() - lv_obj_get_width(status_badge_) - made_s(2),
+                   made_page_y(44));
     lv_obj_set_style_text_color(status_badge_label_, lv_color_hex(text), 0);
     lv_label_set_text(status_badge_label_, statusName(status));
 }
