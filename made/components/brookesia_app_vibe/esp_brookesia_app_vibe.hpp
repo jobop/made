@@ -266,11 +266,19 @@ private:
     // 视野——真翻页）；松手晋升只是三指针轮换（旧主舞台转对侧台，内容
     // 正好是新主的对侧邻居；远侧台内容由 reconcile 校对补齐）——恰好
     // 3 个助手时永不重新解码，任何方向随时可翻。
+    //
+    // 助手 >3 个时轮换不自洽：每次同向晋升后远侧台要补解码新邻居，而
+    // 此刻 4 套像素并存会挤爆 PSRAM（实测第 4 套起飞时 free 常 <1.5MB，
+    // prefetchBegin 直接拒绝 → 每秒退避空转 → 第三屏永不预载）。解法是
+    // PSRAM 预算回收：方向侧起飞前余量不足就回收背向侧台（用户背对它，
+    // 暂时用不到），腾出空间给新邻居；方向反转时背向侧变方向侧，照样
+    // 回收对侧、重建自己。
     struct SideSlot {
         lv_obj_t *stage = nullptr;
         std::string provider;      // 该侧台当前挂的素材（空=无）
         uint32_t version = 0;
         int side = 0;              // -1 屏左 / +1 屏右（座位固定，不随轮换变）
+        uint32_t defer_until = 0;  // 被回收让位后的暂缓补齐截止时刻（0=不缓）
     };
     SideSlot sides_[2];
     int drag_side_ = -1;                   // 最近一次拖动的方向侧台（0/1，-1=无）；补齐顺序优先它
@@ -282,6 +290,7 @@ private:
     void prefetchTick();                   // 每帧：解码完挂上归属侧台+对齐两侧
     void ensureSide(int index);            // 侧台内容对齐相邻助手（按需解码）
     bool tryPromotePrefetch(const std::string &provider);  // 命中则三指针轮换
+    bool sideTarget(int index, std::string &target, uint32_t &version);
     uint32_t spriteVersionOf(const std::string &provider); // 目录里素材的版本号
     std::mutex voice_action_mutex_; // Serializes BOOT/touch voice actions with app pause/close.
     Snapshot model_;

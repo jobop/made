@@ -197,8 +197,10 @@ esp_err_t receiver_request(const std::string &path, bool post, const std::string
 /* ---------------- vibe_voice ---------------- */
 namespace vibe_voice {
 bool start(const std::string &bridge_url, const std::string &token, const std::string &provider,
-           const std::string &project_id, const std::string &session_id)
-{ (void)bridge_url; (void)token; (void)provider; (void)project_id; (void)session_id; return false; }
+           const std::string &project_id, const std::string &session_id, bool hold_mode)
+{ (void)bridge_url; (void)token; (void)provider; (void)project_id; (void)session_id;
+  (void)hold_mode; return false; }
+void finish() {}
 void cancel() {}
-Status status() { return Status{Phase::Idle, "", ""}; }
+Status status() { return Status{Phase::Idle, "", "", false}; }
 } // namespace vibe_voice

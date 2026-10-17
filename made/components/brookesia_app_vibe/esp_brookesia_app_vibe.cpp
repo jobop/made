@@ -4347,6 +4347,28 @@ void VibeCoding::preloadArtworkCache()
     }
 }
 
+// 侧台应挂的助手 id 与版本（当前选中助手的相邻邻居；单助手、邻居无素材
+// 时 target 为空，表示这一侧不该挂任何东西）。
+bool VibeCoding::sideTarget(int index, std::string &target, uint32_t &version)
+{
+    target.clear();
+    version = 0;
+    if (index < 0 || index > 1) return false;
+    const SideSlot &slot = sides_[index];
+    if (!slot.stage) return false;
+    std::lock_guard<std::mutex> lock(model_mutex_);
+    if (!config_loaded_.load() || providers_.empty()) return false;
+    const int count = static_cast<int>(providers_.size());
+    const int selected = selected_provider_.load();
+    const int neighbor = (selected + slot.side + count) % count;
+    const auto &entry = providers_[static_cast<size_t>(neighbor)];
+    if (count > 1 && neighbor != selected && entry.sprite.valid()) {
+        target = entry.id;
+        version = entry.sprite.version;
+    }
+    return true;
+}
+
 // LVGL 线程。确保 sides_[index] 挂着当前选中助手的相邻助手（版本一致）。
 // 内容已对（三舞台轮换的常态）就什么都不做——这就是「任何方向随时可翻」；
 // 不对且解码空闲就起飞后台解码补齐（单飞，1s 失败退避）。两个侧台都缺
@@ -4358,21 +4380,10 @@ void VibeCoding::ensureSide(int index)
     if (!slot.stage) return;
     std::string target;
     uint32_t version = 0;
-    {
-        std::lock_guard<std::mutex> lock(model_mutex_);
-        if (!config_loaded_.load() || providers_.empty()) return;
-        const int count = static_cast<int>(providers_.size());
-        const int selected = selected_provider_.load();
-        const int neighbor = (selected + slot.side + count) % count;
-        const auto &entry = providers_[static_cast<size_t>(neighbor)];
-        // 常驻的就三套（左中右）。邻居没有素材、或只有一个助手（左右邻居
-        // 都是 自己，不值得解码第二份）时，这一侧不该挂着任何东西——
-        // 超出范围的旧素材就地回收，PSRAM 让出去。
-        if (count > 1 && neighbor != selected && entry.sprite.valid()) {
-            target = entry.id;
-            version = entry.sprite.version;
-        }
-    }
+    sideTarget(index, target, version);
+    // 常驻的就三套（左中右）。邻居没有素材、或只有一个助手（左右邻居
+    // 都是 自己，不值得解码第二份）时，这一侧不该挂着任何东西——
+    // 超出范围的旧素材就地回收，PSRAM 让出去。
     if (target.empty()) {
         if (!slot.provider.empty()) {
             made_sprite::clearArtwork(slot.stage);
@@ -4394,9 +4405,33 @@ void VibeCoding::ensureSide(int index)
         slot.version = 0;
     }
     if (slot.provider == target && slot.version == version) return;   // 已就绪（常态）
+    // 被回收让位的侧台暂缓补齐：它刚把空间让给方向侧，立刻重试只会把
+    // 空间又抢回去（掐掉方向侧的在飞解码），来回振荡。暂缓到期后自然
+    // 恢复；拖动方向转到这一侧时由 maybeStartPrefetch 立即解除暂缓。
+    if (lv_tick_get() < slot.defer_until && index != drag_side_) return;
     if (!prefetch_provider_.empty() || made_sprite::prefetchInFlight() ||
         made_sprite::prefetchReady())
         return;  // 解码在飞/待提交：本帧等它，下帧轮到这里再排
+    // PSRAM 预算回收：助手 >3 个时第 4 套解码像素常驻放不下（实测 4 套
+    // 并存后 free 常 <1.5MB，prefetchBegin 拒绝 → 每秒退避空转 → 同向
+    // 第三屏永不预载）。方向侧起飞前余量不足就回收背向侧台（用户背对
+    // 它，暂时用不到），腾出空间；被回收侧暂缓补齐防振荡。只允许方向
+    // 侧回收背向侧——反向宁可等（背向侧不急，1s 退避无害），否则方向
+    // 侧会被背向侧的补齐挤掉，来回拆台。
+    const size_t kDecodeBudget = 1560 * 1024;  // 略高于 prefetchBegin 的 1.5MB guard
+    if (heap_caps_get_free_size(MALLOC_CAP_SPIRAM) < kDecodeBudget &&
+        index == drag_side_) {
+        SideSlot &other = sides_[1 - index];
+        if (other.stage && !other.provider.empty() && other.provider != target) {
+            made_sprite::clearArtwork(other.stage);
+            ESP_LOGI(BUTTON_TAG,
+                "[sprite] neighbor_recycled_for_budget slot=%+d had=%s for_slot=%+d want=%s",
+                other.side, other.provider.c_str(), slot.side, target.c_str());
+            other.provider.clear();
+            other.version = 0;
+            other.defer_until = lv_tick_get() + 5000;
+        }
+    }
     // 失败退避：起飞失败/解码失败后 1s 内不白试；重试前必须清 failed/done
     // 残留——prefetchBegin 见这些状态会直接拒绝，不清就是永久卡死。
     const uint32_t now = lv_tick_get();
@@ -4422,6 +4457,9 @@ void VibeCoding::maybeStartPrefetch(int direction)
     if (direction == 0) return;
     const int index = direction < 0 ? 0 : 1;
     drag_side_ = index;
+    // 方向转到这一侧：解除它的回收暂缓——用户正盯着这看，若空间仍紧，
+    // ensureSide 会照规则回收对侧（此刻的背向侧）腾地方。
+    sides_[index].defer_until = 0;
     // 拖动方向侧内容不对、而单飞解码在飞的是另一侧时：掐掉它改飞本侧。
     // 用户正盯着这个方向看，另一侧的解码晚点重跑没有任何代价；反过来
     // 让方向侧等一整套解码，过期/空白素材就会跟着手滑进视野。
