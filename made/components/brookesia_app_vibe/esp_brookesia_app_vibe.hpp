@@ -222,6 +222,7 @@ private:
     void showAnswer(const std::string &scope, const std::string &text);
     void render();
     void layoutReadableText();
+    void applyDrawerAnswerLayout(); // 回显区抽屉坐标（配对布局退出后必须恢复，否则叠进指令行）
     void renderStatusBadge(const std::string &status); // 空串=隐藏
     void setActivityRunning(bool running);             // 活动条循环扫动动画开关
 

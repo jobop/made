@@ -1031,6 +1031,8 @@ bool VibeCoding::run()
     // 提示行固定两行高：LONG_DOT 只在文字高度超过标签固定高度时才截断，
     // 高度自适应的标签会一直换行压到位置行和回显区（实机叠字 bug）。
     lv_obj_set_height(instruction_label_, lv_font_get_line_height(text_font) * 2 + 2);
+    // 抽屉版式全部左对齐（创建时是主页居中排版，不重设会叠出错位观感）。
+    lv_obj_set_style_text_align(instruction_label_, LV_TEXT_ALIGN_LEFT, 0);
     lv_obj_set_parent(position_label_, drawer_);
     lv_obj_set_pos(position_label_, made_x(24), made_page_y(78));
     lv_obj_set_width(position_label_, made_s(312));
@@ -1042,8 +1044,7 @@ bool VibeCoding::run()
     lv_obj_set_pos(session_title_tap_, made_x(24), made_page_y(40));
     lv_obj_set_size(session_title_tap_, made_s(312), made_s(60));
     lv_obj_set_parent(answer_area_, drawer_);
-    lv_obj_set_pos(answer_area_, made_x(24), made_page_y(160));
-    lv_obj_set_size(answer_area_, made_s(312), made_page_y(256) - made_page_y(160));
+    applyDrawerAnswerLayout();
     lv_obj_set_parent(meta_label_, drawer_);
     lv_obj_set_pos(meta_label_, made_x(30), made_page_y(256));
     lv_obj_set_width(meta_label_, made_s(300));
@@ -1058,7 +1059,10 @@ bool VibeCoding::run()
     session_chip_ = lv_obj_create(drawer_);
     lv_obj_remove_style_all(session_chip_);
     lv_obj_set_pos(session_chip_, made_x(24), made_page_y(44));
-    lv_obj_set_size(session_chip_, made_s(96), made_s(26));
+    // 宽度随「任务 12/12」这类长序号自适应，固定宽会溢出底框（真机实锤）。
+    lv_obj_set_size(session_chip_, LV_SIZE_CONTENT, made_s(26));
+    lv_obj_set_style_pad_left(session_chip_, made_s(10), 0);
+    lv_obj_set_style_pad_right(session_chip_, made_s(10), 0);
     lv_obj_set_style_radius(session_chip_, made_s(13), 0);
     lv_obj_set_style_bg_color(session_chip_, lv_color_hex(VT(bg_row)), 0);
     lv_obj_set_style_bg_opa(session_chip_, LV_OPA_COVER, 0);
@@ -3936,6 +3940,9 @@ void VibeCoding::render()
             lv_obj_set_pos(answer_area_, made_x(24), made_page_y(196));
             lv_obj_set_size(answer_area_, made_s(312), made_page_h(58));
             lv_obj_set_style_text_align(result_label_, LV_TEXT_ALIGN_CENTER, 0);
+            // 配对版式沿用主页的居中排版（抽屉构建处已把这些行改成左对齐）。
+            lv_obj_set_style_text_align(instruction_label_, LV_TEXT_ALIGN_CENTER, 0);
+            lv_obj_set_style_text_align(position_label_, LV_TEXT_ALIGN_CENTER, 0);
             showing_pairing_layout_ = true;
         }
         const size_t scheme = pairing.url.find("://");
@@ -3980,9 +3987,11 @@ void VibeCoding::render()
         lv_obj_add_flag(meta_label_, LV_OBJ_FLAG_HIDDEN);
         // 配对期间位置行可能被隐藏（避免与引导行重复），恢复会话头显示。
         lv_obj_remove_flag(position_label_, LV_OBJ_FLAG_HIDDEN);
-        lv_obj_set_pos(answer_area_, made_x(24), made_page_y(100));
-        lv_obj_set_size(answer_area_, made_s(312), made_page_h(158));
-        lv_obj_set_style_text_align(result_label_, LV_TEXT_ALIGN_LEFT, 0);
+        // 恢复抽屉版式：曾经这里恢复的是旧主页坐标 page_y(100)，回显区
+        // 正好叠进指令行（page_y(104)），真机上两段文字叠印（2026-10-17 实锤）。
+        applyDrawerAnswerLayout();
+        lv_obj_set_style_text_align(instruction_label_, LV_TEXT_ALIGN_LEFT, 0);
+        lv_obj_set_style_text_align(position_label_, LV_TEXT_ALIGN_LEFT, 0);
         showing_pairing_layout_ = false;
     }
     if (!catalog_ready || !provider_count) {
@@ -3993,6 +4002,8 @@ void VibeCoding::render()
         lv_label_set_text(instruction_label_, catalog_ready ? T("请在电脑端添加助手插件") : T("正在读取电脑设置"));
         // 状态类短文案与上方居中的标题行同排版，避免「贴左孤行」的观感。
         lv_obj_set_style_text_align(result_label_, LV_TEXT_ALIGN_CENTER, 0);
+        lv_obj_set_style_text_align(instruction_label_, LV_TEXT_ALIGN_CENTER, 0);
+        lv_obj_set_style_text_align(position_label_, LV_TEXT_ALIGN_CENTER, 0);
         showAnswer("catalog", !snapshot.connection_error.empty() ? own_error :
             catalog_ready ? T("助手名称和图标将由电脑下发。") : T("连接成功后会自动显示可用助手。"));
         {
@@ -4029,6 +4040,8 @@ void VibeCoding::render()
         lv_label_set_text(position_label_, T("暂无任务"));
         lv_label_set_text(instruction_label_, !snapshot.session_notice.empty() ? own_session_notice.c_str() : T("上滑拉出抽屉，点 + 创建任务"));
         lv_obj_set_style_text_align(result_label_, LV_TEXT_ALIGN_CENTER, 0);
+        lv_obj_set_style_text_align(instruction_label_, LV_TEXT_ALIGN_CENTER, 0);
+        lv_obj_set_style_text_align(position_label_, LV_TEXT_ALIGN_CENTER, 0);
         const std::string empty_message = !snapshot.connection_error.empty() ? own_error :
             !snapshot.session_notice.empty() ? own_session_notice :
             !provider_ready ? (provider.reason.empty() ? T("请先在电脑端启用此助手") : provider.reason) :
@@ -4051,6 +4064,8 @@ void VibeCoding::render()
     lv_label_set_text(position_label_, selected_session->title.empty() ? T("未命名任务") : selected_session->title.c_str());
     // 任务回显是长文，恢复左对齐（catalog/空会话状态曾切成居中）。
     lv_obj_set_style_text_align(result_label_, LV_TEXT_ALIGN_LEFT, 0);
+    lv_obj_set_style_text_align(instruction_label_, LV_TEXT_ALIGN_LEFT, 0);
+    lv_obj_set_style_text_align(position_label_, LV_TEXT_ALIGN_LEFT, 0);
     ui_stage_.store(20);
 
     if (voice_for_selected_session && voice.phase == vibe_voice::Phase::Submitted && !voice.task_id.empty() &&
@@ -4150,6 +4165,14 @@ void VibeCoding::render()
     }
     layoutReadableText();
     drawn_revision_ = snapshot.revision;
+}
+
+void VibeCoding::applyDrawerAnswerLayout()
+{
+    if (!answer_area_ || !result_label_) return;
+    lv_obj_set_pos(answer_area_, made_x(24), made_page_y(160));
+    lv_obj_set_size(answer_area_, made_s(312), made_page_y(256) - made_page_y(160));
+    lv_obj_set_style_text_align(result_label_, LV_TEXT_ALIGN_LEFT, 0);
 }
 
 void VibeCoding::renderStatusBadge(const std::string &status)
