@@ -41,7 +41,7 @@ using esp_brookesia::systems::phone::App;
 LV_IMG_DECLARE(img_app_vibe);
 LV_FONT_DECLARE(font_puhui_16_4);
 LV_FONT_DECLARE(font_puhui_20_4);
-LV_FONT_DECLARE(font_puhui_14_1);
+LV_FONT_DECLARE(font_puhui_14_4);
 
 namespace {
 using vibe_i18n::tr;
@@ -84,7 +84,9 @@ bool receiverVoiceUploading()
 // 注意：必须在任何控件创建之前赋值（run() 开头），控件高度随行高自适应。
 const lv_font_t *text_font = &font_puhui_16_4;
 // 抽屉任务区字号：比全局档小一号（主题 20→16、16→14），标题/chip/徽章仍用全局档。
-const lv_font_t *drawer_text_font = &font_puhui_14_1;
+// 14px 必须用 4bpp 版（fonts/font_puhui_14_4.c 由 ttf/puhui-common.ttf 生成）：
+// 字库组件自带的 font_puhui_14_1 是 1bpp 单色版，浅色底上无抗锯齿会发糊。
+const lv_font_t *drawer_text_font = &font_puhui_14_4;
 
 // 主题风格半径：made_s(设计像素) 后再乘主题包的圆角缩放。
 int made_radius(int design_radius)
@@ -378,7 +380,7 @@ bool VibeCoding::run()
     vibe_i18n::initialize();
     // 字号档必须在任何控件创建之前确定（控件高度随行高自适应）。
     text_font = vibe_theme::fontPx() >= 20 ? &font_puhui_20_4 : &font_puhui_16_4;
-    drawer_text_font = vibe_theme::fontPx() >= 20 ? &font_puhui_16_4 : &font_puhui_14_1;
+    drawer_text_font = vibe_theme::fontPx() >= 20 ? &font_puhui_16_4 : &font_puhui_14_4;
     active_ = true;
     exit_requested_ = false;
     invalidateCatalog(true);
