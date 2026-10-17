@@ -29,6 +29,10 @@ struct Palette {
     uint32_t bg_row;         // 列表行背景
     uint32_t danger;         // 危险/失败
     uint32_t lock_bg;        // 锁屏背景
+    // —— 以下为 UI 重设计新增 token（主题包可覆盖；旧包缺 key 用默认值）——
+    uint32_t chip_accent;    // 强调色深底（状态徽章/图标位），accent 的暗色衍生
+    uint32_t danger_soft;    // 危险弱化底（破坏性按钮，弱于 danger）
+    uint32_t warning;        // 待确认/排队状态点
 };
 
 struct LockAsset {

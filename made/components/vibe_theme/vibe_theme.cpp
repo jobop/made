@@ -51,6 +51,9 @@ Palette defaults() {
         .bg_row = 0x10243B,
         .danger = 0x9C4856,
         .lock_bg = 0x0B1518,
+        .chip_accent = 0x123B31,
+        .danger_soft = 0x3B1E28,
+        .warning = 0xF5A623,
     };
 }
 
@@ -445,6 +448,9 @@ esp_err_t applyFromBridge(const std::string &name, const std::string &base_url) 
         next.bg_row = colorFromJson(colors, "bg_row", next.bg_row);
         next.danger = colorFromJson(colors, "danger", next.danger);
         next.lock_bg = colorFromJson(colors, "lock_bg", next.lock_bg);
+        next.chip_accent = colorFromJson(colors, "chip_accent", next.chip_accent);
+        next.danger_soft = colorFromJson(colors, "danger_soft", next.danger_soft);
+        next.warning = colorFromJson(colors, "warning", next.warning);
     }
 
     // 2) 提示音（WAV）：拉进内存，成功才落盘。

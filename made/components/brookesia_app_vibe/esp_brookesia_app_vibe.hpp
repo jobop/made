@@ -222,6 +222,8 @@ private:
     void showAnswer(const std::string &scope, const std::string &text);
     void render();
     void layoutReadableText();
+    void renderStatusBadge(const std::string &status); // 空串=隐藏
+    void setActivityRunning(bool running);             // 活动条循环扫动动画开关
 
     std::mutex model_mutex_;
     // 形象素材同步状态：worker 线程负责下载（syncArtwork），LVGL 线程负责
@@ -379,6 +381,16 @@ private:
     lv_obj_t *settings_button_ = nullptr;
     lv_obj_t *settings_overlay_ = nullptr;
     lv_obj_t *settings_home_ = nullptr;
+    // 任务详情重设计：分页 chip（左上）+ 状态徽章（右上）+ 不确定式活动条。
+    // 徽章「点+文字」双通道传状态；活动条只表达"进行中"，任务链路无百分比。
+    lv_obj_t *session_chip_ = nullptr;
+    lv_obj_t *session_chip_label_ = nullptr;
+    lv_obj_t *status_badge_ = nullptr;
+    lv_obj_t *status_badge_dot_ = nullptr;
+    lv_obj_t *status_badge_label_ = nullptr;
+    lv_obj_t *activity_bar_ = nullptr;
+    lv_obj_t *activity_fill_ = nullptr;
+    bool activity_anim_running_ = false; // LVGL task only.
     lv_obj_t *language_panel_ = nullptr;
     lv_obj_t *language_zh_button_ = nullptr;
     lv_obj_t *language_en_button_ = nullptr;
