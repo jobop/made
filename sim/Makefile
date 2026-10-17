@@ -58,6 +58,7 @@ APP_SRCS  := \
   made/components/vibe_i18n/vibe_i18n.cpp \
   made/components/vibe_theme/vibe_theme.cpp \
   made/managed_components/espressif__cjson/cJSON/cJSON.c \
+  made/managed_components/78__xiaozhi-fonts/src/font_puhui_14_1.c \
   made/managed_components/78__xiaozhi-fonts/src/font_puhui_16_4.c \
   made/managed_components/78__xiaozhi-fonts/src/font_puhui_20_4.c \
   sim/stubs/esp_stubs.cpp \

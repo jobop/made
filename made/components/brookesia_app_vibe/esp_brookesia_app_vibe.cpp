@@ -41,6 +41,7 @@ using esp_brookesia::systems::phone::App;
 LV_IMG_DECLARE(img_app_vibe);
 LV_FONT_DECLARE(font_puhui_16_4);
 LV_FONT_DECLARE(font_puhui_20_4);
+LV_FONT_DECLARE(font_puhui_14_1);
 
 namespace {
 using vibe_i18n::tr;
@@ -82,6 +83,8 @@ bool receiverVoiceUploading()
 // 中文点阵字号档由主题包 font 字段选择（16/20，20px 字库已内置）。
 // 注意：必须在任何控件创建之前赋值（run() 开头），控件高度随行高自适应。
 const lv_font_t *text_font = &font_puhui_16_4;
+// 抽屉任务区字号：比全局档小一号（主题 20→16、16→14），标题/chip/徽章仍用全局档。
+const lv_font_t *drawer_text_font = &font_puhui_14_1;
 
 // 主题风格半径：made_s(设计像素) 后再乘主题包的圆角缩放。
 int made_radius(int design_radius)
@@ -375,6 +378,7 @@ bool VibeCoding::run()
     vibe_i18n::initialize();
     // 字号档必须在任何控件创建之前确定（控件高度随行高自适应）。
     text_font = vibe_theme::fontPx() >= 20 ? &font_puhui_20_4 : &font_puhui_16_4;
+    drawer_text_font = vibe_theme::fontPx() >= 20 ? &font_puhui_16_4 : &font_puhui_14_1;
     active_ = true;
     exit_requested_ = false;
     invalidateCatalog(true);
@@ -1054,24 +1058,18 @@ bool VibeCoding::run()
     lv_obj_set_style_bg_color(drawer_grip_, lv_color_hex(VT(text_hint)), 0);
     lv_obj_set_style_bg_opa(drawer_grip_, LV_OPA_70, 0);
     lv_obj_clear_flag(drawer_grip_, LV_OBJ_FLAG_CLICKABLE);
-    drawer_hint_ = lv_label_create(drawer_);
-    lv_label_set_text(drawer_hint_, T("下拉收起 · 左右滑切任务"));
-    lv_obj_set_pos(drawer_hint_, made_x(24), made_y(18));
-    lv_obj_set_width(drawer_hint_, made_s(312));
-    lv_obj_set_style_text_align(drawer_hint_, LV_TEXT_ALIGN_CENTER, 0);
-    lv_obj_set_style_text_color(drawer_hint_, lv_color_hex(VT(text_hint)), 0);
-    lv_obj_set_style_text_font(drawer_hint_, text_font, 0);
-    lv_obj_clear_flag(drawer_hint_, LV_OBJ_FLAG_CLICKABLE);
+    // 手势类提示（「下拉收起 · 左右滑切任务」）已按设计移除：滑不出就试不出来，
+    // 这类文案只占一行空间还教坏用户。
 
     // 把平铺在主页的任务/回显/会话/设置控件整体搬进抽屉，重排为抽屉版式。
     // 纵向用 made_page_y 全高映射：矩形竖屏上内容铺满屏，不再挤在上半截。
     // 行序：提示 / 任务行(chip+徽章+标题) / 指令 / 活动条 / 回显。
     lv_obj_set_parent(instruction_label_, drawer_);
-    lv_obj_set_pos(instruction_label_, made_x(24), made_page_y(104));
-    lv_obj_set_width(instruction_label_, made_s(312));
-    // 提示行固定两行高：LONG_DOT 只在文字高度超过标签固定高度时才截断，
-    // 高度自适应的标签会一直换行压到位置行和回显区（实机叠字 bug）。
-    lv_obj_set_height(instruction_label_, lv_font_get_line_height(text_font) * 2 + 2);
+    lv_obj_set_pos(instruction_label_, made_x(12), made_page_y(104));
+    lv_obj_set_width(instruction_label_, made_s(336));
+    // 指令行固定一行高（设计定稿）：超长 LONG_DOT 截断，省出的一行让给回显卡片。
+    lv_obj_set_height(instruction_label_, lv_font_get_line_height(drawer_text_font) + 2);
+    lv_obj_set_style_text_font(instruction_label_, drawer_text_font, 0);
     // 抽屉版式全部左对齐（创建时是主页居中排版，不重设会叠出错位观感）。
     lv_obj_set_style_text_align(instruction_label_, LV_TEXT_ALIGN_LEFT, 0);
     lv_obj_set_parent(position_label_, drawer_);
@@ -1149,8 +1147,8 @@ bool VibeCoding::run()
     // 任务链路没有百分比信号（progress 是自由文本），绝不做确定性进度条。
     activity_bar_ = lv_obj_create(drawer_);
     lv_obj_remove_style_all(activity_bar_);
-    lv_obj_set_pos(activity_bar_, made_x(24), made_page_y(148));
-    lv_obj_set_size(activity_bar_, made_s(312), made_s(5));
+    lv_obj_set_pos(activity_bar_, made_x(12), made_page_y(122));
+    lv_obj_set_size(activity_bar_, made_s(336), made_s(5));
     lv_obj_set_style_radius(activity_bar_, made_s(2), 0);
     lv_obj_set_style_bg_color(activity_bar_, lv_color_hex(VT(bg_row)), 0);
     lv_obj_set_style_bg_opa(activity_bar_, LV_OPA_COVER, 0);
@@ -1320,7 +1318,6 @@ bool VibeCoding::close()
     }
     drawer_ = nullptr;
     drawer_grip_ = nullptr;
-    drawer_hint_ = nullptr;
     language_panel_ = nullptr;
     language_zh_button_ = nullptr;
     language_en_button_ = nullptr;
@@ -4103,14 +4100,14 @@ void VibeCoding::render()
         renderStatusBadge("");
         setActivityRunning(false);
         lv_label_set_text(position_label_, T("暂无任务"));
-        lv_label_set_text(instruction_label_, !snapshot.session_notice.empty() ? own_session_notice.c_str() : T("上滑拉出抽屉，点 + 创建任务"));
+        lv_label_set_text(instruction_label_, !snapshot.session_notice.empty() ? own_session_notice.c_str() : T("点 + 创建任务"));
         lv_obj_set_style_text_align(result_label_, LV_TEXT_ALIGN_CENTER, 0);
         lv_obj_set_style_text_align(instruction_label_, LV_TEXT_ALIGN_CENTER, 0);
         lv_obj_set_style_text_align(position_label_, LV_TEXT_ALIGN_CENTER, 0);
         const std::string empty_message = !snapshot.connection_error.empty() ? own_error :
             !snapshot.session_notice.empty() ? own_session_notice :
             !provider_ready ? (provider.reason.empty() ? T("请先在电脑端启用此助手") : provider.reason) :
-            T("先创建任务，再按住 BOOT 说话。左右滑动换助手。");
+            T("先创建任务，再按住 BOOT 说话。");
         showAnswer(provider.id + "/no-session", empty_message);
         {
             std::lock_guard<std::mutex> lock(model_mutex_);
@@ -4171,7 +4168,7 @@ void VibeCoding::render()
             voice.phase == vibe_voice::Phase::Uploading ? T("正在识别语音…") :
             !voice_notice.empty() ? voice_notice :
             provider.external_unscoped ? T("此助手任务隔离受限，请在电脑端核对。") :
-            T("上滑拉出抽屉查看任务与回显。左右滑切助手。");
+            T("按住 BOOT 说话，发起新任务。");
         showAnswer(selected_session_id + "/empty", result);
         renderAttachments({}); // 无任务时清空可能残留的旧附件
     } else {
@@ -4235,9 +4232,12 @@ void VibeCoding::render()
 void VibeCoding::applyDrawerAnswerLayout()
 {
     if (!answer_area_ || !result_label_) return;
-    lv_obj_set_pos(answer_area_, made_x(24), made_page_y(160));
-    lv_obj_set_size(answer_area_, made_s(312), made_page_y(256) - made_page_y(160));
+    // 设计定稿：卡片左右贴 12 边距、顶吃掉指令行省出的一行（page_y 128）、
+    // 底到 page_y(282)，距按钮行（page_y 296）留 14 设计像素不压。
+    lv_obj_set_pos(answer_area_, made_x(12), made_page_y(128));
+    lv_obj_set_size(answer_area_, made_s(336), made_page_y(282) - made_page_y(128));
     lv_obj_set_style_text_align(result_label_, LV_TEXT_ALIGN_LEFT, 0);
+    lv_obj_set_style_text_font(result_label_, drawer_text_font, 0);
     // Air 语言：回显装进白卡片（面板底 + 细描边 + 大圆角，无投影），
     // 让「AI 说什么」有自己的容器层级，不再悬在页面上。
     lv_obj_set_style_bg_color(answer_area_, lv_color_hex(VT(bg_panel)), 0);

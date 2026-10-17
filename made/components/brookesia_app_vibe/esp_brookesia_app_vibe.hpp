@@ -370,7 +370,6 @@ private:
     uint32_t sprite_transient_until_ = 0;     // lv_tick_get() 毫秒
     lv_obj_t *drawer_ = nullptr;
     lv_obj_t *drawer_grip_ = nullptr;
-    lv_obj_t *drawer_hint_ = nullptr;
     lv_obj_t *provider_label_ = nullptr;
     bool rendered_catalog_ready_ = false;
     bool pairing_drawer_auto_ = false;   // 配对期间自动拉开的抽屉，配对完成后自动收囘
