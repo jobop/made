@@ -4751,16 +4751,6 @@ void VibeCoding::ensureSide(int index)
             other.defer_until = lv_tick_get() + 5000;
         }
     }
-    // 背向侧补齐门槛（防解码振荡）。4 助手 3 舞台时若两侧全养，空闲会被
-    // 压到 ~880KB，且每次晋升都要回收背向侧重解码——日志实测「补齐后 0.2s
-    // 就被回收」的死循环。只养方向侧（拖动去向，用户马上要看）；背向侧
-    // 仅在空闲充裕（≥2.6MB，够养满 3 套还有富余）时才补，否则宁可留空——
-    // 用户反向滑到它时走缓存直换（~1s，SPIFFS 读+解码，可接受）。
-    // 副收益：空闲地板从 880KB 抬回 ~1.9MB，录音缓冲（940KB）不再贴悬崖。
-    if (index != drag_side_ &&
-        heap_caps_get_free_size(MALLOC_CAP_SPIRAM) < 2600 * 1024) {
-        return;
-    }
     // 失败退避：起飞失败/解码失败后 1s 内不白试；重试前必须清 failed/done
     // 残留——prefetchBegin 见这些状态会直接拒绝，不清就是永久卡死。
     const uint32_t now = lv_tick_get();
