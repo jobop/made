@@ -29,33 +29,45 @@ namespace {
 
 constexpr const char *kTag = "vibe_theme";
 constexpr const char *kNvsNamespace = "vibe_theme";
-constexpr const char *kIconPath = "/spiffs/theme_icon.bin";
-constexpr const char *kBgPath = "/spiffs/theme_bg.bin";
 constexpr const char *kSoundPath = "/spiffs/theme_chime.wav";
 constexpr size_t kMaxSoundBytes = 256 * 1024;  // USB 帧转发单响应上限
 constexpr size_t kUsbResponseLimit = 256 * 1024;  // 与 vibe_usb kMaxResponse 对齐
 
+// 内置默认主题：莫兰迪灰调（暖燕麦底 + 灰绿点缀，整体低饱和不刺眼）。
+// 对比度按 puhui 16px 点阵小字核算：正文 ≥7:1，提示 ≥3.5:1。
 Palette defaults() {
     return Palette{
-        .accent = 0x1C856F,
-        .btn_normal = 0x284668,
-        .btn_cancel = 0x42566B,
-        .border = 0x3D5A85,
-        .text_primary = 0xF1F5FF,
-        .text_secondary = 0xB8C9E4,
-        .text_hint = 0x9FADD0,
-        .text_accent = 0x8CE4CB,
-        .title = 0xE7EEFF,
-        .bg_page = 0x091321,
-        .bg_panel = 0x0B1830,
-        .bg_row = 0x10243B,
-        .danger = 0x9C4856,
-        .lock_bg = 0x0B1518,
+        .accent = 0x6F8F87,
+        .btn_normal = 0xE2DFD8,
+        .btn_cancel = 0xE9E6E0,
+        .border = 0xD7D3CA,
+        .text_primary = 0x3B403D,
+        .text_secondary = 0x6C736E,
+        .text_hint = 0x8D938C,
+        .text_accent = 0x5A7A72,
+        .text_answer = 0x737C76,
+        .text_on_accent = 0xF7F6F2,
+        .title = 0x333936,
+        .bg_page = 0xEFECE6,
+        .bg_panel = 0xF7F5F1,
+        .bg_row = 0xE4E1DA,
+        .home_bg = 0xE3E5DC,
+        .danger = 0xA5676E,
+        .chip_accent = 0xDDE3DD,
+        .danger_soft = 0xE9DEDC,
+        .warning = 0xC09566,
+        .success = 0x7E9B84,
     };
 }
 
 Palette g_palette = defaults();
-LockAsset g_lock;
+struct Metrics {
+    int radius_scale = 100;  // 50~200
+    int shape = kShapeRounded;
+    int base = 1;            // 1 = light（内置默认浅色）
+    int font_px = 16;        // 16 / 20
+};
+Metrics g_metrics;
 std::string g_active;
 std::mutex g_sync_mutex;
 SyncStatus g_sync;
@@ -120,57 +132,39 @@ bool saveDimsNvs(const char *key, uint16_t value) {
     return result == ESP_OK;
 }
 
-// ---- 锁屏资产（扁平文件 + NVS 尺寸）----
+// ---- 风格参数（圆角缩放 / 形状 / 亮暗 / 字号档）----
 
-void freeLockAsset() {
-    if (g_lock.icon_data) {
-        heap_caps_free(g_lock.icon_data);
-        g_lock.icon_data = nullptr;
-    }
-    if (g_lock.bg_data) {
-        heap_caps_free(g_lock.bg_data);
-        g_lock.bg_data = nullptr;
-    }
-    g_lock = LockAsset{};
+void loadMetricsNvs() {
+    nvs_handle_t handle;
+    if (nvs_open(kNvsNamespace, NVS_READONLY, &handle) != ESP_OK) return;
+    uint16_t value = 0;
+    if (nvs_get_u16(handle, "radius_scale", &value) == ESP_OK && value >= 50 && value <= 200)
+        g_metrics.radius_scale = value;
+    value = 0;
+    if (nvs_get_u16(handle, "shape", &value) == ESP_OK && value <= kShapeSquare)
+        g_metrics.shape = value;
+    value = 0;
+    if (nvs_get_u16(handle, "base", &value) == ESP_OK && value <= 1)
+        g_metrics.base = value;
+    value = 0;
+    if (nvs_get_u16(handle, "font_px", &value) == ESP_OK && (value == 16 || value == 20))
+        g_metrics.font_px = value;
+    nvs_close(handle);
 }
 
-// 从扁平文件读入 PSRAM。宽或高为 0 表示该资产未启用。
-void loadFlatAsset(const char *path, const char *w_key, const char *h_key,
-                   bool &has_flag, uint8_t *&data, uint16_t &w, uint16_t &h) {
-    const uint16_t width = loadDimsNvs(w_key);
-    const uint16_t height = loadDimsNvs(h_key);
-    if (width == 0 || height == 0) return;
-    FILE *file = fopen(path, "rb");
-    if (file == nullptr) return;
-    const size_t expected = static_cast<size_t>(width) * height * 2;
-    auto *buffer = static_cast<uint8_t *>(
-        heap_caps_malloc(expected, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
-    if (buffer == nullptr) {
-        fclose(file);
-        return;
-    }
-    const size_t read = fread(buffer, 1, expected, file);
-    fclose(file);
-    if (read != expected) {
-        heap_caps_free(buffer);
-        return;
-    }
-    has_flag = true;
-    data = buffer;
-    w = width;
-    h = height;
-    ESP_LOGI(kTag, "Lock asset %s: %ux%u", path, width, height);
+bool saveMetricsNvs() {
+    nvs_handle_t handle;
+    if (nvs_open(kNvsNamespace, NVS_READWRITE, &handle) != ESP_OK) return false;
+    esp_err_t result = nvs_set_u16(handle, "radius_scale", g_metrics.radius_scale);
+    if (result == ESP_OK) result = nvs_set_u16(handle, "shape", g_metrics.shape);
+    if (result == ESP_OK) result = nvs_set_u16(handle, "base", g_metrics.base);
+    if (result == ESP_OK) result = nvs_set_u16(handle, "font_px", g_metrics.font_px);
+    if (result == ESP_OK) result = nvs_commit(handle);
+    nvs_close(handle);
+    return result == ESP_OK;
 }
 
 bool soundEnabledNvs() { return loadDimsNvs("has_sound") == 1; }
-
-void loadLockAssets() {
-    freeLockAsset();
-    loadFlatAsset(kIconPath, "icon_w", "icon_h", g_lock.has_icon, g_lock.icon_data,
-                  g_lock.icon_w, g_lock.icon_h);
-    loadFlatAsset(kBgPath, "bg_w", "bg_h", g_lock.has_bg, g_lock.bg_data,
-                  g_lock.bg_w, g_lock.bg_h);
-}
 
 // 一次性清理旧版按主题目录存放的对象（themes/... 前缀）。
 void cleanupLegacyThemeFiles() {
@@ -329,12 +323,15 @@ esp_err_t init() {
     cleanupLegacyThemeFiles();
     g_active = loadActiveNvs();
     if (!loadPaletteNvs(g_palette)) g_palette = defaults();
-    loadLockAssets();
+    loadMetricsNvs();
     return ESP_OK;
 }
 
 const Palette &palette() { return g_palette; }
-const LockAsset &lockAsset() { return g_lock; }
+int radiusScale() { return g_metrics.radius_scale; }
+int shapeMode() { return g_metrics.shape; }
+bool isLightBase() { return g_metrics.base == 1; }
+int fontPx() { return g_metrics.font_px; }
 std::string soundPath() { return soundEnabledNvs() ? std::string(kSoundPath) : std::string(); }
 std::string activeName() { return g_active; }
 
@@ -399,14 +396,9 @@ esp_err_t applyFromBridge(const std::string &name, const std::string &base_url) 
 
     if (name.empty()) {
         g_palette = defaults();
-        freeLockAsset();
+        g_metrics = Metrics{};
         savePaletteNvs(g_palette);  // 必须同步覆盖 NVS 调色板，否则重启后又加载回来
-        unlink(kIconPath);
-        unlink(kBgPath);
-        saveDimsNvs("icon_w", 0);
-        saveDimsNvs("icon_h", 0);
-        saveDimsNvs("bg_w", 0);
-        saveDimsNvs("bg_h", 0);
+        saveMetricsNvs();
         unlink(kSoundPath);
         saveDimsNvs("has_sound", 0);
         if (!saveActiveNvs("")) {
@@ -439,13 +431,40 @@ esp_err_t applyFromBridge(const std::string &name, const std::string &base_url) 
         next.text_secondary = colorFromJson(colors, "text_secondary", next.text_secondary);
         next.text_hint = colorFromJson(colors, "text_hint", next.text_hint);
         next.text_accent = colorFromJson(colors, "text_accent", next.text_accent);
+        next.text_answer = colorFromJson(colors, "text_answer", next.text_answer);
+        next.text_on_accent = colorFromJson(colors, "text_on_accent", next.text_on_accent);
         next.title = colorFromJson(colors, "title", next.title);
         next.bg_page = colorFromJson(colors, "bg_page", next.bg_page);
         next.bg_panel = colorFromJson(colors, "bg_panel", next.bg_panel);
         next.bg_row = colorFromJson(colors, "bg_row", next.bg_row);
+        next.home_bg = colorFromJson(colors, "home_bg", next.home_bg);
         next.danger = colorFromJson(colors, "danger", next.danger);
-        next.lock_bg = colorFromJson(colors, "lock_bg", next.lock_bg);
+        next.chip_accent = colorFromJson(colors, "chip_accent", next.chip_accent);
+        next.danger_soft = colorFromJson(colors, "danger_soft", next.danger_soft);
+        next.warning = colorFromJson(colors, "warning", next.warning);
+        next.success = colorFromJson(colors, "success", next.success);
     }
+
+    // 风格参数：亮暗元数据 / 圆角缩放 / 形状语言 / 字号档。
+    const cJSON *base_item = cJSON_GetObjectItemCaseSensitive(root, "base");
+    if (cJSON_IsString(base_item) && base_item->valuestring != nullptr)
+        g_metrics.base = std::string(base_item->valuestring) == "light" ? 1 : 0;
+    const cJSON *metrics = cJSON_GetObjectItemCaseSensitive(root, "metrics");
+    if (cJSON_IsObject(metrics)) {
+        const cJSON *scale = cJSON_GetObjectItemCaseSensitive(metrics, "radius_scale");
+        if (cJSON_IsNumber(scale) && scale->valuedouble >= 50 && scale->valuedouble <= 200)
+            g_metrics.radius_scale = static_cast<int>(scale->valuedouble);
+    }
+    const cJSON *shape_item = cJSON_GetObjectItemCaseSensitive(root, "shape");
+    if (cJSON_IsString(shape_item) && shape_item->valuestring != nullptr) {
+        const std::string shape = shape_item->valuestring;
+        if (shape == "circle") g_metrics.shape = kShapeCircle;
+        else if (shape == "square") g_metrics.shape = kShapeSquare;
+        else g_metrics.shape = kShapeRounded;
+    }
+    const cJSON *font_item = cJSON_GetObjectItemCaseSensitive(root, "font");
+    if (cJSON_IsNumber(font_item) && (font_item->valuedouble == 16 || font_item->valuedouble == 20))
+        g_metrics.font_px = static_cast<int>(font_item->valuedouble);
 
     // 2) 提示音（WAV）：拉进内存，成功才落盘。
     std::vector<uint8_t> sound_data;
@@ -471,66 +490,9 @@ esp_err_t applyFromBridge(const std::string &name, const std::string &base_url) 
         }
     }
 
-    // 3) 先全部拉进内存（PSRAM），全部成功才落盘，避免半套缓存。
-    struct AssetBlob {
-        std::vector<uint8_t> data;
-        uint16_t w = 0, h = 0;
-        const char *file_key, *w_key, *h_key, *path, *nvs_w, *nvs_h;
-    };
-    AssetBlob assets[] = {
-        {{}, 0, 0, "icon", "icon_w", "icon_h", kIconPath, "icon_w", "icon_h"},
-        {{}, 0, 0, "bg", "bg_w", "bg_h", kBgPath, "bg_w", "bg_h"},
-    };
-    const cJSON *lock = cJSON_GetObjectItemCaseSensitive(root, "lock");
-    if (cJSON_IsObject(lock)) {
-        for (auto &asset : assets) {
-            const cJSON *file_item = cJSON_GetObjectItemCaseSensitive(lock, asset.file_key);
-            const cJSON *w_item = cJSON_GetObjectItemCaseSensitive(lock, asset.w_key);
-            const cJSON *h_item = cJSON_GetObjectItemCaseSensitive(lock, asset.h_key);
-            if (!cJSON_IsString(file_item) || file_item->valuestring == nullptr ||
-                !cJSON_IsNumber(w_item) || !cJSON_IsNumber(h_item))
-                continue;
-            asset.w = static_cast<uint16_t>(w_item->valuedouble);
-            asset.h = static_cast<uint16_t>(h_item->valuedouble);
-            if (asset.w == 0 || asset.h == 0 || asset.w > 480 || asset.h > 480) {
-                asset.w = asset.h = 0;
-                continue;
-            }
-            {
-                std::lock_guard<std::mutex> progress_lock(g_sync_mutex);
-                g_sync.message = std::string("下载 ") + asset.file_key + "…";
-            }
-            std::string content;
-            if (!fetchPathRetry(base_url, "/api/themes/" + name + "/files/" + file_item->valuestring,
-                           content) ||
-                content.size() != static_cast<size_t>(asset.w) * asset.h * 2) {
-                cJSON_Delete(root);
-                finish(SyncState::Failed, "主题资产下载失败");
-                return ESP_FAIL;
-            }
-            asset.data.assign(content.begin(), content.end());
-        }
-    }
     cJSON_Delete(root);
 
-    // 3) 落盘 + 提交 NVS。
-    for (auto &asset : assets) {
-        if (asset.data.empty()) {
-            unlink(asset.path);
-            saveDimsNvs(asset.nvs_w, 0);
-            saveDimsNvs(asset.nvs_h, 0);
-            continue;
-        }
-        FILE *file = fopen(asset.path, "wb");
-        if (file == nullptr) {
-            finish(SyncState::Failed, "写入缓存失败");
-            return ESP_FAIL;
-        }
-        fwrite(asset.data.data(), 1, asset.data.size(), file);
-        fclose(file);
-        saveDimsNvs(asset.nvs_w, asset.w);
-        saveDimsNvs(asset.nvs_h, asset.h);
-    }
+    // 3) 落盘 + 提交 NVS（锁屏资产已随锁屏功能移除，只保留提示音）。
     if (sound_data.empty()) {
         unlink(kSoundPath);
         saveDimsNvs("has_sound", 0);
@@ -544,7 +506,7 @@ esp_err_t applyFromBridge(const std::string &name, const std::string &base_url) 
         fclose(sound_file);
         saveDimsNvs("has_sound", 1);
     }
-    if (!savePaletteNvs(next) || !saveActiveNvs(name)) {
+    if (!savePaletteNvs(next) || !saveMetricsNvs() || !saveActiveNvs(name)) {
         finish(SyncState::Failed, "写入缓存失败");
         return ESP_FAIL;
     }

@@ -230,29 +230,197 @@ esp_err_t esp_wifi_set_mode(wifi_mode_t mode) { (void)mode; return ESP_OK; }
 esp_err_t esp_wifi_get_mode(wifi_mode_t *mode) { *mode = WIFI_MODE_STA; return ESP_OK; }
 esp_err_t esp_wifi_scan_start(void *config, bool block) { (void)config; (void)block; return ESP_ERR_INVALID_STATE; }
 esp_err_t esp_wifi_scan_get_ap_num(uint16_t *number) { *number = 0; return ESP_OK; }
-esp_err_t esp_wifi_sta_get_ap_info(wifi_ap_record_t *info) { memset(info, 0, sizeof(*info)); return ESP_ERR_INVALID_STATE; }
+esp_err_t esp_wifi_sta_get_ap_info(wifi_ap_record_t *info)
+{
+    // MADE_SIM_WIFI=1 时报告已连上（否则网络轮询线程永远走「先连接 Wi-Fi」）。
+    if (info) memset(info, 0, sizeof(*info));
+    if (!getenv("MADE_SIM_WIFI")) return ESP_ERR_INVALID_STATE;
+    if (info) snprintf(reinterpret_cast<char *>(info->ssid), sizeof(info->ssid), "SimWiFi");
+    return ESP_OK;
+}
 
-/* ---------------- HTTP（永远失败） ---------------- */
-struct esp_http_client { int status; };
+/* ---------------- HTTP（真实 socket 实现：让 sim 连本机桩桥接器） ----------------
+ * 只支持 http://（桩桥接器固定 http://127.0.0.1:8788）。连接失败返回
+ * ESP_FAIL，行为与旧「永远失败」桩一致；连上则完整走请求/响应，
+ * 并向 config.event_handler 派发 HTTP_EVENT_ON_DATA（VibeCoding::request
+ * 靠它收集响应体）。fetch 主题用的 open/read/fetch_headers 一并实现。 */
+#include <sys/socket.h>
+#include <sys/types.h>
+#include <netdb.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+
+struct esp_http_client {
+    std::string url;
+    std::string method = "GET";
+    std::string body;
+    std::vector<std::string> headers;
+    const esp_http_client_config_t *conf = nullptr;
+    int status = 0;
+    // open/read 状态（vibe_theme fetchPath 路径）
+    std::string resp_body;
+    size_t read_pos = 0;
+    long long content_length = -1;
+    bool opened = false;
+};
+
+namespace {
+// 解析 http://host[:port]/path；失败返回 false。
+bool sim_parse_url(const std::string &url, std::string &host, int &port, std::string &path)
+{
+    const std::string scheme = "http://";
+    if (url.rfind(scheme, 0) != 0) return false;
+    const std::string rest = url.substr(scheme.size());
+    const size_t slash = rest.find('/');
+    const std::string authority = slash == std::string::npos ? rest : rest.substr(0, slash);
+    path = slash == std::string::npos ? "/" : rest.substr(slash);
+    const size_t colon = authority.rfind(':');
+    if (colon != std::string::npos) {
+        host = authority.substr(0, colon);
+        port = atoi(authority.c_str() + colon + 1);
+    } else {
+        host = authority;
+        port = 80;
+    }
+    return !host.empty() && port > 0;
+}
+} // namespace
 
 esp_http_client_handle_t esp_http_client_init(const esp_http_client_config_t *config)
 {
-    (void)config;
-    return new esp_http_client {0};
+    if (!config || !config->url) return nullptr;
+    // config.url 指向调用方临时 string，这里拷贝一份。
+    return new esp_http_client{/*.url=*/std::string(config->url), /*.method=*/"GET",
+                               /*.body=*/{}, /*.headers=*/{}, /*.conf=*/config,
+                               /*.status=*/0, /*.resp_body=*/{}, /*.read_pos=*/0,
+                               /*.content_length=*/-1, /*.opened=*/false};
 }
-esp_err_t esp_http_client_perform(esp_http_client_handle_t client) { (void)client; return ESP_FAIL; }
-esp_err_t esp_http_client_cleanup(esp_http_client_handle_t client) { delete client; return ESP_OK; }
-esp_err_t esp_http_client_set_header(esp_http_client_handle_t c, const char *k, const char *v) { (void)c; (void)k; (void)v; return ESP_OK; }
-esp_err_t esp_http_client_delete_header(esp_http_client_handle_t c, const char *k) { (void)c; (void)k; return ESP_OK; }
-esp_err_t esp_http_client_set_method(esp_http_client_handle_t c, esp_http_client_method_t m) { (void)c; (void)m; return ESP_OK; }
-esp_err_t esp_http_client_set_post_field(esp_http_client_handle_t c, const char *d, int len) { (void)c; (void)d; (void)len; return ESP_OK; }
-int esp_http_client_get_status_code(esp_http_client_handle_t client) { return client->status; }
-int esp_http_client_get_content_length(esp_http_client_handle_t c) { (void)c; return -1; }
-esp_err_t esp_http_client_open(esp_http_client_handle_t c, int n) { (void)c; (void)n; return ESP_FAIL; }
-int esp_http_client_read(esp_http_client_handle_t c, char *b, int l) { (void)c; (void)b; (void)l; return 0; }
-esp_err_t esp_http_client_close(esp_http_client_handle_t c) { (void)c; return ESP_OK; }
-const char *esp_http_client_get_url(esp_http_client_handle_t c) { (void)c; return ""; }
-int64_t esp_http_client_fetch_headers(esp_http_client_handle_t c) { (void)c; return 0; }
+
+static void sim_fire_data(esp_http_client_handle_t client, const char *data, int len)
+{
+    if (!client->conf || !client->conf->event_handler || len <= 0) return;
+    esp_http_client_event_t ev {};
+    ev.event_id = HTTP_EVENT_ON_DATA;
+    ev.client = client;
+    ev.user_data = client->conf->user_data;
+    ev.data = const_cast<char *>(data);
+    ev.data_len = len;
+    client->conf->event_handler(&ev);
+}
+
+// 建连 + 发请求 + 收完整响应（头部解析出状态码与 Content-Length）。
+static bool sim_http_exchange(esp_http_client_handle_t client)
+{
+    std::string host, path;
+    int port = 0;
+    if (!sim_parse_url(client->url, host, port, path)) return false;
+    char port_str[16];
+    snprintf(port_str, sizeof(port_str), "%d", port);
+    addrinfo hints {};
+    hints.ai_family = AF_UNSPEC;
+    hints.ai_socktype = SOCK_STREAM;
+    addrinfo *res = nullptr;
+    if (getaddrinfo(host.c_str(), port_str, &hints, &res) != 0 || !res) return false;
+    int fd = socket(res->ai_family, res->ai_socktype, res->ai_protocol);
+    if (fd < 0) { freeaddrinfo(res); return false; }
+    int nosigpipe = 1;
+    setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &nosigpipe, sizeof(nosigpipe));
+    if (connect(fd, res->ai_addr, res->ai_addrlen) != 0) {
+        close(fd);
+        freeaddrinfo(res);
+        return false;
+    }
+    freeaddrinfo(res);
+
+    std::string req = client->method + " " + path + " HTTP/1.1\r\n";
+    req += "Host: " + host + "\r\n";
+    for (const auto &h : client->headers) req += h + "\r\n";
+    if (!client->body.empty())
+        req += "Content-Length: " + std::to_string(client->body.size()) + "\r\n";
+    req += "Connection: close\r\n\r\n";
+    if (!client->body.empty()) req += client->body;
+    size_t sent = 0;
+    while (sent < req.size()) {
+        const ssize_t n = ::send(fd, req.data() + sent, req.size() - sent, 0);
+        if (n <= 0) { close(fd); return false; }
+        sent += static_cast<size_t>(n);
+    }
+
+    std::string raw;
+    char buf[4096];
+    ssize_t n;
+    while ((n = ::recv(fd, buf, sizeof(buf), 0)) > 0) raw.append(buf, static_cast<size_t>(n));
+    close(fd);
+
+    const size_t head_end = raw.find("\r\n\r\n");
+    const std::string head = head_end == std::string::npos ? raw : raw.substr(0, head_end);
+    client->resp_body = head_end == std::string::npos ? std::string() : raw.substr(head_end + 4);
+    // 状态码
+    if (head.rfind("HTTP/", 0) == 0) {
+        const size_t sp = head.find(' ');
+        client->status = sp == std::string::npos ? 0 : atoi(head.c_str() + sp + 1);
+    }
+    // Content-Length（分块编码就不裁了，桩服务器不会用）
+    if (head.find("Transfer-Encoding: chunked") == std::string::npos) {
+        const size_t cl = head.find("Content-Length:");
+        if (cl != std::string::npos) client->content_length = atoll(head.c_str() + cl + 15);
+    } else {
+        client->content_length = -1;
+    }
+    return client->status > 0;
+}
+
+esp_err_t esp_http_client_perform(esp_http_client_handle_t client)
+{
+    if (!client) return ESP_FAIL;
+    if (!sim_http_exchange(client)) return ESP_FAIL;
+    sim_fire_data(client, client->resp_body.data(), static_cast<int>(client->resp_body.size()));
+    return ESP_OK;
+}
+
+esp_err_t esp_http_client_cleanup(esp_http_client_handle_t client)
+{
+    delete client;
+    return ESP_OK;
+}
+esp_err_t esp_http_client_set_header(esp_http_client_handle_t c, const char *k, const char *v)
+{ if (c && k && v) c->headers.push_back(std::string(k) + ": " + v); return ESP_OK; }
+esp_err_t esp_http_client_delete_header(esp_http_client_handle_t c, const char *k)
+{ (void)c; (void)k; return ESP_OK; }
+esp_err_t esp_http_client_set_method(esp_http_client_handle_t c, esp_http_client_method_t m)
+{
+    if (!c) return ESP_FAIL;
+    static const char *names[] = {"GET", "POST", "PUT", "DELETE", "HEAD", "PATCH"};
+    c->method = names[m < HTTP_METHOD_PATCH ? m : HTTP_METHOD_GET];
+    return ESP_OK;
+}
+esp_err_t esp_http_client_set_post_field(esp_http_client_handle_t c, const char *d, int len)
+{ if (c) c->body = (d && len > 0) ? std::string(d, static_cast<size_t>(len)) : std::string(); return ESP_OK; }
+int esp_http_client_get_status_code(esp_http_client_handle_t client) { return client ? client->status : 0; }
+int esp_http_client_get_content_length(esp_http_client_handle_t c) { return c ? static_cast<int>(c->content_length) : -1; }
+
+esp_err_t esp_http_client_open(esp_http_client_handle_t c, int write_len)
+{
+    (void)write_len;
+    if (!c) return ESP_FAIL;
+    c->read_pos = 0;
+    c->content_length = -1;
+    c->opened = sim_http_exchange(c);
+    return c->opened ? ESP_OK : ESP_FAIL;
+}
+int esp_http_client_read(esp_http_client_handle_t c, char *buffer, int len)
+{
+    if (!c || !c->opened || !buffer || len <= 0 || c->read_pos >= c->resp_body.size()) return 0;
+    const size_t remain = c->resp_body.size() - c->read_pos;
+    const size_t take = remain < static_cast<size_t>(len) ? remain : static_cast<size_t>(len);
+    memcpy(buffer, c->resp_body.data() + c->read_pos, take);
+    c->read_pos += take;
+    return static_cast<int>(take);
+}
+esp_err_t esp_http_client_close(esp_http_client_handle_t c) { if (c) c->opened = false; return ESP_OK; }
+const char *esp_http_client_get_url(esp_http_client_handle_t c) { return c ? c->url.c_str() : ""; }
+int64_t esp_http_client_fetch_headers(esp_http_client_handle_t c)
+{ return c ? c->content_length : -1; }
 
 esp_err_t esp_crt_bundle_attach(void *conf) { (void)conf; return ESP_OK; }
 

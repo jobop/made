@@ -222,6 +222,9 @@ private:
     void showAnswer(const std::string &scope, const std::string &text);
     void render();
     void layoutReadableText();
+    void applyDrawerAnswerLayout(); // 回显区抽屉坐标（配对布局退出后必须恢复，否则叠进指令行）
+    void renderStatusBadge(const std::string &status); // 空串=隐藏
+    void setActivityRunning(bool running);             // 活动条循环扫动动画开关
 
     std::mutex model_mutex_;
     // 形象素材同步状态：worker 线程负责下载（syncArtwork），LVGL 线程负责
@@ -289,6 +292,8 @@ private:
     void maybeStartPrefetch(int direction);
     void prefetchTick();                   // 每帧：解码完挂上归属侧台+对齐两侧
     void ensureSide(int index);            // 侧台内容对齐相邻助手（按需解码）
+    void reclaimSpriteMemoryForVoice();    // 录音前兜底：侧台/预取让位给录音缓冲
+    bool sprite_held_for_voice_ = false;   // 录音回收过侧台；录音结束后 prefetchTick 解除暂缓
     bool tryPromotePrefetch(const std::string &provider);  // 命中则三指针轮换
     bool sideTarget(int index, std::string &target, uint32_t &version);
     uint32_t spriteVersionOf(const std::string &provider); // 目录里素材的版本号
@@ -367,7 +372,6 @@ private:
     uint32_t sprite_transient_until_ = 0;     // lv_tick_get() 毫秒
     lv_obj_t *drawer_ = nullptr;
     lv_obj_t *drawer_grip_ = nullptr;
-    lv_obj_t *drawer_hint_ = nullptr;
     lv_obj_t *provider_label_ = nullptr;
     bool rendered_catalog_ready_ = false;
     bool pairing_drawer_auto_ = false;   // 配对期间自动拉开的抽屉，配对完成后自动收囘
@@ -379,6 +383,16 @@ private:
     lv_obj_t *settings_button_ = nullptr;
     lv_obj_t *settings_overlay_ = nullptr;
     lv_obj_t *settings_home_ = nullptr;
+    // 任务详情重设计：分页 chip（左上）+ 状态徽章（右上）+ 不确定式活动条。
+    // 徽章「点+文字」双通道传状态；活动条只表达"进行中"，任务链路无百分比。
+    lv_obj_t *session_chip_ = nullptr;
+    lv_obj_t *session_chip_label_ = nullptr;
+    lv_obj_t *status_badge_ = nullptr;
+    lv_obj_t *status_badge_dot_ = nullptr;
+    lv_obj_t *status_badge_label_ = nullptr;
+    lv_obj_t *activity_bar_ = nullptr;
+    lv_obj_t *activity_fill_ = nullptr;
+    bool activity_anim_running_ = false; // LVGL task only.
     lv_obj_t *language_panel_ = nullptr;
     lv_obj_t *language_zh_button_ = nullptr;
     lv_obj_t *language_en_button_ = nullptr;
