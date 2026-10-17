@@ -11,15 +11,14 @@ namespace esp_brookesia::apps {
 // window open, so a slow follow-up release cannot trigger an earlier action.
 class BootClickGesture {
 public:
-    enum class Decision { None, Voice, Confirm, Cancel, Home, Hold, Release };
+    enum class Decision { None, Voice, Confirm, Cancel, Hold, Release };
 
     static constexpr uint32_t debounce_ms = 30;
     static constexpr uint32_t click_gap_ms = 420;
     static constexpr uint32_t max_press_ms = 650;
-    static constexpr uint32_t home_press_ms = 1200;
     // 长按说话：按住该时长即进入录音（Hold），松手结束并发送（Release）。
-    // hold_armed_（voice 可用）时长按完全归属录音：Home 不再触发，取消
-    // 录音用三击。hold 不可用时保留旧的长按 Home 语义。
+    // 长按完全归属录音，无 Home 分支（2026-10-17 用户要求移除：说话期间
+    // 任何长按衍生决策都会干扰录音）；取消录音用三击。
     static constexpr uint32_t voice_hold_ms = 500;
 
     void reset()
@@ -28,7 +27,6 @@ public:
         raw_pressed_ = false;
         stable_pressed_ = false;
         ignore_initial_press_ = false;
-        home_sent_ = false;
         hold_sent_ = false;
         hold_armed_ = true;
         clicks_ = 0;
@@ -37,7 +35,7 @@ public:
         last_released_ms_ = 0;
     }
 
-    // App 层每轮喂：voice 不可用/设置打开时 hold 不武装，长按回落到 Home。
+    // App 层每轮喂：voice 不可用/设置打开时 hold 不武装，长按无动作。
     void setHoldArmed(bool armed) { hold_armed_ = armed; }
 
     bool sequenceActive() const { return stable_pressed_ || clicks_ > 0; }
@@ -63,28 +61,12 @@ public:
             stable_pressed_ = raw_pressed_;
             if (stable_pressed_) {
                 press_started_ms_ = now_ms;
-                home_sent_ = false;
-            } else if (home_sent_) {
-                // The hold already requested exit. Its release is not a click.
-                home_sent_ = false;
-                hold_sent_ = false;
-                ignore_initial_press_ = false;
-                clicks_ = 0;
             } else if (hold_sent_) {
                 // 长按录音的松手：结束录音并上传（app 层调 vibe_voice::finish()）。
-                // 必须先于 home fallback 判定：正常说话长按必然超过
-                // home_press_ms，顺序反了松手会被错判成 Home（实测踩坑）。
                 hold_sent_ = false;
                 ignore_initial_press_ = false;
                 clicks_ = 0;
                 return Decision::Release;
-            } else if (now_ms - press_started_ms_ >= home_press_ms) {
-                // Fallback if the task sampled the release just after the
-                // threshold and missed the exact held-state transition.
-                ignore_initial_press_ = false;
-                hold_sent_ = false;
-                clicks_ = 0;
-                return Decision::Home;
             } else if (ignore_initial_press_) {
                 ignore_initial_press_ = false;
                 clicks_ = 0;
@@ -99,25 +81,13 @@ public:
             }
         }
 
-        // 长按说话：按住达到阈值即开始录音（在 Home 之前判定，松手由
-        // Release 分支收尾）。快速单击/双击/三击因按压时长不足而不触发。
-        if (hold_armed_ && stable_pressed_ && !home_sent_ && !hold_sent_ &&
+        // 长按说话：按住达到阈值即开始录音，松手由 Release 分支收尾。
+        // 快速单击/双击/三击因按压时长不足而不触发。
+        if (hold_armed_ && stable_pressed_ && !hold_sent_ &&
             now_ms - press_started_ms_ >= voice_hold_ms) {
             hold_sent_ = true;
             clicks_ = 0;
             return Decision::Hold;
-        }
-
-        // Trigger while BOOT is held. Requiring a release made a long press
-        // appear broken on the physical board. A press already held when the
-        // listener starts can still exit after the full hold interval.
-        // hold_armed_ 时长按归属录音（Hold 已在 500ms 触发），Home 不参与——
-        // 否则说话超过 1.2s 会被当成 Home 取消录音（实测踩坑）。
-        if (!hold_armed_ && stable_pressed_ && !home_sent_ && !hold_sent_ &&
-            now_ms - press_started_ms_ >= home_press_ms) {
-            home_sent_ = true;
-            clicks_ = 0;
-            return Decision::Home;
         }
 
         // raw_pressed_ guards against confirming during a third press that
@@ -138,7 +108,6 @@ private:
     bool raw_pressed_ = false;
     bool stable_pressed_ = false;
     bool ignore_initial_press_ = false;
-    bool home_sent_ = false;
     bool hold_sent_ = false;
     bool hold_armed_ = true;
     unsigned clicks_ = 0;

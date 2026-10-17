@@ -158,12 +158,12 @@ int main()
         assert(release == Decision::Release);
     }
     {
-        // hold 不武装（voice 不可用）：长按保留旧 Home 语义。
+        // hold 不武装（voice 不可用）：长按无动作（Home 分支已移除）。
         Fixture f;
         f.gesture.setHoldArmed(false);
         f.feed(true, 1300);
         f.feed(false, 600);
-        assert((f.decisions == std::vector<Decision>{Decision::Home}));
+        assert(f.decisions.empty());
     }
     {
         Fixture f;

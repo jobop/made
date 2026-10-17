@@ -1282,7 +1282,7 @@ void VibeCoding::buttonLoop()
 
         const bool pressed = gpio_get_level(GPIO_NUM_0) == 0;
         // hold 是否武装：voice 可用且不在设置/删除弹窗时，长按归说话；
-        // 否则长按保留旧 Home 语义。
+        // 否则长按无动作（Home 分支已按用户要求移除）。
         gesture.setHoldArmed(voice_available_.load() &&
                              !settings_open_.load() && !delete_dialog_open_.load());
         const bool had_sequence = gesture.sequenceActive();
@@ -1295,13 +1295,7 @@ void VibeCoding::buttonLoop()
         if (decision != BootClickGesture::Decision::None) {
             if (active_.load() && current_epoch == button_epoch_.load() &&
                 armed_provider == selected_provider_.load()) {
-                if (decision == BootClickGesture::Decision::Home) {
-                    ESP_LOGI(BUTTON_TAG, "BOOT long hold");
-                    {
-                        std::lock_guard<std::mutex> lock(voice_action_mutex_);
-                        vibe_voice::cancel();
-                    }
-                } else if (settings_open_.load() || delete_dialog_open_.load()) {
+                if (settings_open_.load() || delete_dialog_open_.load()) {
                     // The settings keyboard owns touch input; no task action
                     // should be triggered by a stray BOOT click while editing.
                 } else if (decision == BootClickGesture::Decision::Hold) {
@@ -1345,15 +1339,21 @@ void VibeCoding::buttonLoop()
                 }
                 if (!settings_open_.load() && !delete_dialog_open_.load()) {
                     const char *board_event = nullptr;
-                    if (decision == BootClickGesture::Decision::Home) board_event = "boot.long";
-                    else if (decision == BootClickGesture::Decision::Voice) board_event = "boot.click";
+                    if (decision == BootClickGesture::Decision::Voice) board_event = "boot.click";
                     else if (decision == BootClickGesture::Decision::Confirm) board_event = "boot.double";
                     else if (decision == BootClickGesture::Decision::Cancel) board_event = "boot.triple";
                     if (board_event) queueBoardEvent(board_event);
                 }
             }
-            armed_task_id.clear();
-            armed_provider = -1;
+            // 决策处理完不能立刻清 armed_provider：Hold 与 Release 属于同一
+            // 按压序列，Hold 处理完就清的话，松手的 Release 会因
+            // armed_provider(-1) != selected 被外层守卫吞掉，录音永远等不到
+            // finish() 只能跑满 30s 上限（2026-10-17 实机实测踩坑）。
+            // 只在按压序列彻底结束后再清。
+            if (!gesture.sequenceActive()) {
+                armed_task_id.clear();
+                armed_provider = -1;
+            }
         } else if (!gesture.sequenceActive()) {
             armed_task_id.clear();
             armed_provider = -1;
@@ -4778,8 +4778,7 @@ void VibeCoding::announceBoardCatalog()
         "{\"events\":["
         "{\"name\":\"boot.click\",\"cadence\":\"edge\"},"
         "{\"name\":\"boot.double\",\"cadence\":\"edge\"},"
-        "{\"name\":\"boot.triple\",\"cadence\":\"edge\"},"
-        "{\"name\":\"boot.long\",\"cadence\":\"edge\"}"
+        "{\"name\":\"boot.triple\",\"cadence\":\"edge\"}"
         "],\"commands\":["
         "{\"name\":\"caption.show\"},"
         "{\"name\":\"audio.play\"},"
