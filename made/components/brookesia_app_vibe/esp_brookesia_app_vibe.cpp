@@ -40,7 +40,6 @@ using esp_brookesia::systems::phone::App;
 
 LV_IMG_DECLARE(img_app_vibe);
 LV_FONT_DECLARE(font_puhui_16_4);
-LV_FONT_DECLARE(font_puhui_20_4);
 LV_FONT_DECLARE(font_puhui_14_4);
 
 namespace {
@@ -80,10 +79,9 @@ bool receiverVoiceUploading()
 
 // The bundled Puhui font includes common Han characters missing from LVGL's
 // small Source Han Sans subset. Its glyph data lives in flash, not PSRAM.
-// 中文点阵字号档由主题包 font 字段选择（16/20，20px 字库已内置）。
-// 注意：必须在任何控件创建之前赋值（run() 开头），控件高度随行高自适应。
+// 中文正文固定 16px。主题包 font 写 20 时也按 16px 显示。
 const lv_font_t *text_font = &font_puhui_16_4;
-// 抽屉任务区字号：比全局档小一号（主题 20→16、16→14），标题/chip/徽章仍用全局档。
+// 抽屉任务区比正文小一号，用 14px。
 // 14px 必须用 4bpp 版（fonts/font_puhui_14_4.c 由 ttf/puhui-common.ttf 生成）：
 // 字库组件自带的 font_puhui_14_1 是 1bpp 单色版，浅色底上无抗锯齿会发糊。
 const lv_font_t *drawer_text_font = &font_puhui_14_4;
@@ -378,9 +376,8 @@ bool VibeCoding::run()
         display_diag_registered_ = true;
     }
     vibe_i18n::initialize();
-    // 字号档必须在任何控件创建之前确定（控件高度随行高自适应）。
-    text_font = vibe_theme::fontPx() >= 20 ? &font_puhui_20_4 : &font_puhui_16_4;
-    drawer_text_font = vibe_theme::fontPx() >= 20 ? &font_puhui_16_4 : &font_puhui_14_4;
+    text_font = &font_puhui_16_4;
+    drawer_text_font = &font_puhui_14_4;
     active_ = true;
     exit_requested_ = false;
     invalidateCatalog(true);
@@ -537,12 +534,12 @@ bool VibeCoding::run()
     lv_obj_remove_flag(settings_home_, LV_OBJ_FLAG_SCROLLABLE);
     // 设置主页：分组行列表（连接/偏好/系统），行内 图标+名称+箭头；
     // 返回改顶部导航，释放底部空间给列表滚动。
-    // Air 大标题：20px 点阵左对齐，与返回键同行；页面层级靠字号与留白。
+    // 设置页标题与正文同为 16px，靠留白和返回键区分层级。
     lv_obj_t *settings_title = lv_label_create(settings_home_);
     lv_label_set_text(settings_title, T("设置"));
     bindLabel(settings_title, "设置");
     lv_obj_set_style_text_color(settings_title, lv_color_hex(VT(title)), 0);
-    lv_obj_set_style_text_font(settings_title, &font_puhui_20_4, 0);
+    lv_obj_set_style_text_font(settings_title, text_font, 0);
     lv_obj_set_pos(settings_title, made_page_x(78), made_page_y(32));
     lv_obj_set_style_text_color(settings_title, lv_color_hex(VT(title)), 0);
     lv_obj_t *settings_back = touchButton(settings_home_, 16, 30, 48, 36, nullptr, settingsCloseCallback, this);
@@ -1102,7 +1099,7 @@ bool VibeCoding::run()
 
     // 分页 chip（左上）：「任务 1/3」，从标题行剥离出来。
     // 分页 chip（左上）：「任务 1/3」，从标题行剥离出来。
-    // 高度随字号行高走（20px 档不裁字），宽度随内容自适应。
+    // 高度随字号行高走，宽度随内容自适应。
     const int chip_h = lv_font_get_line_height(text_font) + made_s(8);
     session_chip_ = lv_obj_create(drawer_);
     lv_obj_remove_style_all(session_chip_);
@@ -1122,7 +1119,7 @@ bool VibeCoding::run()
     lv_obj_add_flag(session_chip_, LV_OBJ_FLAG_HIDDEN);
 
     // 状态徽章（右上）：状态点 + 状态词，双通道传达（不只靠颜色）。
-    // 高度随字号行高、宽度随状态词自适应（20px 档「等待确认」不溢出）。
+    // 高度随字号行高、宽度随状态词自适应。
     const int badge_h = lv_font_get_line_height(text_font) + made_s(8);
     status_badge_ = lv_obj_create(drawer_);
     lv_obj_remove_style_all(status_badge_);
@@ -3310,6 +3307,7 @@ void VibeCoding::startVoice(bool hold_mode, bool allow_record)
         std::string session_id;
         std::string provider_id;
         bool provider_ready = true;
+        bool instruction_busy = false;
         {
             std::lock_guard<std::mutex> lock(model_mutex_);
             const auto &provider = selectedProviderLocked();
@@ -3322,6 +3320,13 @@ void VibeCoding::startVoice(bool hold_mode, bool allow_record)
                 session_id = session->id;
                 project_id = session->project_id;
             }
+            // 列表只保留当前任务最新一条。待确认、排队、运行中时桥接器会在
+            // 识别完成后再拒绝，这里提前拦住，避免白录和白上传。
+            if (!model_.tasks.empty() && model_.tasks.front().session_id == selected_id) {
+                const std::string &status = model_.tasks.front().status;
+                instruction_busy = status == "waiting_confirmation" ||
+                                   status == "queued" || status == "running";
+            }
         }
         if (!provider_ready) {
             hint = "Selected coding agent is unavailable";
@@ -3329,6 +3334,8 @@ void VibeCoding::startVoice(bool hold_mode, bool allow_record)
             hint = T("点右上角 + 创建任务");
         } else if (project_id.empty()) {
             hint = T("当前任务没有项目，请在电脑端设置");
+        } else if (instruction_busy) {
+            hint = T("请先完成或取消上一条指令");
         } else if (!allow_record) {
             // 单击路径：一切就绪也不录音，引导长按说话（录音仅由 Hold 触发
             // 或远程 voice.start 发起）。

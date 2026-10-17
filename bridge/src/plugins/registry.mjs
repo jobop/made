@@ -94,7 +94,10 @@ export async function loadConfiguredPlugins(config) {
   const plugins = [...builtinSpeechRecognizers];
   const loadFile = async (filename, label) => {
     if (!/\.(mjs|js)$/.test(filename) || !fs.statSync(filename).isFile()) throw new Error(`插件模块无效：${label}`);
-    const exported = (await import(pathToFileURL(filename).href)).default;
+    // 热加载时带上代数，避开 ESM 按 URL 缓存的旧模块。首次启动代数为 0，URL 不变。
+    const generation = Number(config.pluginReloadGeneration) || 0;
+    const href = pathToFileURL(filename).href + (generation ? `?hot=${generation}` : '');
+    const exported = (await import(href)).default;
     const bundle = Array.isArray(exported) ? exported : [exported];
     const pack = isPackageEntry(filename) ? readPackageSettings(path.dirname(filename)) : null;
     const packageDir = isPackageEntry(filename) ? path.dirname(filename) : null;

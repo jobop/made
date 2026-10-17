@@ -32,7 +32,7 @@ The list is reported by the firmware (`announceBoardCatalog` in `esp_brookesia_a
 
 ## Bridge side
 
-Handles exposed by `bridge/src/plugins/enhance.mjs`; take effect after restarting the bridge:
+Handles exposed by `bridge/src/plugins/enhance.mjs`. Saving a plugin, or installing / enabling / disabling one, hot-reloads them in the running bridge; a process restart still loads them too:
 
 - Trigger surface: `onEvent` / `onConnect` / `onDisconnect` (board events and connections), `onJob` (task lifecycle: `created` / `confirmed` / `started` / `progress` / `completed` / `handed_off` / `failed` / `cancelled`; tasks created by plugins themselves do not broadcast `created`, to prevent self-excitation), `onTurnInput` / `onTurnOutput` (turn pipeline: chained in registration order, returning a string overrides, last writer wins; 1500 ms timeout, a failing plugin falls through to the previous link and never blocks a task; `onTurnInput` mutates the execution copy, the task's original text is untouched).
 - The `bridge` facade (available in event, hook and notification contexts): `agents()` / `agent(id)` / `jobs()` / `job(id)` / `sessions(agentId?)` / `createTask({instruction, agentId?, projectId?, title?})` (creates a session and lands a pending task automatically, rate-limited to 10/min) / `submitTurn({instruction, sessionId})` / `confirmJob(id)` / `cancelJob(id)` / `themes()` / `devices()` / `send(deviceId, command, audio?)` / `pending(deviceId)`.

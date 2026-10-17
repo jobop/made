@@ -65,7 +65,7 @@ struct Metrics {
     int radius_scale = 100;  // 50~200
     int shape = kShapeRounded;
     int base = 1;            // 1 = light（内置默认浅色）
-    int font_px = 16;        // 16 / 20
+    int font_px = 16;        // 只保留 16px 点阵；主题写 20 时也落成 16
 };
 Metrics g_metrics;
 std::string g_active;
@@ -148,7 +148,7 @@ void loadMetricsNvs() {
         g_metrics.base = value;
     value = 0;
     if (nvs_get_u16(handle, "font_px", &value) == ESP_OK && (value == 16 || value == 20))
-        g_metrics.font_px = value;
+        g_metrics.font_px = 16;
     nvs_close(handle);
 }
 
@@ -464,7 +464,7 @@ esp_err_t applyFromBridge(const std::string &name, const std::string &base_url) 
     }
     const cJSON *font_item = cJSON_GetObjectItemCaseSensitive(root, "font");
     if (cJSON_IsNumber(font_item) && (font_item->valuedouble == 16 || font_item->valuedouble == 20))
-        g_metrics.font_px = static_cast<int>(font_item->valuedouble);
+        g_metrics.font_px = 16;
 
     // 2) 提示音（WAV）：拉进内存，成功才落盘。
     std::vector<uint8_t> sound_data;

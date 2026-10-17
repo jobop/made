@@ -54,7 +54,13 @@ function mergeAttachments(result, explicit) {
 
 export class JobStore {
   constructor({ file, projects, defaultProject, defaultProvider, workspaceRoot, maxParallel, maxAutoRetries, run, providerAvailable, pluginsRuntime, hooks }) {
-    this.agent = pluginsRuntime ? (id) => pluginsRuntime.agent(id) : run.agent;
+    // 允许传入 () => config.pluginsRuntime，热加载替换注册表后这里读到的是新插件。
+    this.agent = pluginsRuntime
+      ? (id) => {
+          const runtime = typeof pluginsRuntime === 'function' ? pluginsRuntime() : pluginsRuntime;
+          return runtime?.agent?.(id);
+        }
+      : run.agent;
     this.hooks = hooks || null;
     this.file = file;
     this.projects = projects;

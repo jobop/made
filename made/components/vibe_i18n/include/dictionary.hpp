@@ -183,6 +183,7 @@ inline constexpr Entry dictionary[] = {
     {"公网地址必须使用 HTTPS", "Public addresses need HTTPS"},
     {"保存接入地址失败", "Could not save bridge address"},
     {"单击 BOOT 开始录音", "Press BOOT to record"},
+    {"请先完成或取消上一条指令", "Finish or cancel the current instruction first"},
     {"录音已取消", "Recording cancelled"},
     {"电脑连接已变化，请重新录音", "PC connection changed. Record again"},
     {"设备时间未同步，无法校验 HTTPS 证书", "Clock not synced; cannot verify HTTPS"},

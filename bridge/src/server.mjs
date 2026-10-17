@@ -22,6 +22,7 @@ import { TunnelManager } from './tunnel.mjs';
 import { UsbReceiver, USB_DIRECT_AUTHORITY, USB_RECEIVER_AUTHORITY } from './usb-receiver.mjs';
 
 import { createPluginRegistry, loadConfiguredPlugins } from './plugins/registry.mjs';
+import { watchPlugins } from './plugins/hot-reload.mjs';
 import { createEnhancement } from './plugins/enhance.mjs';
 import { listInstalled, listThemes, removePlugin, removeTheme, savePluginSettings, setPluginEnabled, themeExists } from './installed.mjs';
 import { createBoardLink } from './board-link.mjs';
@@ -312,7 +313,7 @@ export function createApp(config, { run, transcribe, tunnel: providedTunnel, ena
     defaultProvider: config.defaultProvider,
     maxParallel: config.maxParallelJobs,
     maxAutoRetries: config.maxAutoRetries,
-    pluginsRuntime: config.pluginsRuntime,
+    pluginsRuntime: () => config.pluginsRuntime,
     run: run || createRunner(config),
     hooks: enhance,
     // Keep stored built-in failures canonical; each client localizes at its output boundary.
@@ -1032,11 +1033,13 @@ if (isEntry) {
     }
     const config = loadConfig();
     config.pluginsRuntime = await loadConfiguredPlugins(config);
+    const pluginsWatch = watchPlugins(config);
     const app = createApp(config, { enableUsb: true });
     let shuttingDown = false;
     const shutdown = () => {
       if (shuttingDown) return;
       shuttingDown = true;
+      pluginsWatch.close();
       app.close().then(() => { process.exitCode = 0; }).catch((error) => {
         console.error(error.message);
         process.exitCode = 1;

@@ -16,7 +16,7 @@
 //   base: "light"|"dark"  亮暗元数据：固件据此适配阴影/残色等细节
 //   metrics.radius_scale  圆角缩放百分比（50~200）
 //   shape: "rounded"|"circle"|"square"  形状语言（按钮/chip 圆角风格）
-//   font: 16|20           中文点阵字号档（20px 字库已内置，零 Flash 增量）
+//   font: 16|20           中文点阵字号档。固件只内置 16px，写 20 时按 16px 显示
 //   sound.file            提示音 WAV（≤256KB）
 
 namespace vibe_theme {
@@ -59,7 +59,7 @@ const Palette &palette();
 int radiusScale();      // 50~200，默认 100
 int shapeMode();        // ShapeMode，默认 kShapeRounded
 bool isLightBase();     // base 亮暗元数据，默认 true（内置浅色）
-int fontPx();           // 中文点阵字号档：16 / 20，默认 16
+int fontPx();           // 中文点阵字号，固定 16
 
 // 主题提示音 WAV 路径；空串 = 使用内置提示音。
 std::string soundPath();

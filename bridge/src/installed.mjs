@@ -3,7 +3,8 @@ import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { pathToFileURL } from 'node:url';
 import { BUILTIN_ROOT, packageRoots, packagesHome } from './config.mjs';
-import { loadConfiguredPlugins, validatePlugin } from './plugins/registry.mjs';
+import { validatePlugin } from './plugins/registry.mjs';
+import { reloadConfiguredPlugins } from './plugins/hot-reload.mjs';
 import { isPackageEntry, packageDirectories, readPackageSettings, writePackageSettings } from './plugin-package.mjs';
 
 const PLUGIN_ID = /^[a-z0-9][a-z0-9_-]{0,39}$/;
@@ -158,7 +159,7 @@ function writeConfig(config, mutate) {
 }
 
 async function reload(config) {
-  config.pluginsRuntime = await loadConfiguredPlugins(config);
+  await reloadConfiguredPlugins(config);
 }
 
 function covers(targetReal, candidateReal) {
