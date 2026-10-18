@@ -13,6 +13,7 @@ inline const char* esp_err_to_name(int) { return "fake error"; }
 #define ESP_LOGW(...) ((void)0)
 #define ESP_LOGI(...) ((void)0)
 #define ESP_LOGE(...) ((void)0)
+#define ESP_LOGD(...) ((void)0)
 #define CONFIG_VIBE_WIFI_SSID ""
 #define CONFIG_VIBE_WIFI_PASSWORD ""
 using esp_event_base_t = const char*;
@@ -38,6 +39,7 @@ struct wifi_init_config_t {};
 enum wifi_mode_t { WIFI_MODE_NULL, WIFI_MODE_AP, WIFI_MODE_STA, WIFI_MODE_APSTA };
 constexpr int WIFI_STORAGE_FLASH = 0, WIFI_STORAGE_RAM = 1, WIFI_IF_STA = 0, WIFI_IF_AP = 1;
 constexpr int WIFI_SCAN_TYPE_ACTIVE = 0, WIFI_AUTH_OPEN = 0, WIFI_AUTH_WPA2_PSK = 3;
+constexpr int WIFI_PS_NONE = 0, WIFI_PS_MIN_MODEM = 1, WIFI_PS_MAX_MODEM = 2;
 struct esp_ip4_addr_t { uint32_t addr = 0; };
 struct esp_netif_ip_info_t { esp_ip4_addr_t ip, gw, netmask; };
 struct esp_netif_dns_info_t { struct { int type = 0; struct { esp_ip4_addr_t ip4; } u_addr; } ip; };
@@ -163,9 +165,14 @@ inline int esp_wifi_scan_get_ap_records(uint16_t* count, wifi_ap_record_t* out) 
     return ESP_OK;
 }
 inline int esp_wifi_clear_ap_list() { ++fake::clear_calls; fake::records.clear(); return ESP_OK; }
+inline int esp_wifi_set_ps(int) { return ESP_OK; }
+inline int esp_get_free_heap_size() { return 0; }
+inline int esp_get_minimum_free_heap_size() { return 0; }
+inline int esp_wifi_sta_get_ap_info(wifi_ap_record_t*) { return ESP_FAIL; }
 inline int esp_timer_create(const esp_timer_create_args_t* args, esp_timer_handle_t* timer) {
     *timer = reinterpret_cast<void*>(1); fake::timer_callback = args->callback; return ESP_OK;
 }
+inline int64_t esp_timer_get_time() { return 0; }
 inline int esp_timer_start_once(esp_timer_handle_t, uint64_t) { fake::timer_active = true; return ESP_OK; }
 inline int esp_timer_stop(esp_timer_handle_t) { fake::timer_active = false; return ESP_OK; }
 inline int esp_timer_delete(esp_timer_handle_t) { return ESP_OK; }

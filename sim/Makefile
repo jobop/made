@@ -31,6 +31,7 @@ SDL_LIBS   := $(shell pkg-config --libs sdl2 2>/dev/null || echo "-L/opt/homebre
 WARN := -w
 COMMON_INC := -I. -Ishims \
   -I$(LVGL) \
+  -I$(LVGL)/src \
   -I$(COMP)/brookesia_app_vibe \
   -I$(COMP)/vibe_touch_keyboard \
   -I$(COMP)/vibe_i18n/include \

@@ -74,6 +74,7 @@ const char *esp_err_to_name(esp_err_t code)
 
 void esp_restart(void) { fprintf(stderr, "sim: esp_restart() called\n"); exit(0); }
 uint32_t esp_get_free_heap_size(void) { return 200 * 1024; }
+uint32_t esp_get_minimum_free_heap_size(void) { return 180 * 1024; }
 uint32_t esp_random(void) { return (uint32_t)arc4random(); }
 
 /* ---------------- esp_timer ---------------- */

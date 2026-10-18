@@ -31,10 +31,11 @@ bool receiver_active();
 // connect the receiver hotspot again.
 bool station_held();
 
-// 传输敏感期临时关闭 Wi-Fi modem 省电（默认 MIN_MODEM 的 listen interval
-// 约 300ms，弱信号下 HTTP 建连与分片传输频繁超时：语音上传、素材下载
-// 实测 RSSI -83 时全部卡死）。引用计数支持嵌套；设备常供电，PS_NONE
-// 期间功耗上升可接受。RAII guard 见下方 WifiThroughput。
+// 历史 API：过去在传输敏感期临时关闭 Wi-Fi modem 省电（MIN_MODEM 的
+// listen interval 约 300ms，弱信号下 HTTP 建连与分片传输频繁超时）。
+// 现省电已常驻关闭（esp_wifi_start 后即设 WIFI_PS_NONE）：省电模式空闲
+// 被 AP 判不活跃踢下线（reason 4，约 40s 一次）是断线根因。本对函数
+// 保留为空实现，WifiThroughput RAII guard 调用点无需改动。
 void begin_high_throughput();
 void end_high_throughput();
 
@@ -46,6 +47,15 @@ struct WifiThroughput {
 };
 int disconnect_reason();
 uint32_t disconnect_count();
+
+// 诊断：区分「自己主动断开」（固件代码调用 esp_wifi_disconnect，如扫描/切网）
+// 与「被动断开」（AP 踢/信号丢失）。原因码 8 (ASSOC_LEAVE) 两者都会报，
+// 单靠 reason 分不清——这个计数器记录固件主动断开的次数，事件层比对差值归因。
+uint32_t voluntary_disconnects();
+
+// 最近几次断线的历史快照（带时间/原因/主动与否/RSSI/空闲堆），
+// 供心跳 trace 上报。返回紧凑串："ms:reason:self:rssi:heap;..."（最多 6 条）。
+std::string disconnect_history();
 
 enum class ReceiverScanState { Idle, Scanning, Done, Failed };
 

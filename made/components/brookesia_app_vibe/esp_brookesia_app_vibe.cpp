@@ -6261,6 +6261,10 @@ void VibeCoding::sendHeartbeat()
         "&provider=" + std::to_string(selected_provider_.load()) +
         "&wifiReason=" + std::to_string(vibe_wifi::disconnect_reason()) +
         "&wifiDrops=" + std::to_string(vibe_wifi::disconnect_count()) +
+        "&wifiSelf=" + std::to_string(vibe_wifi::voluntary_disconnects()) +
+        "&wifiHist=" + vibe_wifi::disconnect_history() +
+        "&heap=" + std::to_string(esp_get_free_heap_size()) +
+        "&minHeap=" + std::to_string(esp_get_minimum_free_heap_size()) +
         "&upMs=" + std::to_string(now_ms) +
         "&fwStage=" + firmware_trace_stage_ +
         "&fwWhy=" + firmware_trace_why_ +

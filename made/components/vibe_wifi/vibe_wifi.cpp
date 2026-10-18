@@ -11,6 +11,7 @@
 #include "esp_log.h"
 #include "esp_netif.h"
 #include "esp_random.h"
+#include "esp_system.h"
 #include "esp_timer.h"
 #include "esp_wifi.h"
 #include "esp_wifi_default.h"
@@ -38,6 +39,20 @@ std::atomic<bool> using_receiver{false};
 std::atomic<bool> station_hold{false};
 int last_disconnect_reason = 0;
 std::atomic<uint32_t> disconnects{0};
+std::atomic<uint32_t> voluntary_disconnect_count{0};
+// 最近一次断线事件时已发生的主动断计数——事件层用它和新计数比差值归因。
+// GOT_IP 时同步基线，吸收「空闲 STA 上调用 disconnect 不产生事件」的差额。
+uint32_t voluntary_baseline = 0;
+struct DropRecord {
+    uint32_t t = 0;      // 开机毫秒
+    int reason = 0;
+    bool self = false;   // true = 固件主动调用 esp_wifi_disconnect
+    int rssi = 0;        // 断线瞬间信号强度（-1 = 取不到）
+    uint32_t heap = 0;   // 断线瞬间空闲堆
+};
+DropRecord drop_history[6];
+std::atomic<int> drop_history_pos{0};
+std::mutex drop_history_mutex;
 // station_mutex protects scan ownership and snapshots as well as driver
 // connection changes. Only the retry gate is read without that mutex.
 std::atomic<bool> receiver_scan_in_flight{false};
@@ -146,6 +161,12 @@ void scheduleRetry(uint32_t delay_ms) {
     (void)esp_timer_stop(retry_timer);
     const esp_err_t error = esp_timer_start_once(retry_timer, static_cast<uint64_t>(delay_ms) * 1000);
     if (error != ESP_OK) ESP_LOGW(kTag, "Schedule Wi-Fi retry failed: %s", esp_err_to_name(error));
+}
+
+// 固件主动断开的统一入口：只多记一次计数，事件层拿它和基线比差值归因。
+void voluntary_disconnect() {
+    voluntary_disconnect_count.fetch_add(1);
+    (void)esp_wifi_disconnect();
 }
 
 void retryCallback(void*) {
@@ -276,6 +297,19 @@ void eventHandler(void*, esp_event_base_t base, int32_t event_id, void* data) {
             last_disconnect_reason = lost->reason;
             const uint32_t drops = disconnects.fetch_add(1) + 1;
             ESP_LOGW(kTag, "Wi-Fi disconnected, reason=%d count=%u", lost->reason, drops);
+            // 归因 + 记录历史：主动断计数比基线多 → 这一次是自己断的
+            const uint32_t voluntary = voluntary_disconnect_count.load();
+            DropRecord rec;
+            rec.t = static_cast<uint32_t>(esp_timer_get_time() / 1000);
+            rec.reason = lost->reason;
+            rec.self = voluntary != voluntary_baseline;
+            voluntary_baseline = voluntary;
+            rec.heap = static_cast<uint32_t>(esp_get_free_heap_size());
+            wifi_ap_record_t ap_info;
+            rec.rssi = esp_wifi_sta_get_ap_info(&ap_info) == ESP_OK ? ap_info.rssi : -1;
+            const int pos = drop_history_pos.fetch_add(1) % 6;
+            std::lock_guard<std::mutex> history_lock(drop_history_mutex);
+            drop_history[pos] = rec;
         }
         const uint32_t current = retry_ms.load();
         scheduleRetry(current);
@@ -283,6 +317,9 @@ void eventHandler(void*, esp_event_base_t base, int32_t event_id, void* data) {
     } else if (base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
         connected.store(true);
         retry_ms.store(1000);
+        // 空闲 STA 上调用 esp_wifi_disconnect 不产生断线事件：把这类「无事件
+        // 的主动断」吸收进基线，避免下一次真断线被误归因成自己。
+        voluntary_baseline = voluntary_disconnect_count.load();
         if (retry_timer != nullptr) (void)esp_timer_stop(retry_timer);
         ESP_LOGI(kTag, "Wi-Fi connected and IP acquired");
     } else if (base == IP_EVENT && event_id == IP_EVENT_STA_LOST_IP) {
@@ -445,6 +482,13 @@ esp_err_t start() {
         return error;
     }
     started.store(true);
+    // 常驻关闭 Modem 省电：省电模式下 Beacon 间休眠，路由器按不活跃判定
+    // 主动踢客户端（实测 reason 4 ASSOC_EXPIRE，约 40s 一次），且休眠唤醒
+    // 恢复时丢首包表现为"卡/慢"。功耗换来连接稳定性，值得。
+    {
+        const esp_err_t ps_error = esp_wifi_set_ps(WIFI_PS_NONE);
+        ESP_LOGI(kTag, "Wi-Fi power save disabled (WIFI_PS_NONE): %s", esp_err_to_name(ps_error));
+    }
     if (error == ESP_ERR_WIFI_STATE) scheduleRetry(100);
     if (configured) {
         ESP_LOGI(kTag, "Wi-Fi STA started (%s)", source);
@@ -483,7 +527,7 @@ esp_err_t save_credentials(const char* ssid, const char* password) {
     wifi_config_t config = {};
     fillConfig(config, ssid, password);
     (void)esp_timer_stop(retry_timer);
-    (void)esp_wifi_disconnect();
+    voluntary_disconnect();
     error = esp_wifi_set_config(WIFI_IF_STA, &config);
     // Erase our temporary stack copy of the password.
     std::memset(&config, 0, sizeof(config));
@@ -540,7 +584,7 @@ esp_err_t connect_receiver() {
     have_credentials.store(false);
     connected.store(false);
     if (retry_timer != nullptr) (void)esp_timer_stop(retry_timer);
-    (void)esp_wifi_disconnect();
+    voluntary_disconnect();
     esp_err_t error = esp_wifi_set_storage(WIFI_STORAGE_RAM);
     if (error == ESP_OK) error = esp_wifi_set_config(WIFI_IF_STA, &receiver);
     std::memset(&receiver, 0, sizeof(receiver));
@@ -571,7 +615,7 @@ esp_err_t restore_station() {
     have_credentials.store(false);
     connected.store(false);
     if (retry_timer != nullptr) (void)esp_timer_stop(retry_timer);
-    (void)esp_wifi_disconnect();
+    voluntary_disconnect();
     const esp_err_t error = esp_wifi_set_config(WIFI_IF_STA, &previous_station);
     if (error != ESP_OK) {
         ESP_LOGE(kTag, "Cannot restore previous station: %s", esp_err_to_name(error));
@@ -591,6 +635,26 @@ bool receiver_active() { return using_receiver.load(); }
 bool station_held() { return station_hold.load(); }
 int disconnect_reason() { return last_disconnect_reason; }
 uint32_t disconnect_count() { return disconnects.load(); }
+
+uint32_t voluntary_disconnects() { return voluntary_disconnect_count.load(); }
+
+std::string disconnect_history() {
+    std::lock_guard<std::mutex> lock(drop_history_mutex);
+    const int count = drop_history_pos.load();
+    const int total = count < 6 ? count : 6;
+    std::string out;
+    out.reserve(static_cast<size_t>(total) * 32);
+    // 从旧到新输出
+    for (int i = 0; i < total; ++i) {
+        const DropRecord& rec = drop_history[(count < 6 ? 0 : count - total + i) % 6];
+        char line[48];
+        snprintf(line, sizeof(line), "%s%u:%d:%d:%d:%u", out.empty() ? "" : ";",
+                 static_cast<unsigned>(rec.t / 1000), rec.reason, rec.self ? 1 : 0, rec.rssi,
+                 static_cast<unsigned>(rec.heap / 1024));
+        out += line;
+    }
+    return out;
+}
 
 esp_err_t request_receiver_scan() {
     if (!started.load()) return ESP_ERR_INVALID_STATE;
@@ -615,7 +679,7 @@ esp_err_t request_receiver_scan() {
     if (retry_timer != nullptr) (void)esp_timer_stop(retry_timer);
     // The driver cannot scan while it is trying to associate. Abort only a
     // pending attempt; never disconnect a station that already has an IP.
-    if (!connected.load()) (void)esp_wifi_disconnect();
+    if (!connected.load()) voluntary_disconnect();
     wifi_scan_config_t config = {};
     config.show_hidden = false;
     config.channel = 0;
@@ -649,7 +713,7 @@ esp_err_t request_station_scan() {
     if (retry_timer != nullptr) (void)esp_timer_stop(retry_timer);
     // The driver cannot scan while it is trying to associate. Abort only a
     // pending attempt; never disconnect a station that already has an IP.
-    if (!connected.load()) (void)esp_wifi_disconnect();
+    if (!connected.load()) voluntary_disconnect();
     wifi_scan_config_t config = {};
     config.show_hidden = false;
     config.scan_type = WIFI_SCAN_TYPE_ACTIVE;
@@ -718,7 +782,7 @@ esp_err_t start_setup_ap(SetupAccessPoint& out) {
     if (retry_timer != nullptr) (void)esp_timer_stop(retry_timer);
     // Only abort a pending association. An established connection (including
     // the receiver hotspot) stays on its channel while the phone joins APSTA.
-    if (!connected.load()) (void)esp_wifi_disconnect();
+    if (!connected.load()) voluntary_disconnect();
     error = esp_wifi_set_storage(WIFI_STORAGE_RAM);
     if (error == ESP_OK) {
         setup_netif = esp_netif_get_handle_from_ifkey("WIFI_AP_DEF");
@@ -817,28 +881,15 @@ bool is_connected() {
 }
 
 namespace {
-std::mutex throughput_mutex;
-int throughput_users = 0;
+// 保留命名空间占位： throughput 计数已随常驻 PS_NONE 一并废弃。
 }  // namespace
 
-void begin_high_throughput() {
-    std::lock_guard<std::mutex> lock(throughput_mutex);
-    ++throughput_users;
-    if (throughput_users == 1) {
-        // 未连接时调用会报 ESP_ERR_WIFI_IF 之类，无碍：连接后的首个
-        // begin 再切也来得及（guard 常驻整个传输窗口）。
-        const esp_err_t error = esp_wifi_set_ps(WIFI_PS_NONE);
-        ESP_LOGD(kTag, "high throughput on: esp_wifi_set_ps(NONE)=%s", esp_err_to_name(error));
-    }
-}
+// 历史接口：过去用于在传输窗口内临时切 WIFI_PS_NONE、窗口结束恢复省电。
+// 现在省电已常驻关闭（见 esp_wifi_start 后的 set_ps），窗口切换既无必要、
+// 恢复 MIN_MODEM 还会重新引入"空闲 40s 被 AP 踢"的断线。保留空实现以
+// 兼容 WifiThroughput RAII guard 的既有调用点。
+void begin_high_throughput() {}
 
-void end_high_throughput() {
-    std::lock_guard<std::mutex> lock(throughput_mutex);
-    if (throughput_users <= 0) return;  // 不平衡调用防御
-    --throughput_users;
-    if (throughput_users == 0) {
-        (void)esp_wifi_set_ps(WIFI_PS_MIN_MODEM);
-    }
-}
+void end_high_throughput() {}
 
 } // namespace vibe_wifi
