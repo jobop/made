@@ -213,6 +213,8 @@ private:
     void queueBoardEvent(const char *name,
                          const std::vector<std::pair<std::string, std::string>> &fields = {});
     void notifyMotionShake();   // 摇晃回调：把当前助手 ID 塞进事件字段再入队
+    void queueAssistantScopedEvent(const char *name); // 同上，事件名参数化（touch.double 复用）
+    static void homeShortClickCallback(lv_event_t *event); // 助手页双击检测（本板无 IMU 的替代触发源）
     void announceBoardCatalog();
     void syncAvailableActions();
     void flushBoardEvent();
@@ -553,6 +555,7 @@ private:
     lv_coord_t screen_base_x_ = 0;
     uint32_t drag_end_ms_ = 0; // 抑制同一手势触发的重复 providerSwipe
     uint32_t last_pressing_ms_ = 0; // 按压心跳：PRESSING 断流=松手事件丢失，看门狗强制收尾
+    uint32_t last_home_tap_ms_ = 0; // 助手页双击检测：上次短按时刻（LVGL task only）
     // 回复区富内容（图片/链接二维码）与点击放大浮层。
     std::vector<lv_obj_t *> attachment_objs_;
     lv_obj_t *attachments_box_ = nullptr;

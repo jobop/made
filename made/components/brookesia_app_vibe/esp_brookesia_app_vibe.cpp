@@ -435,6 +435,8 @@ bool VibeCoding::run()
     lv_obj_add_event_cb(screen, homeDragCallback, LV_EVENT_PRESSED, this);
     lv_obj_add_event_cb(screen, homeDragCallback, LV_EVENT_PRESSING, this);
     lv_obj_add_event_cb(screen, homeDragCallback, LV_EVENT_RELEASED, this);
+    // 助手页双击（屏幕空白处连点两下）：插件可订阅 touch.double 做动作触发。
+    lv_obj_add_event_cb(screen, homeShortClickCallback, LV_EVENT_SHORT_CLICKED, this);
 
     // 近全屏小精灵：主页的绝对主角（docs/SPRITES.md 的素材机制接入前用程序化形象）。
     sprite_stage_ = made_sprite::create(screen);
@@ -1696,6 +1698,7 @@ void VibeCoding::homeDragCallback(lv_event_t *event)
     if (code == LV_EVENT_RELEASED || code == LV_EVENT_PRESS_LOST) {
         if (!self->home_dragging_) return;
         self->home_dragging_ = false;
+        self->last_home_tap_ms_ = 0; // 拖动不是点击：清掉双击计数，避免拖动松手后的短按被误判成双击第二击
         const int w = made_screen_w();
         const int dx = self->drag_dx_;
         self->drag_end_ms_ = lv_tick_get();
@@ -5501,13 +5504,43 @@ void VibeCoding::queueBoardEvent(const char *name,
 // 让桥接器插件按助手范围决定要不要下发动作。
 void VibeCoding::notifyMotionShake()
 {
+    queueAssistantScopedEvent("motion.shake");
+}
+
+// 助手范围事件的公共装填：把当前精灵页助手 ID 塞进 fields 再入队（订阅
+// 门禁在 queueBoardEvent 内部，没有插件订阅该事件时这里安静返回）。
+void VibeCoding::queueAssistantScopedEvent(const char *name)
+{
     std::vector<std::pair<std::string, std::string>> fields;
     {
         std::lock_guard<std::mutex> lock(model_mutex_);
         std::string agent = selectedProviderLocked().id;
         if (vibe_provider::validId(agent)) fields.emplace_back("agent", std::move(agent));
     }
-    queueBoardEvent("motion.shake", fields);
+    queueBoardEvent(name, fields);
+}
+
+// 助手页双击（屏幕连续两次短按）：本板 I2C 总线上无 IMU（2026-10-18
+// 全总线扫描只有 codec/touch，摇一摇硬件上不可实现），双击是插件侧
+// shake-fall 的等价触发源。只在首页正常态生效；点在按钮/抽屉/弹窗等
+// 子对象上的 SHORT_CLICKED 不会冒泡到 screen，天然不误触。
+void VibeCoding::homeShortClickCallback(lv_event_t *event)
+{
+    auto *self = static_cast<VibeCoding *>(lv_event_get_user_data(event));
+    if (!self || lv_event_get_code(event) != LV_EVENT_SHORT_CLICKED) return;
+    if (!self->canOperate() || self->settings_open_.load() ||
+        self->drawer_open_.load() || self->delete_dialog_open_.load())
+        return;
+    lv_obj_t *screen = lv_scr_act();
+    // 只在首页（精灵页）：拖动中或拖动刚结束的松手都不算点击。
+    if (self->home_dragging_ || lv_obj_get_x(screen) != 0) return;
+    const uint32_t now = lv_tick_get();
+    if (self->last_home_tap_ms_ != 0 && now - self->last_home_tap_ms_ <= 450) {
+        self->last_home_tap_ms_ = 0;
+        self->queueAssistantScopedEvent("touch.double");
+    } else {
+        self->last_home_tap_ms_ = now;
+    }
 }
 
 void VibeCoding::announceBoardCatalog()
@@ -5526,7 +5559,8 @@ void VibeCoding::announceBoardCatalog()
         "{\"name\":\"boot.click\",\"cadence\":\"edge\"},"
         "{\"name\":\"boot.double\",\"cadence\":\"edge\"},"
         "{\"name\":\"boot.triple\",\"cadence\":\"edge\"},"
-        "{\"name\":\"motion.shake\",\"cadence\":\"edge\"}"
+        "{\"name\":\"motion.shake\",\"cadence\":\"edge\"},"
+        "{\"name\":\"touch.double\",\"cadence\":\"edge\"}"
         "],\"commands\":["
         "{\"name\":\"caption.show\"},"
         "{\"name\":\"audio.play\"},"
