@@ -16,6 +16,7 @@
 #include "freertos/task.h"
 #include "driver/i2c_master.h"
 #include "bsp/esp32_s3_touch_lcd_1_85B.h"
+#include <initializer_list>
 #include "qmi8658.h"
 
 namespace vibe_motion {
@@ -44,26 +45,47 @@ void motionTask(void *param)
 
     // 初始化：I2C 总线由 BSP 管理（幂等），拿句柄后手动初始化 IMU，
     // 全程错误检查不用 ESP_ERROR_CHECK——IMU 缺席不能拖垮整机。
+    // 地址两种都试（模块 ADDR 引脚接法不同 → 0x6B/0x6A），失败后周期重试：
+    // 实测首次 init 可能撞上 IMU 上电时序（WHO_AM_I 读失败 0x103），
+    // 开机即退永不重试会让摇一摇永久失效。
     qmi8658_dev_t dev = {};
-    do {
-        esp_err_t err = bsp_i2c_init();
-        if (err != ESP_OK) { ESP_LOGE(TAG, "[motion] i2c init failed 0x%x", err); break; }
-        i2c_master_bus_handle_t bus = nullptr;
-        err = i2c_master_get_bus_handle(BSP_I2C_NUM, &bus);
-        if (err != ESP_OK || bus == nullptr) { ESP_LOGE(TAG, "[motion] i2c bus handle missing 0x%x", err); break; }
-        err = qmi8658_init(&dev, bus, QMI8658_ADDRESS_HIGH);
-        if (err != ESP_OK) { ESP_LOGE(TAG, "[motion] qmi8658 init failed 0x%x", err); break; }
-        qmi8658_set_accel_unit_mg(&dev, true);
-        qmi8658_set_accel_range(&dev, QMI8658_ACCEL_RANGE_8G);
-        qmi8658_set_accel_odr(&dev, QMI8658_ACCEL_ODR_500HZ);
-        qmi8658_enable_accel(&dev, true);
-        ESP_LOGI(TAG, "[motion] imu ready");
-        goto running;
-    } while (false);
-    vTaskDelete(nullptr);   // 初始化失败：本任务退出，不再重试
-    return;
-
-running:
+    bool ready = false;
+    bool scanned = false;
+    while (!ready) {
+        for (const int address : {QMI8658_ADDRESS_HIGH, QMI8658_ADDRESS_LOW}) {
+            esp_err_t err = bsp_i2c_init();
+            if (err != ESP_OK) { ESP_LOGE(TAG, "[motion] i2c init failed 0x%x", err); break; }
+            i2c_master_bus_handle_t bus = nullptr;
+            err = i2c_master_get_bus_handle(BSP_I2C_NUM, &bus);
+            if (err != ESP_OK || bus == nullptr) { ESP_LOGE(TAG, "[motion] i2c bus handle missing 0x%x", err); break; }
+            if (!scanned) {
+                // 一次性总线普查：确认这条 I2C 上到底挂着哪些设备（触摸应答，
+                // IMU 是否在位一目了然），排查完可删。
+                char found[64] = {0};
+                size_t used = 0;
+                for (int probe = 1; probe < 120 && used < sizeof(found) - 8; ++probe) {
+                    if (i2c_master_probe(bus, probe, 50) == ESP_OK) {
+                        used += snprintf(found + used, sizeof(found) - used, " 0x%02x", probe);
+                    }
+                }
+                ESP_LOGW(TAG, "[motion] i2c scan:%s", found);
+                scanned = true;
+            }
+            err = qmi8658_init(&dev, bus, address);
+            if (err != ESP_OK) {
+                ESP_LOGW(TAG, "[motion] qmi8658 init failed addr=0x%02x err=0x%x", address, err);
+                continue;
+            }
+            qmi8658_set_accel_unit_mg(&dev, true);
+            qmi8658_set_accel_range(&dev, QMI8658_ACCEL_RANGE_8G);
+            qmi8658_set_accel_odr(&dev, QMI8658_ACCEL_ODR_500HZ);
+            qmi8658_enable_accel(&dev, true);
+            ESP_LOGI(TAG, "[motion] imu ready addr=0x%02x", address);
+            ready = true;
+            break;
+        }
+        if (!ready) vTaskDelay(pdMS_TO_TICKS(15000));   // IMU 缺席/未上电：安静重试
+    }
     float baseline = 1000.0f;    // 静态基线（mg），EMA 慢速跟踪
     int kicks = 0;
     int64_t first_kick_us = 0;

@@ -930,7 +930,11 @@ export function createApp(config, { run, transcribe, tunnel: providedTunnel, ena
           projects: config.projects.filter(({ id }) => id === config.defaultProject).map(({ id, label }) => ({ id, label: devicePreview(label, 64) })),
           defaultProject: config.defaultProject,
           voice: { mode: voice.mode, available: voice.available },
-          firmwareUrl: firmwareSummary.otaUrl,
+          // 只有固件仓库里存在已导入的当前包（有 sha/版本）才 advertise OTA：
+          // 只配了 otaUrl 却没传固件时，设备会拿到无 sha 的 url → 永远 nomark
+          // → 弹更新确认 → waiting_confirmation 任务常驻 → 素材 preload 被门禁
+          // 拦死（GIF 动作等新文件永远下载不到）。
+          firmwareUrl: firmwareSummary.current ? firmwareSummary.otaUrl : '',
           firmwareVersion: firmwareSummary.current?.version || '',
           firmwareSha256: firmwareSummary.current?.sha256 || '',
           firmwareSize: firmwareSummary.current?.size || 0,
@@ -946,8 +950,10 @@ export function createApp(config, { run, transcribe, tunnel: providedTunnel, ena
         return;
       }
       // 形象素材分片拉取：单次 ≤192KB，兼容 USB 帧转发 256KB 上限（docs/SPRITES.md）。
+      // 扩展名含 .gif：GIF 动作素材（actions[].gif）也在 files 清单里，路由
+      // 只放行 .png 的话设备永远拉不到，playAction 报 gif_unavailable。
       const spriteMatch = req.method === 'GET' &&
-        url.pathname.match(/^\/device\/sprite\/([a-z0-9][a-z0-9_-]{0,39})\/([A-Za-z0-9_-]+\.png|manifest\.json)$/);
+        url.pathname.match(/^\/device\/sprite\/([a-z0-9][a-z0-9_-]{0,39})\/([A-Za-z0-9_-]+\.(?:png|gif)|manifest\.json)$/);
       if (spriteMatch) {
         const plugin = config.pluginsRuntime.agent(spriteMatch[1]);
         if (spriteMatch[2] === 'manifest.json') {

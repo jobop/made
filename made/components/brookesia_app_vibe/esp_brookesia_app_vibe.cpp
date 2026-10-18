@@ -4760,18 +4760,35 @@ void VibeCoding::preloadArtworkCache()
             version = artwork_preload_queue_.front().version;
             attempts = artwork_preload_queue_.front().attempts;
         }
-        // 目录刷新后助手可能消失或版本已变：过期条目直接丢弃。
+        // 目录刷新后助手可能消失或版本已变：消失/失效的丢掉；版本变了说明
+        // 桥接器侧发了新素材——用新版本重新入队（否则快照过期条目被丢弃后，
+        // 要等到下次桥接器重连才会再试，期间新素材永远下载不到）。
         vibe_provider::SpriteInfo sprite;
         bool valid = false;
+        bool requeue = false;
+        uint32_t fresh_version = 0;
         {
             std::lock_guard<std::mutex> lock(model_mutex_);
             const auto *entry = findProviderLocked(provider);
             valid = entry && entry->sprite.valid() && entry->sprite.version == version;
+            requeue = !valid && entry && entry->sprite.valid();
             if (valid) sprite = entry->sprite;
+            if (requeue) fresh_version = entry->sprite.version;
         }
         bool done = true;
         if (!valid) {
-            // 丢掉，继续看下一个（本轮内循环，队列很快清空）。
+            if (requeue) {
+                std::lock_guard<std::mutex> lock(model_mutex_);
+                for (auto it = artwork_preload_queue_.begin();
+                     it != artwork_preload_queue_.end(); ++it) {
+                    if (it->provider == provider && it->version == version) {
+                        it->version = fresh_version;
+                        it->attempts = 0;
+                        break;
+                    }
+                }
+            }
+            // 丢掉（或已换新版本），继续看下一个（本轮内循环，队列很快清空）。
         } else {
             uint32_t cached = 0;
             if (made_sprite_cache::cachedVersion(provider, cached) && cached == version) {
