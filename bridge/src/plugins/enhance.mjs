@@ -104,6 +104,10 @@ export function createEnhancement(config) {
       cancelJob: (id) => ({ ...wired.jobs.cancel(id) }),
       themes: () => (wired.themes ? wired.themes() : []),
       devices: () => (wired.board ? wired.board.deviceIds() : []),
+      // 行动系统：可用动作从设备命令清单派生（action.<名> 条目，当前助手
+      // 素材决定）；下发直接 send(deviceId, { name: 'action.yawn' })。
+      // 设备对不认识的动作会静默忽略，名单只是参考，不是下发闸门。
+      deviceActions: (deviceId) => (wired.board ? wired.board.actionsOf(deviceId) : []),
       send: (deviceId, command, audio) => {
         if (!wired.board) throw new Error('桥接器尚未就绪');
         return wired.board.send(deviceId, command, audio);

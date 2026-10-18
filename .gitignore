@@ -41,3 +41,7 @@ receiver/build*/
 
 # UI 模拟器（host 构建产物与截图）
 sim/build/
+
+# AI 生图草稿（本地产物，非源码）
+generated-images/
+sim/build_old/

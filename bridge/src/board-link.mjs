@@ -170,6 +170,19 @@ export function createBoardLink() {
         }
       }
     },
+    // 行动系统：动作是命令清单里的 action.<名> 条目（设备把可用动作并入
+    // 能力清单上报），这里从清单派生名单，给插件与桌面 UI 做参考——设备对
+    // 不认识的动作命令本来就会静默忽略，不拿名单做下发闸门。
+    actionsOf(deviceId) {
+      const catalog = catalogs.get(deviceId);
+      if (!catalog) return [];
+      return catalog.commands.map((item) => item.name)
+        .filter((name) => name.startsWith('action.'))
+        .map((name) => name.slice(7));
+    },
+    allActions() {
+      return Object.fromEntries([...catalogs.keys()].map((id) => [id, this.actionsOf(id)]));
+    },
     pending(deviceId) {
       return (queues.get(deviceId) || []).map((item) => ({
         id: item.id, name: item.name, fields: { ...item.fields }, audio: item.audio === true,

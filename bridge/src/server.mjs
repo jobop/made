@@ -386,6 +386,8 @@ export function createApp(config, { run, transcribe, tunnel: providedTunnel, ena
           tunnel: publicTunnel(),
           voice: publicVoice(),
           models: publicModels(config),
+          // 行动系统：deviceId → 可用动作名列表（板侧上报的最新一份）。
+          deviceActions: boardLink.allActions(),
         });
         return;
       }
@@ -823,6 +825,8 @@ export function createApp(config, { run, transcribe, tunnel: providedTunnel, ena
         deviceSend(res, 200, { events: boardLink.subscription(deviceId, config.pluginsRuntime, config) });
         return;
       }
+      // 行动系统：可用动作由设备并入命令清单（action.<名> 条目）上报，
+      // 不单开通道；名单从清单派生（boardLink.actionsOf）。
       if (req.method === 'POST' && url.pathname === '/device/events') {
         await boardLink.handleEvent(deviceId, await body(req), config.pluginsRuntime, config, enhance.bridge());
         deviceSend(res, 200, { accepted: true });
@@ -955,6 +959,7 @@ export function createApp(config, { run, transcribe, tunnel: providedTunnel, ena
             version: plugin.sprite.version, canvas: plugin.sprite.canvas,
             layers: plugin.sprite.layers, ...(plugin.sprite.motion ? { motion: plugin.sprite.motion } : {}),
             ...(plugin.sprite.emotions ? { emotions: plugin.sprite.emotions } : {}),
+            ...(plugin.sprite.actions ? { actions: plugin.sprite.actions } : {}),
           });
           return;
         }

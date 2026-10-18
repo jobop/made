@@ -14,6 +14,7 @@
 #include "made_sprite.hpp"
 #include "made_sprite_cache.hpp"
 #include "new_message_chime.hpp"
+#include "vibe_motion.hpp"
 #include "cJSON.h"
 #include "bsp/display.h"
 #include "driver/gpio.h"
@@ -5136,6 +5137,9 @@ void VibeCoding::maybeApplyArtwork(const std::string &selected_provider)
     // 每帧：在飞解码挂上归属侧台 + 两侧台内容对齐相邻助手（三舞台轮换后
     // 远侧台、目录版本刷新都在这里自动补齐）。
     prefetchTick();
+    // 行动系统：舞台内容每帧都可能变（换装/晋升/清空），在此对齐可用动作
+    // 名单——变化即置脏，worker 线程负责上报。
+    syncAvailableActions();
     if (tryPromotePrefetch(selected_provider)) return;
     bool dirty = false;
     std::string ready;
@@ -5439,22 +5443,73 @@ void VibeCoding::refreshConfig()
     }
 }
 
-void VibeCoding::queueBoardEvent(const char *name)
+// 行动系统（LVGL 线程，maybeApplyArtwork 每帧调用）：读当前素材舞台的
+// 可用动作名单，与已上报的比对，变了就置 board_catalog_sent_ 为假等 worker
+// 重报整张清单——动作作为命令条目（action.<名>）并入清单，不单开通道。
+// 名单的真源是素材包 manifest 的 actions 表——素材没声明的动作天然不可用。
+void VibeCoding::syncAvailableActions()
+{
+    std::vector<std::string> names = made_sprite::actionNames(sprite_stage_);
+    bool changed = false;
+    {
+        std::lock_guard<std::mutex> lock(model_mutex_);
+        changed = names != available_actions_;
+        if (changed) available_actions_ = std::move(names);
+    }
+    if (changed) {
+        board_catalog_sent_ = false;   // 动作条目并入命令清单，变了整张重报
+        std::string joined;
+        for (const auto &name : names) {
+            if (!joined.empty()) joined += ',';
+            joined += name;
+        }
+        ESP_LOGI("vibe_actions", "[actions] list_changed count=%u list=%s",
+            static_cast<unsigned>(names.size()), joined.c_str());
+    }
+}
+
+void VibeCoding::queueBoardEvent(const char *name,
+                                 const std::vector<std::pair<std::string, std::string>> &fields)
 {
     if (!name || !name[0]) return;
     std::lock_guard<std::mutex> lock(model_mutex_);
     if (std::find(board_events_.begin(), board_events_.end(), name) == board_events_.end()) return;
     if (!pending_board_event_.empty()) return;
     pending_board_event_ = name;
+    pending_board_event_fields_ = fields;
+}
+
+// 摇一摇（vibe_motion 检测任务回调）：当前精灵页助手 = 选中的助手，切页
+// 瞬间 selected_provider_ 就已更新，不等心跳。把助手 ID 塞进事件字段，
+// 让桥接器插件按助手范围决定要不要下发动作。
+void VibeCoding::notifyMotionShake()
+{
+    std::vector<std::pair<std::string, std::string>> fields;
+    {
+        std::lock_guard<std::mutex> lock(model_mutex_);
+        std::string agent = selectedProviderLocked().id;
+        if (vibe_provider::validId(agent)) fields.emplace_back("agent", std::move(agent));
+    }
+    queueBoardEvent("motion.shake", fields);
 }
 
 void VibeCoding::announceBoardCatalog()
 {
-    static constexpr const char *body =
+    // 动作作为命令条目并入清单：每个可用动作一条 action.<名>。设备自己决定
+    // 支持哪些动作（来自素材 manifest 的 actions 表）；名单变化时调用方会
+    // 重新上报整张清单。只输出符合桥接器 CAPABILITY_NAME 的名字（小写字母
+    // 开头的 [a-z0-9_]{0,15}），不合规的静默跳过，避免整张清单被拒。
+    std::vector<std::string> actions;
+    {
+        std::lock_guard<std::mutex> lock(model_mutex_);
+        actions = available_actions_;
+    }
+    static constexpr const char *head =
         "{\"events\":["
         "{\"name\":\"boot.click\",\"cadence\":\"edge\"},"
         "{\"name\":\"boot.double\",\"cadence\":\"edge\"},"
-        "{\"name\":\"boot.triple\",\"cadence\":\"edge\"}"
+        "{\"name\":\"boot.triple\",\"cadence\":\"edge\"},"
+        "{\"name\":\"motion.shake\",\"cadence\":\"edge\"}"
         "],\"commands\":["
         "{\"name\":\"caption.show\"},"
         "{\"name\":\"audio.play\"},"
@@ -5470,28 +5525,63 @@ void VibeCoding::announceBoardCatalog()
         "{\"name\":\"debug.screenshot\"},"
         "{\"name\":\"ui.swipe\"},"
         "{\"name\":\"ui.tap\"},"
-        "{\"name\":\"ui.back\"}"
-        "]}";
+        "{\"name\":\"ui.back\"}";
+    std::string body = head;
+    auto valid_action = [](const std::string &name) {
+        if (name.empty() || name.size() > 16) return false;
+        if (name[0] < 'a' || name[0] > 'z') return false;
+        for (const char c : name) {
+            const bool ok = (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_';
+            if (!ok) return false;
+        }
+        return true;
+    };
+    for (const auto &name : actions) {
+        if (!valid_action(name)) continue;
+        body += ",{\"name\":\"action.";
+        body += name;
+        body += "\"}";
+    }
+    body += "]}";
     std::string response;
     int status = 0;
     if (!request("/device/capabilities", true, response, status, body) || status != 200) return;
     board_catalog_sent_ = true;
+    announced_actions_ = std::move(actions);   // worker only
 }
 
 void VibeCoding::flushBoardEvent()
 {
     std::string name;
+    std::vector<std::pair<std::string, std::string>> fields;
     {
         std::lock_guard<std::mutex> lock(model_mutex_);
         if (pending_board_event_.empty()) return;
         if (std::find(board_events_.begin(), board_events_.end(), pending_board_event_) == board_events_.end()) {
             pending_board_event_.clear();
+            pending_board_event_fields_.clear();
             return;
         }
         name = std::move(pending_board_event_);
         pending_board_event_.clear();
+        fields = std::move(pending_board_event_fields_);
+        pending_board_event_fields_.clear();
     }
-    const std::string body = std::string("{\"name\":\"") + name + "\"}";
+    std::string body = std::string("{\"name\":\"") + name + "\"";
+    if (!fields.empty()) {
+        body += ",\"fields\":{";
+        for (size_t i = 0; i < fields.size(); ++i) {
+            if (i) body += ',';
+            body += '"'; body += fields[i].first; body += "\":\"";
+            for (const char c : fields[i].second) {   // JSON 字符串转义（保守）
+                if (c == '"' || c == '\\') body += '\\';
+                body += c;
+            }
+            body += '"';
+        }
+        body += '}';
+    }
+    body += '}';
     std::string response;
     int status = 0;
     (void)request("/device/events", true, response, status, body);
@@ -5844,6 +5934,13 @@ void VibeCoding::applyRemoteCommands()
             }
         } else if (command.name == "debug.screenshot") {
             startScreenshotUpload();
+        } else if (command.name == "action.play" || command.name.rfind("action.", 0) == 0) {
+            // 行动系统：动作即命令（action.<名>，或兼容旧 action.play+fields.action）。
+            // 素材没声明这个动作就静默忽略（降级不播，不报错）。
+            std::string action = command.action;
+            if (command.name.size() > 7) action = command.name.substr(7);
+            if (!action.empty() && action.size() <= 16)
+                made_sprite::playAction(sprite_stage_, action.c_str());
         } else if (command.name == "ui.swipe") {
             handleUiSwipe(command.direction);
         } else if (command.name == "ui.tap") {
@@ -5907,6 +6004,7 @@ void VibeCoding::pullBoardCommands()
             next.theme = commandField(command, "name");
             next.x = commandField(command, "x");
             next.y = commandField(command, "y");
+            next.action = commandField(command, "action");
             if (!validDirection(next.direction)) next.direction.clear();
             const cJSON *audio = cJSON_GetObjectItemCaseSensitive(command, "audio");
             if (cJSON_IsTrue(audio)) {
@@ -6508,6 +6606,9 @@ void VibeCoding::workerEntry(void *arg)
 
 void VibeCoding::ensureWorkerStarted()
 {
+    // 摇晃感知（vibe_motion）：设备有 IMU 就启动，检测到「摇一摇」回调进
+    // notifyMotionShake（内部带幂等，无 IMU 静默不启动）。
+    vibe_motion::start([](void *ctx) { static_cast<VibeCoding *>(ctx)->notifyMotionShake(); }, this);
     bool expected = false;
     if (worker_started_.compare_exchange_strong(expected, true) &&
         xTaskCreate(workerEntry, "vibe_bridge", 12288, this, 3, nullptr) != pdPASS) {
@@ -6773,6 +6874,15 @@ void VibeCoding::workerLoop()
         if (!delete_session_id.empty()) deleteSession(delete_provider, delete_session_id);
         if (canOperate() && config_loaded_.load()) {
             if (!board_catalog_sent_) announceBoardCatalog();
+            else {
+                // 动作名单变了（素材切换等）：整张清单带新 action 条目重报。
+                std::vector<std::string> current;
+                {
+                    std::lock_guard<std::mutex> lock(model_mutex_);
+                    current = available_actions_;
+                }
+                if (current != announced_actions_) announceBoardCatalog();
+            }
             flushBoardEvent();
             pullBoardCommands();
             refreshSessions();

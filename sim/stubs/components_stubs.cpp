@@ -205,3 +205,9 @@ void finish() {}
 void cancel() {}
 Status status() { return Status{Phase::Idle, "", "", false}; }
 } // namespace vibe_voice
+
+/* ---------------- vibe_motion（host 无 IMU，摇晃感知不启动） ---------------- */
+#include "vibe_motion.hpp"
+namespace vibe_motion {
+void start(ShakeCallback callback, void *ctx) { (void)callback; (void)ctx; }
+} // namespace vibe_motion

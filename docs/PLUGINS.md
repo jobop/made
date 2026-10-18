@@ -149,6 +149,11 @@ alarm-clock/
 
 桥接器也可以不经过事件直接下发。本机工作台 `POST /api/board/commands`，请求体为 `{deviceId,name,fields}`，并带本机操作令牌。这条路径只要求命令在板侧清单里。
 
+### 用动作与事件做联动增强插件
+
+行动系统的插件侧用法：素材声明的动作以 `action.<名>` 条目并入设备命令清单，事件由固件能力清单上报。一个「摇一摇 → 跌倒」类插件只需三步——在 `events` 里订阅板侧事件（如 `motion.shake`，`fields.agent` 是当前精灵页助手 id），在 `onEvent` 里按配置的作用域过滤（如逗号分隔助手 id 列表，空 = 全部），然后 `send(deviceId, {name:'action.fall'})` 或返回 `{commands:[...]}`。素材没声明该动作时设备静默忽略，插件不需要兜错；`bridge.deviceActions(deviceId)` 可查当前可用动作名单（参考值，不是闸门）。字段限制沿用事件字段，动作名与素材 manifest 的 actions 表一致（小写字母开头的 `[a-z0-9_]`，≤16 字符）。
+
+
 播放语音时，语音数据和命令一起入队。插件调用 `send({name:'audio.play'}, wav)`。工作台则 `POST /api/board/commands?deviceId=...`，`Content-Type` 为 `audio/wav`，正文就是 PCM WAV（16-bit，8k–48k，单声道或双声道，不超过 256KB）。码得领取命令时若看到 `audio:true`，再 `GET /device/commands/<id>/audio` 取走同一段语音并播放。
 
 当前板侧会执行的命令：
@@ -170,6 +175,7 @@ alarm-clock/
 | `ui.swipe` | `direction`=`left`/`right`/`up`/`down` | 语义化手势：切助手、开/收抽屉；抽屉内左右切任务 |
 | `ui.tap` | `x`、`y`（板面像素坐标） | 命中点击最深的可点击对象 |
 | `ui.back` | 无 | 远程返回键，与实体返回键同路径逐层退出 |
+| `action.<名>` | 无 | 播放助手素材声明的具名动作（每可用动作一条清单条目，如 `action.fall`）；素材没声明该动作时设备静默忽略。名单从设备命令清单派生（`/api/state` 的 `deviceActions` / facade `deviceActions(deviceId)`），仅作参考 |
 
 码得用 `GET /device/commands` 领取，执行后 `POST /device/commands/ack`，请求体为 `{ids}`。未确认的命令留在队列里，下次领取会再次带上。队列最多 8 条，其中待播放语音同时只保留一条。USB、局域网、接收器和公网都走这同一套设备接口。配网、配对和语言不在命令里。
 

@@ -14,6 +14,7 @@ The list is reported by the firmware (`announceBoardCatalog` in `esp_brookesia_a
 | `boot.double` | Double press (confirm) |
 | `boot.triple` | Triple press (cancel) |
 | `boot.long` | Long press (back to home) |
+| `motion.shake` | Shake gesture detected by the on-board IMU (QMI8658, `vibe_motion` component; ≥3 accel spikes within 700 ms, 2.5 s cooldown). Field `agent` = assistant id whose sprite page is current — the firmware tracks it in memory at page-switch time, no heartbeat delay. The event only fires while some board plugin subscribes it |
 
 | Command | Purpose |
 | --- | --- |
@@ -29,13 +30,20 @@ The list is reported by the firmware (`announceBoardCatalog` in `esp_brookesia_a
 | `ui.tap` | Tap the screen: fields `x`/`y` (panel pixel coordinates); hit-tests the deepest clickable object and dispatches CLICKED |
 | `ui.back` | Remote back key: exits layer by layer along the same path as the physical back key (settings panel / drawer / dialogs); still works while the settings page is open (ui.swipe/ui.tap are intercepted there) |
 | `debug.screenshot` | Capture the current screen; RGB565 is returned to the bridge and converted to PNG (see [On-device screenshot debugging](04-build-and-flash.md#on-device-screenshot-debugging)) |
+| `action.<name>` | Play a named sprite action, one catalog entry per available action (e.g. `action.yawn`); the device includes them in its command catalog based on the active sprite. Unknown actions are silently ignored — asset-missing degradation, never an error. Legacy form `action.play` with field `action` is still accepted |
+
+### Device action entries (action system)
+
+The device owns its action list: the actions available are whatever the active assistant's sprite manifest declares (`actions` table, see [docs/SPRITES.md](../SPRITES.md)). There is no separate action channel — the firmware folds the actions into the command catalog as `action.<name>` entries and re-announces the whole catalog (`POST /device/capabilities`) whenever the sprite changes the list. The bridge derives the names from the catalog and exposes them as `deviceActions` in `/api/state` and via the facade `deviceActions(deviceId)`; the list is advisory only (the board silently ignores unknown `action.*` commands).
+
+Two action forms share this surface: track-table actions (per-layer frame sequences) and whole-frame GIF actions (`{"gif": "x.gif", "ms": 3000}` — the firmware streams a built-in minimal GIF decoder onto a full-canvas overlay and hides the layered sprite for the duration). Asset-side constraints (canvas ≤512², ≤256 KB/file, ≤10 fps, per-frame transparency) and authoring recipes live in `docs/SPRITES.md` and the made-kit skill pack (`check_gif.py`, `action_gif.py`, the action-plugin template).
 
 ## Bridge side
 
 Handles exposed by `bridge/src/plugins/enhance.mjs`. Saving a plugin, or installing / enabling / disabling one, hot-reloads them in the running bridge; a process restart still loads them too:
 
 - Trigger surface: `onEvent` / `onConnect` / `onDisconnect` (board events and connections), `onJob` (task lifecycle: `created` / `confirmed` / `started` / `progress` / `completed` / `handed_off` / `failed` / `cancelled`; tasks created by plugins themselves do not broadcast `created`, to prevent self-excitation), `onTurnInput` / `onTurnOutput` (turn pipeline: chained in registration order, returning a string overrides, last writer wins; 1500 ms timeout, a failing plugin falls through to the previous link and never blocks a task; `onTurnInput` mutates the execution copy, the task's original text is untouched).
-- The `bridge` facade (available in event, hook and notification contexts): `agents()` / `agent(id)` / `jobs()` / `job(id)` / `sessions(agentId?)` / `createTask({instruction, agentId?, projectId?, title?})` (creates a session and lands a pending task automatically, rate-limited to 10/min) / `submitTurn({instruction, sessionId})` / `confirmJob(id)` / `cancelJob(id)` / `themes()` / `devices()` / `send(deviceId, command, audio?)` / `pending(deviceId)`.
+- The `bridge` facade (available in event, hook and notification contexts): `agents()` / `agent(id)` / `jobs()` / `job(id)` / `sessions(agentId?)` / `createTask({instruction, agentId?, projectId?, title?})` (creates a session and lands a pending task automatically, rate-limited to 10/min) / `submitTurn({instruction, sessionId})` / `confirmJob(id)` / `cancelJob(id)` / `themes()` / `devices()` / `deviceActions(deviceId)` (action names derived from the device catalog's `action.*` entries) / `send(deviceId, command, audio?)` / `pending(deviceId)`.
 
 The interface type source of truth is `bridge/src/plugins/contracts.d.ts`; usage and full examples are in [docs/PLUGINS.md](../PLUGINS.md). The rule for assigning a capability to a line: does the board have this command/event (firmware's job), or does the bridge have this handle in memory (bridge's job) — the former means flashing firmware, the latter means editing the bridge; plugins are always just consumers of the list.
 

@@ -23,6 +23,7 @@ const MOOD_NAMES = new Set(['idle', 'talking', 'running', 'waiting', 'success', 
 // ≤20 字符：固件 SPIFFS 缓存对象名 = '/' + "s<hash6>_" + 文件名 + "~"，
 // 而 SPIFFS 只给 31 字节，20 是留了 1 字节余量的上限。
 const FILE_NAME = /^[A-Za-z0-9_-]{1,16}\.png$/i;
+const GIF_NAME = /^[A-Za-z0-9_-]{1,16}\.gif$/i;
 const LAYER_ID = /^[A-Za-z][A-Za-z0-9_]{0,15}$/;
 const RESERVED_IDS = new Set(['__proto__', 'constructor', 'prototype']);
 
@@ -53,7 +54,7 @@ function readManifestFile(dir) {
 
 function validateManifest(raw) {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new SpriteError('manifest 必须是对象');
-  if (Object.keys(raw).some((key) => !['version', 'canvas', 'layers', 'motion', 'emotions'].includes(key))) {
+  if (Object.keys(raw).some((key) => !['version', 'canvas', 'layers', 'motion', 'emotions', 'actions'].includes(key))) {
     throw new SpriteError('manifest 包含不支持的字段');
   }
   if (!isInt(raw.version, 1, 2147483647)) throw new SpriteError('manifest.version 必须是正整数');
@@ -147,9 +148,65 @@ function validateManifest(raw) {
       }
     }
   }
+  // 行动系统：actions 表（可选）。两种动作形态二选一：
+  //   帧表动作 = { frame_ms, loops, tracks }（对既有层帧序的关键帧覆盖）；
+  //   GIF 动作  = { gif, ms }（整帧动画文件，播放 ms 毫秒）。
+  // 上限与固件一致：≤16 动作 / 每动作 ≤8 轨道 / 每轨道 ≤32 步。
+  const gifReferenced = new Set();
+  if (raw.actions !== undefined) {
+    const actions = raw.actions;
+    if (!actions || typeof actions !== 'object' || Array.isArray(actions)) {
+      throw new SpriteError('actions 必须是对象');
+    }
+    const names = Object.keys(actions);
+    if (names.length > 16) throw new SpriteError('actions 最多 16 个动作');
+    for (const [name, action] of Object.entries(actions)) {
+      if (!/^[a-z][a-z0-9_]{0,15}$/.test(name)) throw new SpriteError(`actions.${name} 名字须为小写字母开头的 [a-z0-9_]{0,15}`);
+      if (!action || typeof action !== 'object' || Array.isArray(action)) {
+        throw new SpriteError(`actions.${name} 必须是对象`);
+      }
+      if (action.gif !== undefined) {
+        // GIF 动作：整帧动画，ms 是播放时长（设备端流式解码，文件不分帧）
+        if (Object.keys(action).some((key) => !['gif', 'ms'].includes(key))) {
+          throw new SpriteError(`actions.${name} 包含不支持的字段（GIF 动作只支持 gif/ms）`);
+        }
+        if (typeof action.gif !== 'string' || !GIF_NAME.test(action.gif)) {
+          throw new SpriteError(`actions.${name}.gif 需要 1–16 位 [A-Za-z0-9_-] 的 .gif 文件名`);
+        }
+        if (action.ms !== undefined && !isInt(action.ms, 100, 10000)) {
+          throw new SpriteError(`actions.${name}.ms 范围 100–10000`);
+        }
+        gifReferenced.add(action.gif);
+        continue;
+      }
+      if (Object.keys(action).some((key) => !['frame_ms', 'loops', 'tracks'].includes(key))) {
+        throw new SpriteError(`actions.${name} 包含不支持的字段`);
+      }
+      if (action.frame_ms !== undefined && !isInt(action.frame_ms, 30, 2000)) {
+        throw new SpriteError(`actions.${name}.frame_ms 范围 30–2000`);
+      }
+      if (action.loops !== undefined && !isInt(action.loops, 1, 10)) {
+        throw new SpriteError(`actions.${name}.loops 范围 1–10`);
+      }
+      const tracks = action.tracks;
+      if (!tracks || typeof tracks !== 'object' || Array.isArray(tracks) ||
+          Object.keys(tracks).length < 1 || Object.keys(tracks).length > 8) {
+        throw new SpriteError(`actions.${name}.tracks 需要 1–8 条轨道（层id → 帧序号数组）`);
+      }
+      for (const [layerId, steps] of Object.entries(tracks)) {
+        const layer = raw.layers.find((item) => item.id === layerId);
+        if (!layer) throw new SpriteError(`actions.${name} 引用未知层：${layerId}`);
+        const frameCount = (layer.frames !== undefined ? layer.frames : [layer.file]).length;
+        if (!Array.isArray(steps) || steps.length < 1 || steps.length > 32 ||
+            steps.some((step) => !isInt(step, 0, frameCount - 1))) {
+          throw new SpriteError(`actions.${name}.tracks.${layerId} 需要 1–32 个帧序号（0–${frameCount - 1}）`);
+        }
+      }
+    }
+  }
   return {
     version: raw.version, canvas: canvas, layers: raw.layers, motion: raw.motion ?? null,
-    emotions: raw.emotions ?? null,
+    emotions: raw.emotions ?? null, actions: raw.actions ?? null,
   };
 }
 
@@ -184,12 +241,23 @@ export function readSprite(packageDir) {
   const raw = readManifestFile(spriteDir);
   if (!raw) return null;
   const manifest = validateManifest(raw);
-  // 引用完整性：目录里的 PNG 必须全部被 manifest 引用，帮开发者抓住文件名拼写错误。
+  // 引用完整性：目录里的 PNG 必须全部被 manifest 层引用、GIF 必须被某个
+  // GIF 动作引用，帮开发者抓住文件名拼写错误。
+  const gifReferenced = new Set();
+  if (manifest.actions) {
+    for (const action of Object.values(manifest.actions)) {
+      if (action && typeof action.gif === 'string') gifReferenced.add(action.gif);
+    }
+  }
   for (const name of fs.readdirSync(spriteDir)) {
-    if (!name.toLowerCase().endsWith('.png')) continue;
-    const referenced = manifest.layers.some((layer) =>
-      (layer.frames !== undefined ? layer.frames : [layer.file]).includes(name));
-    if (!referenced) throw new SpriteError(`sprite/${name} 未被 manifest 引用`);
+    const lower = name.toLowerCase();
+    if (lower.endsWith('.png')) {
+      const referenced = manifest.layers.some((layer) =>
+        (layer.frames !== undefined ? layer.frames : [layer.file]).includes(name));
+      if (!referenced) throw new SpriteError(`sprite/${name} 未被 manifest 引用`);
+    } else if (lower.endsWith('.gif')) {
+      if (!gifReferenced.has(name)) throw new SpriteError(`sprite/${name} 未被任何 GIF 动作引用`);
+    }
   }
   let total = 0;
   const files = [];
@@ -209,9 +277,29 @@ export function readSprite(packageDir) {
       files.push({ file, bytes, sha256: createHash('sha256').update(data).digest('hex') });
     }
   }
+  // GIF 动作引用的动画文件（多个动作共用同一文件只下发一份）
+  if (manifest.actions) {
+    const listed = new Set(files.map((entry) => entry.file));
+    for (const action of Object.values(manifest.actions)) {
+      if (!action || typeof action.gif !== 'string' || listed.has(action.gif)) continue;
+      const target = path.join(spriteDir, action.gif);
+      let bytes;
+      try {
+        bytes = fs.statSync(target).size;
+      } catch {
+        throw new SpriteError(`GIF 动作引用的素材不存在：sprite/${action.gif}`);
+      }
+      if (bytes > SPRITE_MAX_FILE_BYTES) throw new SpriteError(`素材单文件超过 256 KB：${action.gif}`);
+      total += bytes;
+      if (total > SPRITE_MAX_TOTAL_BYTES) throw new SpriteError(`sprite/ 整包超过 512 KB`);
+      const data = fs.readFileSync(target);
+      files.push({ file: action.gif, bytes, sha256: createHash('sha256').update(data).digest('hex') });
+    }
+  }
   const value = Object.freeze({
     dir: spriteDir, version: manifest.version, canvas: manifest.canvas,
     layers: manifest.layers, motion: manifest.motion, emotions: manifest.emotions,
+    actions: manifest.actions,
     files: Object.freeze(files.map((file) => Object.freeze(file))),
   });
   cache.set(spriteDir, { stamp, value });

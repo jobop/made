@@ -106,6 +106,36 @@ int run_sprite_test()
         }
     }
 
+    // MADE_SIM_ACTION="wave,yawn"：逐个动作播放并连拍（行动系统离线验证，
+    // 配合 MADE_SIM_SPRITE_DIR / MADE_SIM_SHOT_PREFIX）。未知动作验证降级：
+    // playAction 返回 false、画面不动。
+    if (const char *acts = getenv("MADE_SIM_ACTION"); acts && *acts) {
+        const char *prefix = getenv("MADE_SIM_SHOT_PREFIX");
+        std::string tag = prefix && *prefix ? prefix : "/tmp/action";
+        std::string list = acts;
+        int index = 0;
+        for (size_t start = 0; start <= list.size();) {
+            size_t comma = list.find(',', start);
+            std::string name = list.substr(start,
+                comma == std::string::npos ? std::string::npos : comma - start);
+            if (name.empty()) break;
+            const bool started = made_sprite::playAction(stage, name.c_str());
+            fprintf(stderr, "sim: playAction('%s') -> %d names=%zu\n", name.c_str(),
+                started ? 1 : 0, made_sprite::actionNames(stage).size());
+            for (int i = 0; i < 48; ++i) {   // ~1.6s：覆盖典型动作全程
+                SDL_PumpEvents(); lv_tick_inc(33); lv_timer_handler(); SDL_Delay(30);
+                elapsed += 33;
+                made_sprite::update(stage, elapsed, made_sprite::Mood::kIdle);
+                if (i % 4 == 0)
+                    captureShot(tag + "_" + std::to_string(index) + "_" + name +
+                                "_" + std::to_string(i) + ".bmp", disp);
+            }
+            ++index;
+            if (comma == std::string::npos) break;
+            start = comma + 1;
+        }
+    }
+
     // MADE_SIM_SWIPE_DEMO=1：左右滑跟手 + 真翻页演示。侧舞台（第二套素材）
     // 停在屏外 ±1 屏宽，拖动平移 screen 时从屏边滑入视野；松手晋升（换指针）。
     // 每步截图，供检查滑动过渡与翻页预览。

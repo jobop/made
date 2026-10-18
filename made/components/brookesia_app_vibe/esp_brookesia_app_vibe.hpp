@@ -210,8 +210,11 @@ private:
     bool request(const std::string &path, bool post, std::string &response, int &status,
                  const std::string &json_body = {}, size_t response_limit = 32 * 1024,
                  int timeout_ms = 5000);
-    void queueBoardEvent(const char *name);
+    void queueBoardEvent(const char *name,
+                         const std::vector<std::pair<std::string, std::string>> &fields = {});
+    void notifyMotionShake();   // 摇晃回调：把当前助手 ID 塞进事件字段再入队
     void announceBoardCatalog();
+    void syncAvailableActions();
     void flushBoardEvent();
     void pullBoardCommands();
     void applyRemoteCommands();
@@ -350,6 +353,7 @@ private:
     std::string voice_project_id_; // Protected by model_mutex_.
     std::vector<std::string> board_events_; // Protected by model_mutex_. Subscribed event names.
     std::string pending_board_event_; // Protected by model_mutex_. At most one report in flight.
+    std::vector<std::pair<std::string, std::string>> pending_board_event_fields_; // 同上，随事件一并上报。
     struct RemoteCommand {
         std::string id;
         std::string name;
@@ -360,12 +364,17 @@ private:
         std::string theme;
         std::string x;
         std::string y;
+        std::string action;   // action.play：动作名
         std::string audio;
     };
     std::vector<RemoteCommand> inbound_commands_; // Protected by model_mutex_.
     std::vector<std::string> delivered_command_ids_; // Worker only.
     std::vector<std::string> ack_retry_; // Worker only.
     bool board_catalog_sent_ = false; // Worker only; cleared when the catalog is invalidated.
+    // 行动系统：当前助手素材可用的动作名单。LVGL 线程在 maybeApplyArtwork
+    // 里比对写入口，worker 线程读走上报；变化即报 + 周期重报（自愈）。
+    std::vector<std::string> available_actions_; // Protected by model_mutex_.
+    std::vector<std::string> announced_actions_; // Worker only; catalog 已上报的动作条目。
     std::vector<vibe_provider::Provider> providers_; // Protected by model_mutex_; starts empty.
     std::string catalog_identity_; // Protected by model_mutex_; URL + authenticated token.
 

@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "made_sprite.hpp"
+#include "made_gif.hpp"
 #include "vibe_theme.hpp"
 #include "made_layout.hpp"
 
@@ -12,6 +13,7 @@
 
 #include <cJSON.h>
 #include <esp_heap_caps.h>
+#include <misc/cache/instance/lv_image_cache.h>
 #include <esp_log.h>
 #include <png.h>
 
@@ -64,6 +66,27 @@ struct ArtLayer {
     std::vector<int> baked_scale;
 };
 
+// —— 行动系统 ——
+// manifest 的 "actions" 表，两种形态：
+//   帧表动作 = 对既有层的帧序覆盖（tracks: 层id → 帧序号序列），素材层就是
+//              动作素材（挥手 = arm 层多帧），没有新文件引用；
+//   GIF 动作 = 整帧动画文件（gif + ms），播放期起一个全画布覆盖层流式解码。
+struct ActionSpec {
+    std::string name;
+    bool gif = false;           // true = GIF 动作（tracks 无效）
+    std::string gif_file;       // gif 动作的文件名（≤20 字符，白名单校验）
+    uint32_t gif_ms = 3000;     // gif 动作播放时长（100–10000ms）
+    uint32_t frame_ms = 120;    // 每步时长（30–2000ms，边界外回默认）
+    int loops = 1;              // 播放遍数（1–10）
+    uint32_t total_steps = 0;   // commit 时算好：最长轨道长度 × loops（gif 恒 0）
+    struct Track {
+        std::string layer;      // 层 id（commit 时解析成下标，解析失败整条丢弃）
+        size_t index = 0;
+        std::vector<int> frames;   // 帧序号序列（循环取用；越界帧在 commit 时修剪）
+    };
+    std::vector<Track> tracks;
+};
+
 struct Parts {
     lv_obj_t *root = nullptr;      // 舞台根对象
     lv_obj_t *glow = nullptr;      // 待确认/运行时的光圈（accent 色，脉冲）
@@ -83,6 +106,17 @@ struct Parts {
         int pivot_y = 0;
         bool active = false;
         uint64_t epoch = 0;          // 每次 commitArt 递增；后台烘焙结果按它对账
+        std::vector<ActionSpec> actions;   // 行动系统：素材声明的具名动作
+        int active_action = -1;      // 正在播放的动作下标，-1 = 无
+        uint32_t action_started_ms = 0;    // lv_tick_get() 起点
+        std::vector<uint8_t> action_layers; // 被任意动作引用的层（禁止烘焙）
+        std::string base_dir;        // 素材文件目录（GIF 动作按名读缓存文件）
+        // —— GIF 动作播放状态（同一时刻最多一份）——
+        made_gif::Decoder gif;       // 解码器（持有画布与文件副本）
+        lv_obj_t *gif_obj = nullptr; // 全画布覆盖层（container 子对象，最上层）
+        lv_image_dsc_t gif_dsc{};
+        uint32_t gif_next_ms = 0;    // 下一帧的相对时间点（自 action_started_ms）
+        bool gif_layers_hidden = false; // GIF 播放期各素材层被隐藏（GIF 透明区会透出底层形象）
 
         ~Art() {
             for (auto &layer : layers) {
@@ -99,6 +133,22 @@ void freeFrames(std::vector<Frame> &frames) {
     for (auto &frame : frames)
         if (frame.pixels) heap_caps_free(frame.pixels);
     frames.clear();
+}
+
+// 撤 GIF 动作播放状态。gif_obj 是 container 的子对象：container 将被删除时
+// 对象树会带走它，这里统一走 lv_obj_delete 也没有二次释放问题（指针立即置空）。
+void gifStop(Parts *parts) {
+    auto &art = parts->art;
+    if (art.gif_obj && art.container) lv_obj_delete(art.gif_obj);
+    art.gif_obj = nullptr;
+    art.gif.close();   // 释放画布 + 文件副本
+    art.gif_dsc = {};
+    art.gif_next_ms = 0;
+    if (art.gif_layers_hidden) {
+        art.gif_layers_hidden = false;
+        for (auto &layer : art.layers)
+            if (layer.obj) lv_obj_remove_flag(layer.obj, LV_OBJ_FLAG_HIDDEN);
+    }
 }
 
 // 一个待提交的图层：坐标是 360 设计画布像素，frames 的像素所有权随 vector 移交。
@@ -445,12 +495,16 @@ void bakeTick(Parts *parts)
     }
 
     // 调度：找最大的可烘焙单帧层（无 blink/talk/alert，未烘焙、未试败）。
+    // 行动系统引用的层不烘焙：烘焙会释放原帧并锁死帧轮播路径，动作切帧
+    // 与烘焙帧轮播会互相打架。
     if (g_bake.in_flight.load(std::memory_order_acquire)) return;
     ArtLayer *body = nullptr;
     uint32_t area = 0;
-    for (auto &layer : art.layers) {
+    for (size_t li = 0; li < art.layers.size(); ++li) {
+        ArtLayer &layer = art.layers[li];
         if (layer.baked || layer.bake_tried || layer.blink || layer.talk || layer.alert)
             continue;
+        if (li < art.action_layers.size() && art.action_layers[li]) continue;
         if (layer.frames.size() != 1 || !layer.frames[0].dsc.data) continue;
         const uint32_t a = layer.frames[0].dsc.header.w * layer.frames[0].dsc.header.h;
         if (a > area) { area = a; body = &layer; }
@@ -512,8 +566,13 @@ void bakeTick(Parts *parts)
 }
 
 // 把规格提交成 LVGL 对象树；任一对象创建失败则整体回滚并保留旧素材。
-bool commitArt(Parts *parts, const MotionSpec &motion, std::vector<LayerSpec> &&specs, bool builtin) {
+// actions 是 manifest 解析出的动作表：层引用在这里解析成下标，引用不存在
+// 的层或越界帧的轨道就地修剪——动作可用性由素材本身决定，坏条目只影响
+// 自己（缺素材的动作不可用，其余照常）。
+bool commitArt(Parts *parts, const MotionSpec &motion, std::vector<LayerSpec> &&specs,
+               std::vector<ActionSpec> &&actions, bool builtin, const std::string &base_dir) {
     if (specs.empty()) return false;
+    gifStop(parts);   // 上一套素材的 GIF 播放状态先行退场（含覆盖层与解码内存）
     auto *container = lv_obj_create(parts->root);
     if (!container) return false;
     lv_obj_remove_style_all(container);
@@ -577,6 +636,46 @@ bool commitArt(Parts *parts, const MotionSpec &motion, std::vector<LayerSpec> &&
     parts->art.pivot_y = made_home_y(motion.canvas_h / 2);
     parts->art.active = true;
     parts->builtin = builtin;
+    parts->art.base_dir = base_dir;
+    // —— 动作表落地：解析层下标 + 修剪越界帧 ——
+    parts->art.actions.clear();
+    parts->art.action_layers.assign(parts->art.layers.size(), 0);
+    for (auto &action : actions) {
+        ActionSpec resolved;
+        resolved.name = std::move(action.name);
+        resolved.frame_ms = action.frame_ms;
+        if (action.gif) {
+            // GIF 动作：无轨道可解析；可用性由文件在不在缓存里决定
+            // （playAction 时读不到文件就静默降级）。
+            resolved.gif = true;
+            resolved.gif_file = std::move(action.gif_file);
+            resolved.gif_ms = action.gif_ms;
+            parts->art.actions.push_back(std::move(resolved));
+            continue;
+        }
+        uint32_t max_len = 0;
+        for (auto &track : action.tracks) {
+            ssize_t index = -1;
+            for (size_t i = 0; i < parts->art.layers.size(); ++i) {
+                if (parts->art.layers[i].id == track.layer) { index = static_cast<ssize_t>(i); break; }
+            }
+            if (index < 0) continue;   // 引用不存在的层：整条轨道丢弃
+            ActionSpec::Track out;
+            out.index = static_cast<size_t>(index);
+            for (const int frame : track.frames) {
+                if (frame < static_cast<int>(parts->art.layers[out.index].frames.size()))
+                    out.frames.push_back(frame);
+            }
+            if (out.frames.empty()) continue;
+            max_len = std::max<uint32_t>(max_len, static_cast<uint32_t>(out.frames.size()));
+            parts->art.action_layers[out.index] = 1;
+            resolved.tracks.push_back(std::move(out));
+        }
+        if (resolved.tracks.empty()) continue;   // 没有一条可用轨道：整个动作不可用
+        resolved.total_steps = max_len * action.loops;
+        parts->art.actions.push_back(std::move(resolved));
+    }
+    parts->art.active_action = -1;   // 换素材即停动作（新素材的动作表是另一套）
     // 烘焙不在提交时同步做（那会把 LVGL 线程卡约 2 秒，实机每次换屏都卡）。
     // 这里只递增代际号，update() 里的 bakeTick 会异步调度后台烘焙；
     // 烘焙期间动态缩放路径照常兜底，烘完原子切帧轮播。
@@ -637,6 +736,69 @@ void artUpdate(Parts *parts, uint32_t elapsed_ms, int mood) {
     const int sway = wave(elapsed_ms, sway_period, sway_amp);
     const int bounce = (wave(elapsed_ms, sway_period / 2, bounce_amp, 270) + bounce_amp) / 2;
     lv_obj_set_pos(art.container, made_x(sway), made_home_y(-bounce));
+
+    // —— 行动系统：播放中的动作覆盖被引用层的帧选择 ——
+    // 时间轴用 lv_tick_get()（playAction 也在 LVGL 线程记录起点，同源无漂移）。
+    // 播完自动清位，后续层照常走情绪/状态驱动。烘焙层不可能是动作目标
+    // （调度处已排除 action_layers），此处 override 与帧轮播不会相遇。
+    int playing = -1;
+    uint32_t action_step = 0;
+    bool gif_playing = false;
+    if (art.active_action >= 0 &&
+        art.active_action < static_cast<int>(art.actions.size())) {
+        const ActionSpec &spec = art.actions[static_cast<size_t>(art.active_action)];
+        const uint32_t t = static_cast<uint32_t>(lv_tick_get()) - art.action_started_ms;
+        bool expired;
+        if (spec.gif) {
+            expired = t >= spec.gif_ms;
+            if (!expired) {
+                // 逐帧流式解码：到点才解下一帧（LVGL 线程内，每帧几毫秒）。
+                // 播完 GIF 流但时长未到：rewind 循环续播。
+                if (t >= art.gif_next_ms) {
+                    uint32_t frame_ms = 0;
+                    int got = art.gif.decodeNext(frame_ms);
+                    if (got == 0) {
+                        art.gif.rewind();
+                        got = art.gif.decodeNext(frame_ms);
+                    }
+                    if (got != 1) {
+                        expired = true;   // 解码失败：立即结束，不留残帧
+                    } else {
+                        art.gif_next_ms = t + frame_ms;
+                        lv_image_cache_drop(&art.gif_dsc);   // 像素变了，弃缓存
+                        lv_obj_invalidate(art.gif_obj);
+                    }
+                }
+            }
+        } else {
+            expired = spec.total_steps == 0 || t >= spec.total_steps * spec.frame_ms;
+        }
+        if (expired) {
+            if (spec.gif) gif_playing = false;
+            art.active_action = -1;   // 播完：回到状态驱动
+            gifStop(parts);
+        } else {
+            playing = art.active_action;
+            gif_playing = spec.gif;
+            action_step = t / spec.frame_ms;
+        }
+    }
+    std::vector<uint8_t> overridden;
+    if (playing >= 0 && !gif_playing) {
+        const ActionSpec &spec = art.actions[static_cast<size_t>(playing)];
+        overridden.assign(art.layers.size(), 0);
+        for (const auto &track : spec.tracks) {
+            if (track.index >= art.layers.size()) continue;
+            ArtLayer &layer = art.layers[track.index];
+            if (!layer.obj || layer.frames.empty()) continue;
+            const int frame = std::min(
+                track.frames[static_cast<size_t>(action_step) % track.frames.size()],
+                static_cast<int>(layer.frames.size()) - 1);
+            if (frame != layer.last_frame) layer.last_frame = frame;
+            lv_image_set_src(layer.obj, &layer.frames[static_cast<size_t>(frame)].dsc);
+            overridden[track.index] = 1;
+        }
+    }
     // 呼吸：逐层图像缩放 + 位置补偿，支点=画布中心。缩放比 s 时层的位置
     // 必须从 base_pos 变为 center + (base_pos - center) * s —— 等价于容器级
     // 变换的几何效果，但变换域从整屏缩小到各图层自身 bbox，也不再走整屏
@@ -675,7 +837,10 @@ void artUpdate(Parts *parts, uint32_t elapsed_ms, int mood) {
             lv_image_set_scale(layer.obj, layer.base_scale);
         }
     }
-    for (auto &layer : art.layers) {
+    for (size_t li = 0; li < art.layers.size(); ++li) {
+        ArtLayer &layer = art.layers[li];
+        // 动作播放中被引用的层已由动作接管，跳过常规选帧
+        if (li < overridden.size() && overridden[li]) continue;
         // 烘焙层的 src 由上面的帧轮播管理，这里只处理 blink/talk/alert 切帧层
         if (!layer.obj || layer.baked || layer.frames.empty()) continue;
         static const EmotionSel kNone;
@@ -797,7 +962,10 @@ void update(lv_obj_t *root, uint32_t elapsed_ms, int mood) {
     // 并整屏失效——这是滑动不跟手、整体掉帧的最大单一来源，直接砍半。
     // 情绪切换不受节流，立即反映。
     bakeTick(parts);   // 烘焙收割/调度（有原子门，常驻开销近乎为零）
-    if (mood != parts->last_mood || elapsed_ms - parts->last_anim_ms >= 90) {
+    // 动作播放不走 10Hz 节流：动作帧是纯 src 切换（无重采样），且动作
+    // 步长可以短到 30ms，90ms 节流会把快动作拖成慢动作。
+    const bool action_live = parts->art.active_action >= 0;
+    if (action_live || mood != parts->last_mood || elapsed_ms - parts->last_anim_ms >= 90) {
         parts->last_anim_ms = elapsed_ms;
         artUpdate(parts, elapsed_ms, mood);
         if (mood != parts->last_mood) {
@@ -812,7 +980,8 @@ void update(lv_obj_t *root, uint32_t elapsed_ms, int mood) {
 // 兜底路径）与滑动预取 worker 共用；本函数不碰 LVGL 对象，可在任意线程跑。
 // static：签名引用匿名命名空间类型，保持内部链接。
 static bool buildSpecsFromManifest(const std::string &manifest_json, const std::string &base_dir,
-                                   MotionSpec &motion, std::vector<LayerSpec> &specs) {
+                                   MotionSpec &motion, std::vector<LayerSpec> &specs,
+                                   std::vector<ActionSpec> &actions) {
     cJSON *manifest = cJSON_Parse(manifest_json.c_str());
     if (!manifest) return false;
     const cJSON *canvas = cJSON_GetObjectItemCaseSensitive(manifest, "canvas");
@@ -956,6 +1125,65 @@ static bool buildSpecsFromManifest(const std::string &manifest_json, const std::
         }
     }
 
+    // —— 行动表（可选）——
+    // "actions": { "<name>": { "frame_ms": 120, "loops": 1,
+    //                           "tracks": { "<layerId>": [帧序号...] } } }
+    // 名字规则与桥接器能力名一致（小写字母开头，[a-z0-9_]，≤16 字符）；
+    // 层引用/帧越界在 commitArt 解析时修剪——素材没给齐的动作自然不可用，
+    // 坏条目只影响自己，不毁整套素材。
+    if (cJSON_IsObject(cJSON_GetObjectItemCaseSensitive(manifest, "actions"))) {
+        const cJSON *actions_json = cJSON_GetObjectItemCaseSensitive(manifest, "actions");
+        for (const cJSON *action = actions_json->child; action; action = action->next) {
+            if (!action->string || !cJSON_IsObject(action) || actions.size() >= 16) continue;
+            const std::string name = action->string;
+            if (name.size() > 16 || name[0] < 'a' || name[0] > 'z' ||
+                name.find_first_not_of("abcdefghijklmnopqrstuvwxyz0123456789_", 1) != std::string::npos)
+                continue;
+            ActionSpec spec;
+            spec.name = name;
+            // GIF 动作形态：{ "gif": "x.gif", "ms": 播放时长 }
+            const cJSON *gif = cJSON_GetObjectItemCaseSensitive(action, "gif");
+            if (cJSON_IsString(gif) && gif->valuestring && gif->valuestring[0]) {
+                const std::string file = gif->valuestring;
+                if (file.size() > 20 || file.size() < 5 ||
+                    file.compare(file.size() - 4, 4, ".gif") != 0 ||
+                    file.find_first_of("/\\") != std::string::npos ||
+                    file.find_first_not_of(
+                        "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-.") !=
+                        std::string::npos)
+                    continue;   // 名字不合规：动作不可用，不影响其它素材
+                spec.gif = true;
+                spec.gif_file = file;
+                const cJSON *ms = cJSON_GetObjectItemCaseSensitive(action, "ms");
+                spec.gif_ms = cJSON_IsNumber(ms)
+                    ? static_cast<uint32_t>(std::min(std::max(ms->valueint, 100), 10000))
+                    : 3000;
+                actions.push_back(std::move(spec));
+                continue;
+            }
+            const cJSON *frame_ms = cJSON_GetObjectItemCaseSensitive(action, "frame_ms");
+            if (cJSON_IsNumber(frame_ms) && frame_ms->valueint >= 30 && frame_ms->valueint <= 2000)
+                spec.frame_ms = static_cast<uint32_t>(frame_ms->valueint);
+            const cJSON *loops = cJSON_GetObjectItemCaseSensitive(action, "loops");
+            spec.loops = cJSON_IsNumber(loops) ? std::min(std::max(loops->valueint, 1), 10) : 1;
+            const cJSON *tracks = cJSON_GetObjectItemCaseSensitive(action, "tracks");
+            if (!cJSON_IsObject(tracks)) continue;
+            bool valid = false;
+            for (const cJSON *track = tracks->child; track; track = track->next) {
+                if (!track->string || !cJSON_IsArray(track) || spec.tracks.size() >= 8) continue;
+                ActionSpec::Track out;
+                out.layer = track->string;
+                for (const cJSON *frame = track->child; frame && out.frames.size() < 32; frame = frame->next)
+                    if (cJSON_IsNumber(frame) && frame->valueint >= 0)
+                        out.frames.push_back(frame->valueint);
+                if (out.frames.empty()) continue;
+                valid = true;
+                spec.tracks.push_back(std::move(out));
+            }
+            if (valid) actions.push_back(std::move(spec));
+        }
+    }
+
     cJSON_Delete(manifest);
     return true;
 fail:
@@ -988,6 +1216,7 @@ bool applyArtwork(lv_obj_t *root, const std::string &manifest_json, const std::s
     // 解码峰值只剩新素材一套；失败时本来就停在空白等下次重试。
     // （滑动预取路径不受此限：预取是「旧素材存活时后台解码」，PSRAM 放得
     // 下就赚到零等待换装，放不下解码失败回退到这里，行为与现在一致。）
+    gifStop(parts);
     if (parts->art.container) lv_obj_delete(parts->art.container);
     parts->art.container = nullptr;
     for (auto &layer : parts->art.layers) {
@@ -999,9 +1228,10 @@ bool applyArtwork(lv_obj_t *root, const std::string &manifest_json, const std::s
 
     MotionSpec motion;
     std::vector<LayerSpec> specs;
-    if (!buildSpecsFromManifest(manifest_json, base_dir, motion, specs)) return false;
+    std::vector<ActionSpec> actions;
+    if (!buildSpecsFromManifest(manifest_json, base_dir, motion, specs, actions)) return false;
 
-    if (commitArt(parts, motion, std::move(specs), false)) {
+    if (commitArt(parts, motion, std::move(specs), std::move(actions), false, base_dir)) {
         lv_obj_invalidate(root);
         return true;
     }
@@ -1012,6 +1242,7 @@ void clearArtwork(lv_obj_t *root) {
     if (!root) return;
     auto *parts = static_cast<Parts *>(lv_obj_get_user_data(root));
     if (!parts || !parts->art.active || parts->builtin) return;
+    gifStop(parts);
     if (parts->art.container) lv_obj_delete(parts->art.container);
     parts->art.container = nullptr;
     for (auto &layer : parts->art.layers) {
@@ -1027,6 +1258,102 @@ bool artworkActive(lv_obj_t *root) {
     if (!root) return false;
     auto *parts = static_cast<Parts *>(lv_obj_get_user_data(root));
     return parts && parts->art.active && !parts->builtin;
+}
+
+// 读整个缓存文件（GIF 动作用；≤256KB 一把读进 PSRAM）。失败返回空串。
+static std::string readCachedFile(const std::string &path, size_t limit) {
+    FILE *file = fopen(path.c_str(), "rb");
+    if (!file) return {};
+    std::string out;
+    char buffer[4096];
+    size_t read;
+    while ((read = fread(buffer, 1, sizeof(buffer), file)) > 0) {
+        out.append(buffer, read);
+        if (out.size() > limit) break;
+    }
+    fclose(file);
+    return out;
+}
+
+bool playAction(lv_obj_t *root, const char *name) {
+    if (!root || !name || !name[0]) return false;
+    auto *parts = static_cast<Parts *>(lv_obj_get_user_data(root));
+    if (!parts || !parts->art.active) return false;
+    auto &art = parts->art;
+    for (size_t i = 0; i < art.actions.size(); ++i) {
+        if (art.actions[i].name != name) continue;
+        // 重复点名同一段动作：重新从头播（打断当前拍比忽略更符合直觉）
+        if (art.actions[i].gif) {
+            // GIF 动作：读缓存文件 → 起解码器 → 建全画布覆盖层 → 解首帧
+            gifStop(parts);
+            if (art.actions[i].gif_file.find_first_not_of(
+                    "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-.") !=
+                std::string::npos)
+                return false;   // 文件名越界：静默降级
+            const std::string bytes = readCachedFile(
+                art.base_dir + art.actions[i].gif_file, 256 * 1024 + 1);
+            if (bytes.empty() || bytes.size() > 256 * 1024) {
+                ESP_LOGW("made_sprite", "[action] gif_unavailable name=%s bytes=%u",
+                    name, static_cast<unsigned>(bytes.size()));
+                return false;
+            }
+            if (!art.gif.open(reinterpret_cast<const uint8_t *>(bytes.data()), bytes.size())) {
+                ESP_LOGW("made_sprite", "[action] gif_open_failed name=%s", name);
+                return false;
+            }
+            auto *object = lv_image_create(art.container);
+            if (!object) {
+                gifStop(parts);
+                return false;
+            }
+            passive(object);
+            art.gif_obj = object;
+            art.gif_dsc = {};
+            art.gif_dsc.header.magic = LV_IMAGE_HEADER_MAGIC;
+            art.gif_dsc.header.cf = LV_COLOR_FORMAT_ARGB8888;
+            art.gif_dsc.header.w = static_cast<uint32_t>(art.gif.w);
+            art.gif_dsc.header.h = static_cast<uint32_t>(art.gif.h);
+            art.gif_dsc.header.stride = static_cast<uint32_t>(art.gif.w) * 4;
+            art.gif_dsc.data_size = static_cast<size_t>(art.gif.w) * art.gif.h * 4;
+            art.gif_dsc.data = art.gif.canvas;
+            lv_image_set_src(object, &art.gif_dsc);
+            lv_obj_set_pos(object, made_x(0), made_home_y(0));
+            lv_image_set_scale(object, made_lv_scale());
+            lv_image_set_pivot(object, 0, 0);
+            uint32_t frame_ms = 100;
+            if (art.gif.decodeNext(frame_ms) != 1) {
+                ESP_LOGW("made_sprite", "[action] gif_first_frame_failed name=%s", name);
+                gifStop(parts);
+                return false;
+            }
+            art.gif_next_ms = frame_ms;
+            // GIF 透明区会透出下面的分层形象（双轮廓鬼影）：播放期整体隐藏素材层
+            art.gif_layers_hidden = true;
+            for (auto &layer : art.layers)
+                if (layer.obj) lv_obj_add_flag(layer.obj, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_move_foreground(object);
+            lv_obj_invalidate(art.container);
+        } else {
+            if (art.actions[i].total_steps == 0) return false;
+        }
+        art.active_action = static_cast<int>(i);
+        art.action_started_ms = static_cast<uint32_t>(lv_tick_get());
+        ESP_LOGI("made_sprite", "[action] play name=%s", name);
+        return true;
+    }
+    // 素材没这个动作：静默降级（不报错、不动），调用方无需处理
+    return false;
+}
+
+std::vector<std::string> actionNames(lv_obj_t *root) {
+    std::vector<std::string> names;
+    if (!root) return names;
+    auto *parts = static_cast<Parts *>(lv_obj_get_user_data(root));
+    if (!parts || !parts->art.active) return names;
+    names.reserve(parts->art.actions.size());
+    for (const auto &action : parts->art.actions)
+        names.push_back(action.name);
+    return names;
 }
 
 void setBakeEnabled(lv_obj_t *root, bool enabled) {
@@ -1051,8 +1378,10 @@ struct PrefetchState {
     std::atomic<bool> done{false};
     std::atomic<bool> failed{false};
     std::atomic<uint32_t> generation{0};
+    std::string base_dir;            // 与 specs 同批发布（GIF 动作按它读文件）
     MotionSpec motion;               // worker 发布后只由 LVGL 线程读写
     std::vector<LayerSpec> specs;    // 同上
+    std::vector<ActionSpec> actions; // 同上（动作表无堆像素，纯元数据）
 };
 PrefetchState g_prefetch;
 
@@ -1060,14 +1389,17 @@ void prefetchWorker(void *param) {
     auto *job = static_cast<PrefetchJob *>(param);
     MotionSpec motion;
     std::vector<LayerSpec> specs;
-    const bool ok = buildSpecsFromManifest(job->manifest_json, job->base_dir, motion, specs);
+    std::vector<ActionSpec> actions;
+    const bool ok = buildSpecsFromManifest(job->manifest_json, job->base_dir, motion, specs, actions);
     const bool stale = g_prefetch.generation.load(std::memory_order_acquire) != job->generation;
     if (stale) {
         // 预取目标已易主（方向反转/松手取消）：结果就地丢弃。
         for (auto &spec : specs) freeFrames(spec.frames);
     } else if (ok) {
+        g_prefetch.base_dir = job->base_dir;
         g_prefetch.motion = motion;
         g_prefetch.specs = std::move(specs);
+        g_prefetch.actions = std::move(actions);
         g_prefetch.done.store(true, std::memory_order_release);
         ESP_LOGI("made_sprite", "[sprite] prefetch_ready layers=%u psram_free=%u",
             static_cast<unsigned>(g_prefetch.specs.size()),
@@ -1131,11 +1463,14 @@ bool commitPrefetched(lv_obj_t *root) {
     auto *parts = static_cast<Parts *>(lv_obj_get_user_data(root));
     if (!parts || !parts->root) return false;
     std::vector<LayerSpec> specs = std::move(g_prefetch.specs);
+    std::vector<ActionSpec> actions = std::move(g_prefetch.actions);
     g_prefetch.specs.clear();
+    g_prefetch.actions.clear();
     g_prefetch.done.store(false, std::memory_order_relaxed);
     // commitArt 只在成功时撤旧素材（旧容器+旧帧整体退场，不闪空白）；
     // 失败时旧素材原样保留，暂存帧就地释放，上层回退老路。
-    if (commitArt(parts, g_prefetch.motion, std::move(specs), false)) {
+    if (commitArt(parts, g_prefetch.motion, std::move(specs), std::move(actions), false,
+                  g_prefetch.base_dir)) {
         ESP_LOGI("made_sprite", "[sprite] prefetch_committed layers=%u",
             static_cast<unsigned>(parts->art.layers.size()));
         return true;

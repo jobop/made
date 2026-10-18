@@ -92,8 +92,34 @@ test('插件不能下发清单外或自己未声明的命令', async () => {
   assert.match(queued2.id, /^\d{10}$/);
 });
 
-test('事件入队和桥接器直接下发互相独立', async () => {
+test('动作名单从命令清单派生：action.<名> 条目即动作', () => {
   const link = createBoardLink();
+  assert.deepEqual(link.actionsOf('device'), []);
+  assert.deepEqual(link.allActions(), {});
+  // 设备把可用动作并入命令清单上报（action.<名> 条目），桥接器派生名单
+  link.setCatalog('device', {
+    events: [],
+    commands: [
+      { name: 'caption.show' }, { name: 'ui.tap' },
+      { name: 'action.yawn' }, { name: 'action.wave' }, { name: 'action.cheer' },
+    ],
+  });
+  assert.deepEqual(link.actionsOf('device'), ['yawn', 'wave', 'cheer']);
+  assert.deepEqual(link.allActions(), { device: ['yawn', 'wave', 'cheer'] });
+  // 清单更新（素材切换）：最新一份清单是唯一真源
+  link.setCatalog('device', { events: [], commands: [{ name: 'action.nod' }] });
+  assert.deepEqual(link.actionsOf('device'), ['nod']);
+  // 无动作条目的清单 → 空名单
+  link.setCatalog('device', { events: [], commands: [{ name: 'caption.show' }] });
+  assert.deepEqual(link.actionsOf('device'), []);
+  // 遗忘设备时名单一并清掉
+  link.setCatalog('device', { events: [], commands: [{ name: 'action.nod' }] });
+  link.forget('device');
+  assert.deepEqual(link.actionsOf('device'), []);
+  assert.deepEqual(link.allActions(), {});
+});
+
+test('事件入队和桥接器直接下发互相独立', async () => {  const link = createBoardLink();
   link.setCatalog('device', catalog);
   const runtime = {
     boardPlugins: () => [boardPlugin({

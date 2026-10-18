@@ -106,6 +106,26 @@ test('spriteChunk 按偏移切片、收敛越界并拒绝未知文件', () => {
   assert.equal(spriteChunk(null, 'body.png', 0), null);
 });
 
+test('GIF 动作：合法条目随 files 下发，坏条目与孤儿 gif 被拒绝', () => {
+  const GIF_MAGIC = Buffer.from('GIF89a');
+  const manifest = {
+    ...validManifest(),
+    actions: { dance: { gif: 'dance.gif', ms: 3000 }, wave: { frame_ms: 140, tracks: { body: [0] } } },
+  };
+  const ok = makePackage({ manifest, files: { 'body.png': PNG_1PX, 'eyes-open.png': PNG_1PX, 'eyes-closed.png': PNG_1PX, 'dance.gif': GIF_MAGIC } });
+  const sprite = readSprite(ok);
+  assert.ok(sprite.files.some((file) => file.file === 'dance.gif' && file.bytes === GIF_MAGIC.length));
+
+  // ms 越界 / 文件名非法 / 引用不存在的 gif / 目录里的 gif 没被引用
+  const base = { files: { 'body.png': PNG_1PX, 'eyes-open.png': PNG_1PX, 'eyes-closed.png': PNG_1PX, 'dance.gif': GIF_MAGIC } };
+  assert.throws(() => readSprite(makePackage({ manifest: { ...manifest, actions: { dance: { gif: 'dance.gif', ms: 50 } } }, ...base })), /ms 范围/);
+  assert.throws(() => readSprite(makePackage({ manifest: { ...manifest, actions: { dance: { gif: 'sub/dir.gif' } }, ...{} }, files: { 'body.png': PNG_1PX, 'eyes-open.png': PNG_1PX, 'eyes-closed.png': PNG_1PX } })), /gif 文件名/);
+  assert.throws(() => readSprite(makePackage({ manifest: { ...manifest, actions: { dance: { gif: 'missing.gif' } } }, files: { 'body.png': PNG_1PX, 'eyes-open.png': PNG_1PX, 'eyes-closed.png': PNG_1PX } })), /不存在/);
+  assert.throws(() => readSprite(makePackage({ manifest: validManifest(), files: { 'body.png': PNG_1PX, 'eyes-open.png': PNG_1PX, 'eyes-closed.png': PNG_1PX, 'orphan.gif': GIF_MAGIC } })), /未被任何 GIF 动作引用/);
+  // 帧表动作混入 gif 字段：拒绝
+  assert.throws(() => readSprite(makePackage({ manifest: { ...manifest, actions: { wave: { frame_ms: 140, gif: 'dance.gif', tracks: { body: [0] } } }, ...{} }, files: { 'body.png': PNG_1PX, 'eyes-open.png': PNG_1PX, 'eyes-closed.png': PNG_1PX } })), /不支持的字段/);
+});
+
 test('设备端全链路：/device/config 暴露 sprite 清单，manifest 与分片可拉取', async (t) => {
   const { loadConfig } = await import('../src/config.mjs');
   const { loadConfiguredPlugins } = await import('../src/plugins/registry.mjs');

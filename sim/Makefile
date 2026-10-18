@@ -41,6 +41,7 @@ COMMON_INC := -I. -Ishims \
   -I$(COMP)/vibe_usb/include \
   -I$(COMP)/vibe_voice_capture/include \
   -I$(COMP)/board_voice_audio/include \
+  -I$(COMP)/vibe_motion/include \
   -I$(CJSON) \
   -I$(FONTS)
 
@@ -52,6 +53,7 @@ LVGL_SRCS := $(patsubst $(ROOT)/%,%,$(shell find $(LVGL)/src -name '*.c'))
 APP_SRCS  := \
   made/components/brookesia_app_vibe/esp_brookesia_app_vibe.cpp \
   made/components/brookesia_app_vibe/made_sprite.cpp \
+  made/components/brookesia_app_vibe/made_gif.cpp \
   made/components/brookesia_app_vibe/assets/img_app_vibe.c \
   made/components/brookesia_app_vibe/assets/img_sprite_bean.c \
   made/components/vibe_touch_keyboard/vibe_touch_keyboard.cpp \

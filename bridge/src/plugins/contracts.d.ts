@@ -159,6 +159,8 @@ export interface BridgeFacade {
   cancelJob(id: string): Record<string, unknown>;
   themes(): { name: string; title: string; sound: boolean; icon: boolean; background: boolean }[];
   devices(): string[];
+  /** Action system: action names derived from the device command catalog (`action.<name>` entries, decided by the current assistant sprite). Advisory only — the board silently ignores unknown action commands. */
+  deviceActions(deviceId: string): string[];
   /** Enqueue a board command directly; only the board-side catalog constrains the name. */
   send(deviceId: string, command: BoardCommand, audio?: Uint8Array): QueuedBoardCommand;
   pending(deviceId: string): QueuedBoardCommand[];
