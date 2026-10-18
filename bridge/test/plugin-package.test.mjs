@@ -54,13 +54,28 @@ test('插件目录的配置规范覆盖桥接器里的同名 pluginSettings', as
   assert.equal(listed.plugins[0].settings.label, '闹钟');
 });
 
-test('保存配置写回插件目录，并拒绝规范之外的值', async (t) => {
+test('保存配置写回插件目录，并保留开发者另写的自定义项', async (t) => {
   const { config, pkg } = fixture(t);
   config.pluginsRuntime = await loadConfiguredPlugins(config);
-  const saved = await savePluginSettings(config, 'alarm-clock', { demoSeconds: '', label: '起床' });
+  const saved = await savePluginSettings(config, 'alarm-clock', { demoSeconds: '', label: '起床', extra: '1' });
   assert.equal(saved.plugins[0].settings.label, '起床');
-  assert.deepEqual(JSON.parse(fs.readFileSync(path.join(pkg, 'settings.json'), 'utf8')), { demoSeconds: '', label: '起床' });
+  assert.equal(saved.plugins[0].settings.extra, '1');
+  assert.equal(saved.plugins[0].settingsError, '');
+  assert.deepEqual(JSON.parse(fs.readFileSync(path.join(pkg, 'settings.json'), 'utf8')), { demoSeconds: '', label: '起床', extra: '1' });
   assert.equal(config.pluginSettings['alarm-clock'].label, '起床');
+  const again = await savePluginSettings(config, 'alarm-clock', { demoSeconds: '', label: '再改' });
+  assert.equal(again.plugins[0].settings.extra, '1');
+  assert.equal(JSON.parse(fs.readFileSync(path.join(pkg, 'settings.json'), 'utf8')).extra, '1');
   await assert.rejects(savePluginSettings(config, 'alarm-clock', { demoSeconds: '08:00', label: '起床' }), /插件配置无效/);
-  await assert.rejects(savePluginSettings(config, 'alarm-clock', { demoSeconds: '', label: '起床', extra: '1' }), /插件配置无效/);
+});
+
+test('settings.json 里规范外的自定义项不让整张配置表失效', async (t) => {
+  const { config } = fixture(t);
+  fs.writeFileSync(path.join(config.madeHome, 'plugins', 'alarm-clock', 'settings.json'), JSON.stringify({ demoSeconds: '45', imageApiKeySiliconflow: 'sk-test' }));
+  await loadConfiguredPlugins(config);
+  const plugin = (await listInstalled(config)).plugins.find((item) => item.id === 'alarm-clock');
+  assert.equal(plugin.settingsError, '');
+  assert.deepEqual(plugin.settingsSpec.map((field) => field.key), ['demoSeconds', 'label']);
+  assert.equal(plugin.settings.imageApiKeySiliconflow, 'sk-test');
+  assert.equal(plugin.settings.label, '闹钟');
 });

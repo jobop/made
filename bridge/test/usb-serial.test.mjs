@@ -151,28 +151,28 @@ test(`真实串口读写（${hello.mode || 'receiver'}）：握手、1.1 MB 语�
   });
 }
 
-test('圆屏安静超过旧握手超时后保持被动监听，打开直连立即发现且事件循环继续响应',
+test('圆屏安静超过握手超时后释放串口，冷却结束后再探测仍能握手',
   { skip: !supported, timeout: 12000 }, async (t) => {
     const terminal = await openTerminal(t);
     const receiver = new UsbReceiver({ devicePort: 1, portPath: terminal.port });
     t.after(async () => { await receiver.stop(); });
     receiver.start();
     await until(() => receiver.link);
-    const quietLink = receiver.link;
     let ticks = 0;
     const timer = setInterval(() => { ticks += 1; }, 50);
     t.after(() => clearInterval(timer));
-    await until(() => receiver.summary().error === 'USB 已连接，等待打开码得应用的 USB 直连', 9000);
-    assert.equal(receiver.link, quietLink);
-    assert.equal(receiver.summary().status, 'waiting');
+    await until(() => receiver.summary().error === '未握手，已暂时释放串口，马上会再试', 9000);
+    assert.equal(receiver.link, null);
+    assert.equal(receiver.summary().status, 'disconnected');
     assert.equal(receiver.summary().password, '');
     assert.ok(ticks >= 100, '等待握手期间不能阻塞网页事件循环');
+    receiver.cooldown.set(terminal.port, 0);
+    await until(() => receiver.link, 4000);
     const openedAt = Date.now();
     await terminal.write(frame(DIRECT_HELLO));
-    await until(() => terminal.frames.some((value) => value.type === 'ready'), 1000);
-    assert.ok(Date.now() - openedAt < 1000, '不能再等待旧的 60 秒端口冷却');
+    await until(() => terminal.frames.some((value) => value.type === 'ready'), 2000);
+    assert.ok(Date.now() - openedAt < 2000);
     assert.equal(receiver.summary().status, 'connected');
-    assert.equal(receiver.link, quietLink);
   });
 
 test('直连 bye 在真实串口上立即取消等待转写的 HTTP 请求并停止保活',

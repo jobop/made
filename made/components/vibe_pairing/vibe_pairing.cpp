@@ -86,6 +86,7 @@ uint32_t choice_epoch = UINT32_MAX;
 uint32_t list_epoch = UINT32_MAX; // Protected by state_mutex.
 std::string saved_token;
 std::string saved_bridge;
+std::string saved_url;
 struct SavedPair { std::string token; std::string bridge; };
 std::vector<SavedPair> saved_candidates;
 constexpr std::array<AccessMode, 3> kCredentialModes = {
@@ -254,9 +255,11 @@ void load_saved_pair(AccessMode mode)
 {
     saved_token.clear();
     saved_bridge.clear();
+    saved_url.clear();
     saved_candidates.clear();
     nvs_handle_t handle;
     if (nvs_open(kNvsNamespace, NVS_READONLY, &handle) != ESP_OK) return;
+    saved_url = read_str(handle, "url", 160);
     auto read_candidate = [&](AccessMode candidate_mode) {
         SavedPair pair{read_str(handle, token_key(candidate_mode), 129),
                        read_str(handle, bridge_key(candidate_mode), 65)};
@@ -383,7 +386,7 @@ bool save(const std::string &url, const std::string &token, const std::string &b
     return error == ESP_OK;
 }
 
-struct Candidate { std::string url; std::string bridge_id; };
+struct Candidate { std::string url; std::string bridge_id; bool heard = false; };
 
 int hex_nibble(char c)
 {
@@ -476,6 +479,7 @@ Candidate discover(const std::string &wanted_bridge, const std::string &token)
     if (fd < 0) return {};
     sockaddr_in destination = discovery_destination();
     Candidate found;
+    bool heard = false;
     for (int attempt = 0; attempt < 2 && current_tick_valid(); ++attempt) {
         std::array<uint8_t, 16> random_bytes = {};
         esp_fill_random(random_bytes.data(), random_bytes.size());
@@ -493,6 +497,7 @@ Candidate discover(const std::string &wanted_bridge, const std::string &token)
             char reply[256] = {};
             sockaddr_in sender = {};
             if (!discovery_receive(fd, reply, sizeof(reply), sender, deadline)) continue;
+            heard = true;
             char address[INET_ADDRSTRLEN] = {};
             if (!inet_ntop(AF_INET, &sender.sin_addr, address, sizeof(address))) continue;
             unsigned int port = 0;
@@ -503,13 +508,15 @@ Candidate discover(const std::string &wanted_bridge, const std::string &token)
                 port == 0 || port > 65535 || wanted_bridge != bridge ||
                 std::strcmp(signed_address, address) != 0 ||
                 !verify_paired_reply(token, challenge, port, bridge, address, mac)) continue;
-            found = {std::string("http://") + address + ":" + std::to_string(port), bridge};
+            found = {std::string("http://") + address + ":" + std::to_string(port), bridge, true};
             break;
         }
         if (!found.url.empty()) break;
     }
     close(fd);
-    return current_tick_valid() ? found : Candidate{};
+    if (!current_tick_valid()) return {};
+    found.heard = heard || !found.url.empty();
+    return found;
 }
 
 bool valid_display_name(const std::string &name)
@@ -616,11 +623,31 @@ void scan_and_publish_bridges()
     const int fd = discovery_socket();
     if (fd >= 0) {
         sockaddr_in destination = discovery_destination();
+        // 广播经常到不了电脑。上次保存的地址如果是 IPv4，再单播问一次，
+        // 从 USB 切回 Wi-Fi 时不用干等下一轮广播。
+        sockaddr_in saved_target = {};
+        bool have_saved_target = false;
+        const auto scheme = saved_url.find("://");
+        if (scheme != std::string::npos &&
+            (saved_url.rfind("http://", 0) == 0 || saved_url.rfind("https://", 0) == 0)) {
+            std::string host = saved_url.substr(scheme + 3);
+            const auto slash = host.find('/');
+            if (slash != std::string::npos) host.resize(slash);
+            const auto colon = host.rfind(':');
+            if (colon != std::string::npos) host.resize(colon);
+            saved_target.sin_family = AF_INET;
+            saved_target.sin_port = htons(kDiscoveryPort);
+            have_saved_target = inet_pton(AF_INET, host.c_str(), &saved_target.sin_addr) == 1;
+        }
         for (int attempt = 0; attempt < 2 && current_tick_valid(); ++attempt) {
             for (const char *request : {kDiscoveryRequestV3, kDiscoveryRequest}) {
                 if (!current_tick_valid()) break;
                 (void)sendto(fd, request, std::strlen(request), 0,
                              reinterpret_cast<sockaddr *>(&destination), sizeof(destination));
+                if (have_saved_target) {
+                    (void)sendto(fd, request, std::strlen(request), 0,
+                                 reinterpret_cast<sockaddr *>(&saved_target), sizeof(saved_target));
+                }
             }
             const int64_t deadline = now_ms() + 850;
             while (now_ms() < deadline && current_tick_valid()) {
@@ -1059,7 +1086,16 @@ void tick()
         return;
     }
     if (current.phase == Phase::Paired) return;
-    if (current.phase == Phase::ChoosingBridge && !current.scanning) return;
+    if (current.phase == Phase::ChoosingBridge && !current.scanning) {
+        // 切回 Wi-Fi 后第一轮经常扫空。列表还是空的就过几秒再扫，不要停在那里等用户。
+        if (current.access_mode == AccessMode::Automatic && current.bridges.empty() &&
+            vibe_wifi::is_connected() &&
+            (!last_attempt_ms || now_ms() - last_attempt_ms >= 2000)) {
+            last_attempt_ms = now_ms();
+            scan_and_publish_bridges();
+        }
+        return;
+    }
     if (current.phase == Phase::WaitingApproval) {
         poll_pair();
         return;
@@ -1100,13 +1136,16 @@ void tick()
     }
     if (!force_chooser) {
         publish(Phase::Discovering, "正在验证原来的电脑");
+        bool heard_reply = false;
         for (const auto &pair : saved_candidates) {
             if (!current_tick_valid()) return;
             const Candidate known = discover(pair.bridge, pair.token);
+            if (known.heard) heard_reply = true;
             if (!known.url.empty() && current_tick_valid() &&
                 save(known.url, pair.token, pair.bridge)) {
                 saved_token = pair.token;
                 saved_bridge = pair.bridge;
+                saved_url = known.url;
                 {
                     std::lock_guard<std::mutex> lock(state_mutex);
                     state.url = known.url;
@@ -1116,6 +1155,16 @@ void tick()
                 publish(Phase::Paired, "已验证原电脑，配对已恢复");
                 authorize_current_tick(pair.token);
                 return;
+            }
+        }
+        // 一个包都没收到时（路由器丢掉广播、重启后 UDP 丢失）才用上次保存的
+        // 地址做 HTTP 校验。收到过包但签名不对，说明网上有人在应答，不能改走 HTTP。
+        const bool saved_http = !heard_reply &&
+            (saved_url.rfind("http://", 0) == 0 || saved_url.rfind("https://", 0) == 0);
+        if (saved_http) {
+            for (const auto &pair : saved_candidates) {
+                if (!current_tick_valid()) return;
+                if (verify_saved_candidate_at(saved_url, pair) == VerifyResult::Recovered) return;
             }
         }
     }

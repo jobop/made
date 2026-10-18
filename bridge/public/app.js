@@ -861,7 +861,58 @@ import { t, m, getLocale, setLocale, supportedLocales, applyStaticTranslations, 
         });
         if (cards.length !== grid.children.length || cards.some((card, index) => grid.children[index] !== card)) grid.replaceChildren(...cards);
       }
-      function render() { renderSelects(); renderSessions(); renderJobs(); renderBoard(); renderPairing(); renderTunnel(); renderReceiver(); renderConnection(); renderModelSettings(); renderVoiceSettings(); renderProviders(); }
+      let firmwareBusy = false;
+      let firmwareView = null;
+      async function loadFirmware() {
+        if (!$('firmwareStatus')) return;
+        try {
+          firmwareView = await request('/api/firmware');
+          renderFirmware();
+        } catch (error) {
+          $('firmwareStatus').textContent = error.message || t('app.020');
+        }
+      }
+      function renderFirmware() {
+        if (!$('firmwareList') || !firmwareView) return;
+        const current = firmwareView.current;
+        $('firmwareStatus').textContent = current
+          ? `${current.version} · ${current.size} B`
+          : (firmwareView.otaUrl || t('static.161'));
+        const url = $('firmwareUrl');
+        if (url && document.activeElement !== url) url.value = firmwareView.otaUrl || '';
+        const list = $('firmwareList');
+        list.replaceChildren();
+        for (const item of firmwareView.items || []) {
+          const row = text('div', 'info-row');
+          row.append(text('span', 'info-name', item.current ? `${item.version} · ${t('static.162')}` : item.version));
+          const actions = text('span', 'info-value');
+          if (!item.current) {
+            const use = text('button', 'small-button', t('static.163'));
+            use.type = 'button';
+            use.addEventListener('click', () => firmwareAct({ action: 'current', id: item.id }, 'static.169'));
+            actions.append(use);
+          }
+          const del = text('button', 'small-button', t('static.164'));
+          del.type = 'button';
+          del.addEventListener('click', () => firmwareAct({ action: 'delete', id: item.id }, 'static.169'));
+          actions.append(del);
+          row.append(actions);
+          list.append(row);
+        }
+      }
+      async function firmwareAct(body, okKey) {
+        if (firmwareBusy) return;
+        firmwareBusy = true;
+        try {
+          const data = await post('/api/firmware', body);
+          firmwareView = data.firmware || data;
+          setUiMessage($('firmwareMessage'), m(okKey));
+          renderFirmware();
+        } catch (error) {
+          setUiMessage($('firmwareMessage'), error.message || '');
+        } finally { firmwareBusy = false; }
+      }
+      function render() { renderSelects(); renderSessions(); renderJobs(); renderBoard(); renderPairing(); renderTunnel(); renderReceiver(); renderFirmware(); renderConnection(); renderModelSettings(); renderVoiceSettings(); renderProviders(); }
       function applyLanguage(locale) {
         const changed = setLocale(locale);
         if (!changed && document.documentElement.lang === locale) {
@@ -1024,5 +1075,37 @@ import { t, m, getLocale, setLocale, supportedLocales, applyStaticTranslations, 
       });
       applyStaticTranslations();
       $('languageSelect').value = getLocale();
-      render(); refresh(); setInterval(refresh, 4000);
+      $('firmwareForm')?.addEventListener('submit', (event) => {
+        event.preventDefault();
+        firmwareAct({ action: 'url', otaUrl: $('firmwareUrl').value }, 'static.165');
+      });
+      $('firmwareSync')?.addEventListener('click', () => firmwareAct({ action: 'sync' }, 'static.166'));
+      $('firmwareUseBridge')?.addEventListener('click', () => firmwareAct({ action: 'url', otaUrl: '/device/firmware/current' }, 'static.165'));
+      $('firmwareUploadForm')?.addEventListener('submit', async (event) => {
+        event.preventDefault();
+        const file = $('firmwareFile')?.files?.[0];
+        if (!file || firmwareBusy) return;
+        firmwareBusy = true;
+        try {
+          const token = await sessionToken();
+          const response = await fetch('/api/firmware', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/octet-stream',
+              'X-Vibe-Token': token,
+              'X-Firmware-Version': $('firmwareVersion').value.trim(),
+            },
+            body: await file.arrayBuffer(),
+          });
+          const data = await response.json().catch(() => ({}));
+          if (!response.ok) throw new Error(data.error || t('app.017', { v0: response.status }));
+          firmwareView = data;
+          $('firmwareFile').value = '';
+          setUiMessage($('firmwareMessage'), m('static.168'));
+          renderFirmware();
+        } catch (error) {
+          setUiMessage($('firmwareMessage'), error.message || '');
+        } finally { firmwareBusy = false; }
+      });
+      render(); refresh(); loadFirmware(); setInterval(refresh, 4000);
     })();

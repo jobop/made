@@ -81,16 +81,19 @@ export function gitState(cwd) {
 }
 
 function repositorySnapshot(cwd) {
-  if (!fs.existsSync(cwd)) {
-    fs.mkdirSync(cwd, { recursive: true });
-    spawnSync('git', ['init'], { cwd, encoding: 'utf8', timeout: 15000 });
-  }
+  if (!fs.existsSync(cwd)) fs.mkdirSync(cwd, { recursive: true });
   if (!fs.statSync(cwd).isDirectory()) {
     throw new Error(`代码目录不存在：${cwd}`);
   }
-  const repo = spawnSync('git', ['rev-parse', '--show-toplevel'], {
+  let repo = spawnSync('git', ['rev-parse', '--show-toplevel'], {
     cwd, encoding: 'utf8', timeout: 5000,
   });
+  if (repo.status !== 0) {
+    spawnSync('git', ['init'], { cwd, encoding: 'utf8', timeout: 15000 });
+    repo = spawnSync('git', ['rev-parse', '--show-toplevel'], {
+      cwd, encoding: 'utf8', timeout: 5000,
+    });
+  }
   if (repo.status !== 0) {
     throw new Error('目标项目必须是 Git 仓库，以便查看和恢复改动');
   }

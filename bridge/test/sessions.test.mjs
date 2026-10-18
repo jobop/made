@@ -290,3 +290,36 @@ process.stdout.write(JSON.stringify({ type: 'item.completed', item: { type: 'age
   assert.deepEqual(fs.readFileSync(calls, 'utf8').trim().split('\n'), ['start', 'resume', 'resume']);
   assert.equal(store.list().length, 2);
 });
+
+test('桥接器按会话编号建立工作目录，删除任务时删掉该目录', async (t) => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'vibe-workspace-'));
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  const workspaces = path.join(directory, 'workspaces');
+  const configured = path.join(directory, 'demo-project');
+  let seenPath = '';
+  const store = new JobStore({
+    file: path.join(directory, 'jobs.json'),
+    projects: [{ id: 'demo', path: configured }],
+    workspaceRoot: workspaces,
+    defaultProject: 'demo', defaultProvider: 'codex',
+    run: async (job, project) => {
+      seenPath = project.path;
+      assert.equal(project.path, path.join(workspaces, job.vibeSessionId));
+      assert.equal(fs.statSync(project.path).isDirectory(), true);
+      return { status: 'completed', result: '完成' };
+    },
+    pluginsRuntime: registry(),
+    providerAvailable: () => ({ available: true }),
+  });
+  const session = store.createSession({ provider: 'codex', projectId: 'demo' });
+  const dir = path.join(workspaces, session.id);
+  assert.equal(fs.statSync(dir).isDirectory(), true);
+  assert.equal(fs.existsSync(path.join(dir, '.git')), false);
+  assert.equal(fs.existsSync(configured), false);
+  const job = store.submit({ instruction: '写一个说明', sessionId: session.id });
+  store.confirm(job.id);
+  await until(() => job.status === 'completed');
+  assert.equal(seenPath, dir);
+  assert.deepEqual(store.deleteSession(session.id), { id: session.id, deleted: true });
+  assert.equal(fs.existsSync(dir), false);
+});

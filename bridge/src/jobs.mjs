@@ -198,8 +198,38 @@ export class JobStore {
     });
   }
 
+  /** 任务工作目录：workspaceRoot/<会话编号>。编号对不上就不给出路径。 */
+  workspacePath(sessionId) {
+    if (!this.workspaceRoot || !VIBE_SESSION_ID.test(sessionId || '')) return '';
+    const root = path.resolve(this.workspaceRoot);
+    const target = path.resolve(root, sessionId);
+    if (path.dirname(target) !== root) return '';
+    return target;
+  }
+
+  /** 桥接器只建空目录。助手开跑之前这个文件夹已经在。 */
+  ensureWorkspace(sessionId) {
+    const dir = this.workspacePath(sessionId);
+    if (!dir) return '';
+    fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+    return dir;
+  }
+
+  removeWorkspace(sessionId) {
+    const dir = this.workspacePath(sessionId);
+    if (!dir) return;
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+
+  projectFor(job) {
+    const configured = this.projects.find((item) => item.id === job.projectId);
+    const dir = this.workspacePath(job.vibeSessionId);
+    return dir ? { ...configured, path: dir } : configured;
+  }
+
   createSession(payload) {
     const session = this.sessions.create(payload);
+    this.ensureWorkspace(session.id);
     return { ...session, status: 'empty' };
   }
 
@@ -221,6 +251,7 @@ export class JobStore {
       job.status = 'deleted';
       this.progressSavedAt.delete(job.id);
     }
+    this.removeWorkspace(id);
     this.jobs = this.jobs.filter((job) => job.vibeSessionId !== id);
     // Persist jobs first: a crash between files leaves an empty session,
     // rather than an orphan turn that load() would recreate as a new session.
@@ -351,10 +382,8 @@ export class JobStore {
         this.save();
         this.hooks?.notify('started', job);
         try {
-          const configured = this.projects.find((item) => item.id === job.projectId);
-          const project = this.workspaceRoot
-            ? { ...configured, path: path.join(this.workspaceRoot, job.vibeSessionId) }
-            : configured;
+          this.ensureWorkspace(job.vibeSessionId);
+          const project = this.projectFor(job);
           // 回合输入管道：插件可以改写本轮实际执行的指令；存储里的任务原文保持不变。
           const instruction = this.hooks ? await this.hooks.turnIn(job) : job.instruction;
           const effectiveJob = instruction === job.instruction ? job : { ...job, instruction };

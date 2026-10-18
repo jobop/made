@@ -94,6 +94,7 @@ private:
     static std::vector<Attachment> parseAttachments(const cJSON *job); // 桥接器显式下发的 attachments
     // 富内容渲染与异步拉图：图片解码后驻留 PSRAM，浮层复用同一份 dsc。
     void freeDecodedImages();
+    void runFirmwareUpdate();
     void renderAttachments(const std::vector<Attachment> &atts);
     void openZoom(size_t index);
     void startImageFetch(const std::string &url, lv_obj_t *target_img, size_t index);
@@ -135,9 +136,16 @@ private:
     void showTheme(bool visible);
     void renderThemes();
     static void powerOpenCallback(lv_event_t *event);
+    static void firmwareOpenCallback(lv_event_t *event);
+    static void firmwareBackCallback(lv_event_t *event);
+    static void firmwareUpdateCallback(lv_event_t *event);
+    void showFirmware(bool visible);
+    void renderFirmware();
     static void powerBackCallback(lv_event_t *event);
     static void powerTimeoutCallback(lv_event_t *event);
+    static void powerShutdownCallback(lv_event_t *event);
     static void screenWakeCallback(lv_event_t *event);
+    void shutdownDevice();
     void showPower(bool visible);
     void renderPower();
     static void volumeOpenCallback(lv_event_t *event);
@@ -451,16 +459,39 @@ private:
     std::vector<vibe_theme::ThemeInfo> theme_live_list_; // 桥接器实时列表（model_mutex_ 保护）。
     std::atomic<bool> theme_list_loading_{false};
     std::atomic<bool> screenshot_busy_{false};
+    std::atomic<bool> firmware_update_requested_{false};
+    std::atomic<bool> firmware_available_{false};
+    std::atomic<bool> firmware_busy_{false};
+    std::string firmware_url_;      // 仅后台线程：配置里的固件地址
+    std::string firmware_sha_;
+    std::string firmware_version_;
+    int firmware_size_ = 0;
+    // 仅后台线程。心跳把这组字段交给桥接器，串口日志和面板时间线用的是同一份结论。
+    std::string firmware_trace_stage_{"idle"};
+    std::string firmware_trace_why_{"none"};
+    std::string firmware_trace_result_{"none"};
+    std::string firmware_trace_task_{"-"};
+    int firmware_trace_written_ = -1;
+    int firmware_trace_http_ = 0;
+    int firmware_trace_tasks_ = -1;
+    int firmware_trace_size_ = 0;
+    std::string firmware_status_; // model_mutex_：设置页「固件更新」上的说明。
+    std::string firmware_status_drawn_; // LVGL 线程：避免每帧重设相同文案。
     std::atomic<uint32_t> screenshot_busy_since_ms_{0}; // 看门狗：卡死超过阈值强制复位。
     std::atomic<bool> theme_reboot_pending_{false};
     std::atomic<bool> theme_reboot_started_{false};
     int32_t theme_loading_since_ms_ = 0; // LVGL task only.
+    lv_obj_t *firmware_panel_ = nullptr;
+    lv_obj_t *firmware_status_label_ = nullptr;
     lv_obj_t *power_panel_ = nullptr;
     lv_obj_t *power_timeout_button_ = nullptr;
     lv_obj_t *power_timeout_label_ = nullptr;
     lv_obj_t *volume_panel_ = nullptr;
     lv_obj_t *volume_value_label_ = nullptr;
     lv_obj_t *power_off_overlay_ = nullptr;
+    lv_obj_t *power_shutdown_label_ = nullptr;
+    bool shutdown_armed_ = false;
+    uint32_t shutdown_armed_ms_ = 0;
     uint32_t screen_off_timeout_s_ = 0; // 0 = never.
     bool screen_off_ = false;
     uint32_t wifi_scan_list_revision_ = UINT32_MAX; // LVGL task only.

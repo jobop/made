@@ -596,6 +596,29 @@ export const staticMessages = {
     "zh-CN": "主题包都在这里管理。应用到码得后，设备解锁并连上电脑时才会换上这套外观。",
     "en": "Theme packs are managed here. made applies one after it is unlocked and connected to this computer."
   },
+  "static.150": { "zh-CN": "固件更新", "en": "Firmware update" },
+  "static.151": {
+    "zh-CN": "这个地址写在码得读取的配置里。码得拿到后只从该地址下载，桥接器不会把地址推下去。填本机路径时，码得从这台桥接器取下面管理的当前固件包。",
+    "en": "This address is part of the config made requests. made downloads only from that address. Use the local path to have made fetch the current package stored on this bridge."
+  },
+  "static.152": { "zh-CN": "正在读取固件…", "en": "Loading firmware…" },
+  "static.153": { "zh-CN": "固件地址", "en": "Firmware URL" },
+  "static.154": { "zh-CN": "保存地址", "en": "Save URL" },
+  "static.155": { "zh-CN": "拉取到本地", "en": "Download locally" },
+  "static.156": { "zh-CN": "使用本机地址", "en": "Use this bridge" },
+  "static.157": { "zh-CN": "本地版本号", "en": "Local version" },
+  "static.158": { "zh-CN": "固件文件", "en": "Firmware file" },
+  "static.159": { "zh-CN": "保存到本地", "en": "Save locally" },
+  "static.160": { "zh-CN": "已保存固件", "en": "Saved firmware" },
+  "static.161": { "zh-CN": "还没有本地固件。", "en": "No local firmware yet." },
+  "static.162": { "zh-CN": "当前", "en": "Current" },
+  "static.163": { "zh-CN": "设为当前", "en": "Make current" },
+  "static.164": { "zh-CN": "删除", "en": "Delete" },
+  "static.165": { "zh-CN": "地址已保存。", "en": "URL saved." },
+  "static.166": { "zh-CN": "已拉取到本地。", "en": "Downloaded locally." },
+  "static.167": { "zh-CN": "已通知码得更新。", "en": "made was told to update." },
+  "static.168": { "zh-CN": "固件已保存到本地。", "en": "Firmware saved locally." },
+  "static.169": { "zh-CN": "本地固件已更新。", "en": "Local firmware updated." },
   "language.label": {
     "zh-CN": "语言",
     "en": "Language"

@@ -76,11 +76,15 @@ export function parseSettingsSpec(raw) {
 export function resolveSettings(fields, raw) {
   if (raw === undefined || raw === null) raw = {};
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw fail('插件配置无效');
+  // 表单字段以插件自己的 plugin.json 为准。settings.json 里开发者另写的键
+  // 不是桥接器的预定义名单，只要键名和值合法就原样收下，不能因此整表失效。
   const known = new Set(fields.map((field) => field.key));
-  for (const key of Object.keys(raw)) {
-    if (!known.has(key) || typeof raw[key] !== 'string' || Buffer.byteLength(raw[key]) > MAX_VALUE) throw fail('插件配置无效');
-  }
   const values = {};
+  for (const key of Object.keys(raw)) {
+    if (reserved.has(key) || !SETTING_KEY.test(key)) throw fail('插件配置无效');
+    if (typeof raw[key] !== 'string' || Buffer.byteLength(raw[key]) > MAX_VALUE) throw fail('插件配置无效');
+    if (!known.has(key)) values[key] = raw[key];
+  }
   for (const field of fields) {
     const value = Object.hasOwn(raw, field.key) ? raw[field.key] : (field.default ?? '');
     if (field.required && !value.trim()) throw fail('插件配置无效');
@@ -123,7 +127,13 @@ export function writePackageSettings(dir, values) {
   const current = readPackageSettings(dir);
   if (current.error) throw fail(current.error);
   if (!current.fields.length) throw fail('插件没有可保存的配置');
-  const resolved = resolveSettings(current.fields, values);
+  // 工作台只提交 plugin.json 里的字段。写回时保留开发者另外放在 settings.json 的键。
+  const specKeys = new Set(current.fields.map((field) => field.key));
+  const kept = {};
+  for (const [key, value] of Object.entries(current.values)) {
+    if (!specKeys.has(key)) kept[key] = value;
+  }
+  const resolved = resolveSettings(current.fields, { ...kept, ...values });
   const file = path.join(dir, 'settings.json');
   const temporary = path.join(dir, `.settings-${process.pid}-${randomUUID()}.json`);
   fs.writeFileSync(temporary, `${JSON.stringify(resolved, null, 2)}\n`, { mode: 0o600 });

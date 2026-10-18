@@ -17,10 +17,15 @@
 #include "cJSON.h"
 #include "bsp/display.h"
 #include "driver/gpio.h"
+#include "driver/rtc_io.h"
 #include "esp_crt_bundle.h"
 #include "esp_heap_caps.h"
+#include "esp_http_client.h"
 #include "esp_log.h"
+#include "esp_ota_ops.h"
+#include "esp_sleep.h"
 #include "esp_system.h"
+#include "mbedtls/md.h"
 #include "esp_timer.h"
 #include "esp_wifi.h"
 #include "freertos/FreeRTOS.h"
@@ -612,6 +617,7 @@ bool VibeCoding::run()
     settings_row(250, LV_SYMBOL_LIST, "settings.language", languageOpenCallback);
     settings_section(304, "settings.system");
     settings_row(326, LV_SYMBOL_POWER, T("电源设置"), powerOpenCallback);
+    settings_row(374, LV_SYMBOL_DOWNLOAD, T("固件更新"), firmwareOpenCallback);
 
     language_panel_ = lv_obj_create(settings_overlay_);
     lv_obj_set_size(language_panel_, made_screen_w(), made_screen_h());
@@ -661,10 +667,27 @@ bool VibeCoding::run()
     settingsLabel(power_panel_, T("空闲自动熄屏"), 55, 100, 250, VT(text_secondary));
     power_timeout_button_ = touchButton(power_panel_, 70, 130, 220, 46, nullptr, powerTimeoutCallback, this);
     power_timeout_label_ = settingsLabel(power_timeout_button_, "", 0, 12, 220);
-    settingsLabel(power_panel_, T("熄屏只关背光，连接与心跳不受影响；触摸屏幕即可点亮"), 45, 205, 270, VT(text_hint));
+    settingsLabel(power_panel_, T("关机后点一下屏幕开机。熄屏只关背光，触摸即可点亮"), 45, 188, 270, VT(text_hint));
+    lv_obj_t *shutdown = touchButton(power_panel_, 70, 236, 220, 46, nullptr, powerShutdownCallback, this);
+    power_shutdown_label_ = settingsLabel(shutdown, T("关机"), 0, 12, 220);
     touchButton(power_panel_, 125, 292, 110, 34, T("返回"), powerBackCallback, this);
     lv_obj_add_flag(power_panel_, LV_OBJ_FLAG_HIDDEN);
     loadScreenOffTimeout();
+
+    firmware_panel_ = lv_obj_create(settings_overlay_);
+    lv_obj_set_size(firmware_panel_, made_screen_w(), made_screen_h());
+    markPage(firmware_panel_);
+    lv_obj_set_style_bg_opa(firmware_panel_, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(firmware_panel_, 0, 0);
+    lv_obj_set_style_pad_all(firmware_panel_, 0, 0);
+    lv_obj_remove_flag(firmware_panel_, LV_OBJ_FLAG_SCROLLABLE);
+    settingsLabel(firmware_panel_, T("固件更新"), 70, 38, 220);
+    firmware_status_label_ = settingsLabel(firmware_panel_, T("电脑上还没有配置固件地址"), 45, 100, 270, VT(text_secondary), false);
+    lv_label_set_long_mode(firmware_status_label_, LV_LABEL_LONG_WRAP);
+    settingsLabel(firmware_panel_, T("只有在这里点下载才会更新"), 45, 168, 270, VT(text_hint));
+    touchButton(firmware_panel_, 70, 220, 220, 46, T("下载更新"), firmwareUpdateCallback, this);
+    touchButton(firmware_panel_, 125, 292, 110, 34, T("返回"), firmwareBackCallback, this);
+    lv_obj_add_flag(firmware_panel_, LV_OBJ_FLAG_HIDDEN);
 
     volume_panel_ = lv_obj_create(settings_overlay_);
     lv_obj_set_size(volume_panel_, made_screen_w(), made_screen_h());
@@ -1330,6 +1353,8 @@ bool VibeCoding::close()
     theme_rows_ = nullptr;
     theme_status_label_ = nullptr;
     power_panel_ = nullptr;
+    firmware_panel_ = nullptr;
+    firmware_status_label_ = nullptr;
     power_timeout_button_ = nullptr;
     power_timeout_label_ = nullptr;
     volume_panel_ = nullptr;
@@ -2069,6 +2094,9 @@ void VibeCoding::showPower(bool visible)
     if (visible) {
         lv_obj_add_flag(settings_home_, LV_OBJ_FLAG_HIDDEN);
         lv_obj_add_flag(theme_panel_, LV_OBJ_FLAG_HIDDEN);
+        if (firmware_panel_) lv_obj_add_flag(firmware_panel_, LV_OBJ_FLAG_HIDDEN);
+        shutdown_armed_ = false;
+        if (power_shutdown_label_) lv_label_set_text(power_shutdown_label_, T("关机"));
         renderPower();
         lv_obj_remove_flag(power_panel_, LV_OBJ_FLAG_HIDDEN);
         lv_obj_move_foreground(power_panel_);
@@ -2084,10 +2112,111 @@ void VibeCoding::powerOpenCallback(lv_event_t *event)
     if (self) self->showPower(true);
 }
 
+void VibeCoding::showFirmware(bool visible)
+{
+    if (!firmware_panel_) return;
+    if (visible) {
+        lv_obj_add_flag(settings_home_, LV_OBJ_FLAG_HIDDEN);
+        if (power_panel_) lv_obj_add_flag(power_panel_, LV_OBJ_FLAG_HIDDEN);
+        if (theme_panel_) lv_obj_add_flag(theme_panel_, LV_OBJ_FLAG_HIDDEN);
+        firmware_status_drawn_.clear();
+        lv_obj_remove_flag(firmware_panel_, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_move_foreground(firmware_panel_);
+        renderFirmware();
+    } else {
+        lv_obj_add_flag(firmware_panel_, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_remove_flag(settings_home_, LV_OBJ_FLAG_HIDDEN);
+    }
+}
+
+void VibeCoding::renderFirmware()
+{
+    if (!firmware_status_label_ || lv_obj_has_flag(firmware_panel_, LV_OBJ_FLAG_HIDDEN)) return;
+    std::string text;
+    {
+        std::lock_guard<std::mutex> lock(model_mutex_);
+        text = firmware_status_;
+    }
+    if (text.empty()) text = T("电脑上还没有配置固件地址");
+    if (text == firmware_status_drawn_) return;
+    firmware_status_drawn_ = text;
+    lv_label_set_text(firmware_status_label_, text.c_str());
+}
+
+void VibeCoding::firmwareOpenCallback(lv_event_t *event)
+{
+    auto *self = static_cast<VibeCoding *>(lv_event_get_user_data(event));
+    if (self) self->showFirmware(true);
+}
+
+void VibeCoding::firmwareBackCallback(lv_event_t *event)
+{
+    auto *self = static_cast<VibeCoding *>(lv_event_get_user_data(event));
+    if (self) self->showFirmware(false);
+}
+
+void VibeCoding::firmwareUpdateCallback(lv_event_t *event)
+{
+    auto *self = static_cast<VibeCoding *>(lv_event_get_user_data(event));
+    if (!self || self->firmware_busy_.load() || self->firmware_update_requested_.load()) return;
+    std::lock_guard<std::mutex> lock(self->model_mutex_);
+    if (!self->firmware_available_.load()) {
+        self->firmware_status_ = T("电脑上还没有配置固件地址");
+        return;
+    }
+    self->firmware_status_ = T("正在从配置的地址下载固件…");
+    self->firmware_trace_stage_ = "ready";
+    self->firmware_update_requested_.store(true);
+    ESP_LOGW("vibe_fw", "[fw] tap");
+}
+
 void VibeCoding::powerBackCallback(lv_event_t *event)
 {
     auto *self = static_cast<VibeCoding *>(lv_event_get_user_data(event));
     if (self) self->showPower(false);
+}
+
+void VibeCoding::powerShutdownCallback(lv_event_t *event)
+{
+    auto *self = static_cast<VibeCoding *>(lv_event_get_user_data(event));
+    if (!self || !self->power_shutdown_label_) return;
+    const uint32_t now = lv_tick_get();
+    if (!self->shutdown_armed_ || now - self->shutdown_armed_ms_ > 4000) {
+        self->shutdown_armed_ = true;
+        self->shutdown_armed_ms_ = now;
+        lv_label_set_text(self->power_shutdown_label_, T("再点一次关机"));
+        return;
+    }
+    self->shutdownDevice();
+}
+
+void VibeCoding::shutdownDevice()
+{
+    if (power_shutdown_label_) lv_label_set_text(power_shutdown_label_, T("正在关机"));
+    lv_refr_now(nullptr);
+    (void)bsp_display_backlight_off();
+    // BOOT 是按住说话，不能拿来开机。触摸中断脚平时被上拉为高，
+    // 点屏幕时被拉低。等手指离开后再睡，避免这一下立刻把机器唤醒。
+#if CONFIG_BSP_BOARD_LCD_2_8
+    constexpr gpio_num_t wake_pin = GPIO_NUM_17;
+#else
+    constexpr gpio_num_t wake_pin = GPIO_NUM_4;
+#endif
+    for (int i = 0; i < 100 && gpio_get_level(wake_pin) == 0; ++i)
+        vTaskDelay(pdMS_TO_TICKS(20));
+    vTaskDelay(pdMS_TO_TICKS(40));
+    esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_ALL);
+    if (rtc_gpio_init(wake_pin) != ESP_OK ||
+        rtc_gpio_set_direction(wake_pin, RTC_GPIO_MODE_INPUT_ONLY) != ESP_OK ||
+        rtc_gpio_pulldown_dis(wake_pin) != ESP_OK ||
+        rtc_gpio_pullup_en(wake_pin) != ESP_OK ||
+        esp_sleep_enable_ext0_wakeup(wake_pin, 0) != ESP_OK) {
+        (void)bsp_display_backlight_on();
+        if (power_shutdown_label_) lv_label_set_text(power_shutdown_label_, T("关机失败"));
+        shutdown_armed_ = false;
+        return;
+    }
+    esp_deep_sleep_start();
 }
 
 void VibeCoding::powerTimeoutCallback(lv_event_t *event)
@@ -2123,6 +2252,7 @@ void VibeCoding::showVolume(bool visible)
         lv_obj_add_flag(settings_home_, LV_OBJ_FLAG_HIDDEN);
         lv_obj_add_flag(theme_panel_, LV_OBJ_FLAG_HIDDEN);
         lv_obj_add_flag(power_panel_, LV_OBJ_FLAG_HIDDEN);
+        if (firmware_panel_) lv_obj_add_flag(firmware_panel_, LV_OBJ_FLAG_HIDDEN);
         renderVolume();
         lv_obj_remove_flag(volume_panel_, LV_OBJ_FLAG_HIDDEN);
         lv_obj_move_foreground(volume_panel_);
@@ -2297,6 +2427,7 @@ void VibeCoding::showTheme(bool visible)
     if (!theme_panel_) return;
     if (visible) {
         lv_obj_add_flag(settings_home_, LV_OBJ_FLAG_HIDDEN);
+        if (firmware_panel_) lv_obj_add_flag(firmware_panel_, LV_OBJ_FLAG_HIDDEN);
         lv_obj_remove_flag(theme_panel_, LV_OBJ_FLAG_HIDDEN);
         lv_obj_move_foreground(theme_panel_);
         // 打开即实时拉取主题列表。
@@ -2609,6 +2740,8 @@ void VibeCoding::showSettings(bool visible)
         lv_obj_add_flag(access_panel_, LV_OBJ_FLAG_HIDDEN);
         lv_obj_add_flag(language_panel_, LV_OBJ_FLAG_HIDDEN);
         if (volume_panel_) lv_obj_add_flag(volume_panel_, LV_OBJ_FLAG_HIDDEN);
+        if (power_panel_) lv_obj_add_flag(power_panel_, LV_OBJ_FLAG_HIDDEN);
+        if (firmware_panel_) lv_obj_add_flag(firmware_panel_, LV_OBJ_FLAG_HIDDEN);
         lv_obj_move_foreground(settings_overlay_);
     } else {
         lv_obj_add_flag(settings_overlay_, LV_OBJ_FLAG_HIDDEN);
@@ -2621,6 +2754,7 @@ void VibeCoding::showLanguage(bool visible)
     if (visible) {
         lv_obj_add_flag(settings_home_, LV_OBJ_FLAG_HIDDEN);
         lv_obj_add_flag(access_panel_, LV_OBJ_FLAG_HIDDEN);
+        if (firmware_panel_) lv_obj_add_flag(firmware_panel_, LV_OBJ_FLAG_HIDDEN);
         lv_obj_remove_flag(language_panel_, LV_OBJ_FLAG_HIDDEN);
         refreshLanguage();
     } else {
@@ -3778,7 +3912,31 @@ static void imageFetchDoneCb(void *arg_void) {
     if (arg->img && lv_obj_is_valid(arg->img) && !arg->buf.empty()) {
         int w = 0, h = 0;
         uint8_t *px = made_sprite::decodePngArgbMem(arg->buf.data(), arg->buf.size(), w, h);
-        if (px) arg->self->onImageFetched(arg->index, px, w, h, arg->img);
+        if (px) {
+            // 缩略图只有 84px，放大也不超过屏幕。按最长边收到 360，避免一张照片按原尺寸占满 PSRAM。
+            const int cap = std::max(84, std::min(made_screen_w(), 360));
+            if (w > cap || h > cap) {
+                const int dw = w >= h ? cap : std::max(1, w * cap / h);
+                const int dh = h >= w ? cap : std::max(1, h * cap / w);
+                auto *dst = static_cast<uint8_t *>(heap_caps_malloc(
+                    static_cast<size_t>(dw) * static_cast<size_t>(dh) * 4, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+                if (dst) {
+                    for (int y = 0; y < dh; ++y) {
+                        const int sy = y * h / dh;
+                        for (int x = 0; x < dw; ++x) {
+                            const int sx = x * w / dw;
+                            memcpy(dst + (static_cast<size_t>(y) * dw + x) * 4,
+                                   px + (static_cast<size_t>(sy) * w + sx) * 4, 4);
+                        }
+                    }
+                    heap_caps_free(px);
+                    px = dst;
+                    w = dw;
+                    h = dh;
+                }
+            }
+            arg->self->onImageFetched(arg->index, px, w, h, arg->img);
+        }
     }
     delete arg;
 }
@@ -3942,6 +4100,7 @@ void VibeCoding::render()
     renderReceiverScan();
     renderWifiNetworks();
     renderThemes();
+    renderFirmware();
     renderPhoneSetup();
     const bool catalog_ready = config_loaded_.load() &&
         pairing.phase == vibe_pairing::Phase::Paired && vibe_pairing::authorized_for_foreground();
@@ -4808,6 +4967,8 @@ void VibeCoding::reclaimSpriteMemoryForVoice()
     }
     drag_side_ = -1;  // 让 ensureSide 的 defer 条件对两侧同时生效
     sprite_held_for_voice_ = true;
+    // 附件大图和侧台抢的是同一块 PSRAM。录音时放大浮层不该还占着解码缓冲。
+    if (!zoom_overlay_) freeDecodedImages();
     ESP_LOGW(BUTTON_TAG,
              "[voice] sprite reclaim for recording: free=%uKB -> %uKB",
              (unsigned)(free_psram / 1024),
@@ -4856,6 +5017,17 @@ void VibeCoding::maybeStartPrefetch(int direction)
 // 里自动补齐）。素材随即随拖动滑入视野——真翻页，不用等翻页提交。
 void VibeCoding::prefetchTick()
 {
+    // 空闲 PSRAM 掉到 1MB 以下时，先丢掉两侧未显示的解码帧，主舞台不动。
+    if (!home_dragging_ && heap_caps_get_free_size(MALLOC_CAP_SPIRAM) < 1024 * 1024) {
+        const uint32_t tight_now = lv_tick_get();
+        for (SideSlot &slot : sides_) {
+            if (!slot.stage || slot.provider.empty()) continue;
+            made_sprite::clearArtwork(slot.stage);
+            slot.provider.clear();
+            slot.version = 0;
+            slot.defer_until = tight_now + 8000;
+        }
+    }
     // 录音让位回收过的侧台：录音（含上传）一结束就解除暂缓，别让用户
     // 盯着空白侧台等满 30s。start 失败时同样在这里下一帧就恢复。
     if (sprite_held_for_voice_) {
@@ -5085,6 +5257,34 @@ bool VibeCoding::tryApplyCachedArtwork(const std::string &provider)
     return true;
 }
 
+std::string savedFirmwareMark(const char *key)
+{
+    nvs_handle_t handle;
+    if (nvs_open("vibe_fw", NVS_READONLY, &handle) != ESP_OK) return {};
+    size_t length = 0;
+    if (nvs_get_str(handle, key, nullptr, &length) != ESP_OK || length == 0 || length > 200) {
+        nvs_close(handle);
+        return {};
+    }
+    std::string value(length, '\0');
+    if (nvs_get_str(handle, key, value.data(), &length) != ESP_OK) {
+        nvs_close(handle);
+        return {};
+    }
+    nvs_close(handle);
+    if (!value.empty() && value.back() == '\0') value.pop_back();
+    return value;
+}
+
+void rememberFirmwareMark(const char *key, const std::string &value)
+{
+    nvs_handle_t handle;
+    if (nvs_open("vibe_fw", NVS_READWRITE, &handle) != ESP_OK) return;
+    nvs_set_str(handle, key, value.c_str());
+    nvs_commit(handle);
+    nvs_close(handle);
+}
+
 void VibeCoding::refreshConfig()
 {
     const uint32_t epoch = catalog_epoch_.load();
@@ -5124,6 +5324,13 @@ void VibeCoding::refreshConfig()
     // announce 必须在 cJSON_Delete(root) 之前取值：删除后再读 root 是释放后使用，
     // 实测会把「桥接器重启后请重报清单」的指令整个丢掉（只有开机路径才重报）。
     const bool announce_catalog = cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(root, "announce"));
+    std::string firmware_url = jsonString(root, "firmwareUrl");
+    std::string firmware_sha = jsonString(root, "firmwareSha256");
+    std::string firmware_version = jsonString(root, "firmwareVersion");
+    const cJSON *firmware_size_item = cJSON_GetObjectItemCaseSensitive(root, "firmwareSize");
+    const int firmware_size = cJSON_IsNumber(firmware_size_item) && firmware_size_item->valuedouble > 0 &&
+        firmware_size_item->valuedouble <= 8 * 1024 * 1024
+        ? static_cast<int>(firmware_size_item->valuedouble) : 0;
     cJSON_Delete(root);
     if (!has_catalog) { invalidateCatalog(); return; }
     const auto latest = vibe_pairing::snapshot();
@@ -5166,6 +5373,63 @@ void VibeCoding::refreshConfig()
         }
         voice_project_id_ = project;
         board_events_ = std::move(board_events);
+        if (firmware_url.size() > 180) firmware_url.resize(180);
+        const bool sha_ok = firmware_sha.size() == 64 &&
+            firmware_sha.find_first_not_of("0123456789abcdef") == std::string::npos;
+        if (!sha_ok) firmware_sha.clear();
+        const std::string saved_sha = savedFirmwareMark("sha");
+        const std::string saved_url = savedFirmwareMark("url");
+        const bool sha_hit = sha_ok && saved_sha == firmware_sha;
+        const bool url_hit = !sha_ok && saved_url == firmware_url;
+        const bool already = !firmware_url.empty() && (sha_hit || url_hit);
+        const char *why = "empty";
+        if (!firmware_url.empty() && sha_ok && saved_sha.empty()) why = "nomark";
+        else if (!firmware_url.empty() && sha_ok) why = "sha";
+        else if (!firmware_url.empty() && saved_url.empty()) why = "nomark";
+        else if (!firmware_url.empty()) why = "url";
+        std::string task_status = "-";
+        if (!model_.tasks.empty()) {
+            task_status = model_.tasks.front().status;
+            if (task_status.empty() || task_status.size() > 32 ||
+                task_status.find_first_not_of("abcdefghijklmnopqrstuvwxyz0123456789_") != std::string::npos) {
+                task_status = "other";
+            }
+        }
+        firmware_trace_why_ = why;
+        firmware_trace_task_ = task_status;
+        firmware_trace_tasks_ = static_cast<int>(model_.tasks.size());
+        firmware_trace_size_ = firmware_size;
+        // 配置只记下地址。下载要等设置页里点「下载更新」。
+        if (!firmware_update_requested_.load()) {
+            firmware_url_ = firmware_url;
+            firmware_sha_ = firmware_sha;
+            firmware_version_ = firmware_version;
+            firmware_size_ = firmware_size;
+        }
+        const bool pending = !firmware_url_.empty() && !already;
+        firmware_available_.store(pending);
+        if (!firmware_update_requested_.load() && !(firmware_trace_stage_ == "fail" && pending)) {
+            firmware_trace_stage_ = firmware_url_.empty() ? "idle" : (pending ? "ready" : "skip");
+            firmware_trace_result_ = firmware_url_.empty() ? "none" : (pending ? "wait" : "match");
+            firmware_trace_written_ = -1;
+            firmware_trace_http_ = 0;
+            if (firmware_url_.empty()) firmware_status_ = T("电脑上还没有配置固件地址");
+            else if (!pending) firmware_status_ = T("已是当前固件");
+            else if (firmware_version_.empty()) firmware_status_ = T("有可下载的固件");
+            else {
+                std::string shown = firmware_version_;
+                if (shown.size() > 32) shown.resize(32);
+                firmware_status_ = std::string(T("有可下载的固件")) + " " + shown;
+            }
+            const std::string mark = firmware_trace_stage_ + why + ":" + std::to_string(firmware_size_);
+            static std::string logged_mark;
+            if (mark != logged_mark) {
+                logged_mark = mark;
+                ESP_LOGI("vibe_fw", "[fw] %s why=%s tasks=%d task=%s size=%d savedSha=%.12s offerSha=%.12s url=%.160s",
+                    firmware_trace_stage_.c_str(), why, firmware_trace_tasks_, task_status.c_str(),
+                    firmware_size_, saved_sha.c_str(), firmware_sha_.c_str(), firmware_url_.c_str());
+            }
+        }
         if (can_voice) model_.voice_hint.clear();
         voice_available_.store(can_voice);
         // 桥接器重启会丢掉命令清单：config 里带 announce 标志时重新上报。
@@ -5677,6 +5941,203 @@ void VibeCoding::pullBoardCommands()
     else ack_retry_.clear();
 }
 
+void VibeCoding::runFirmwareUpdate()
+{
+    auto note = [this](const std::string &text) {
+        std::lock_guard<std::mutex> lock(model_mutex_);
+        firmware_status_ = text;
+        ++model_.revision;
+    };
+    struct BusyGuard {
+        std::atomic<bool> &flag;
+        bool release = true;
+        ~BusyGuard() { if (release) flag.store(false); }
+    } busy{firmware_busy_};
+    firmware_busy_.store(true);
+    note(T("正在从配置的地址下载固件…"));
+    const std::string version = firmware_version_;
+    const std::string sha = firmware_sha_;
+    const std::string url = firmware_url_;
+    const int size = firmware_size_;
+    firmware_trace_stage_ = "pull";
+    firmware_trace_size_ = size;
+    firmware_trace_written_ = 0;
+    firmware_trace_http_ = 0;
+    if (url.empty()) {
+        firmware_trace_stage_ = "fail";
+        firmware_trace_result_ = "empty";
+        ESP_LOGW("vibe_fw", "[fw] abort empty-url tasks=%d task=%s", firmware_trace_tasks_, firmware_trace_task_.c_str());
+        note(T("电脑上还没有配置固件地址"));
+        return;
+    }
+    std::string bridge_path;
+    const std::string base = vibe_pairing::snapshot().url;
+    std::string origin = base;
+    while (!origin.empty() && origin.back() == '/') origin.pop_back();
+    if (url.rfind("/device/firmware/current", 0) == 0) {
+        bridge_path = "/device/firmware/current";
+    } else if (!origin.empty() && url.rfind(origin, 0) == 0) {
+        std::string rest = url.substr(origin.size());
+        const auto query = rest.find('?');
+        if (query != std::string::npos) rest.resize(query);
+        if (rest == "/device/firmware/current") bridge_path = rest;
+    }
+    const esp_partition_t *part = esp_ota_get_next_update_partition(nullptr);
+    if (!part) {
+        firmware_trace_stage_ = "fail";
+        firmware_trace_result_ = "partition";
+        ESP_LOGW("vibe_fw", "[fw] abort no-partition why=%s", firmware_trace_why_.c_str());
+        note(T("没有可用的更新分区"));
+        return;
+    }
+    esp_ota_handle_t handle = 0;
+    if (esp_ota_begin(part, size > 0 ? static_cast<size_t>(size) : OTA_SIZE_UNKNOWN, &handle) != ESP_OK) {
+        firmware_trace_stage_ = "fail";
+        firmware_trace_result_ = "begin";
+        ESP_LOGW("vibe_fw", "[fw] abort begin size=%d", size);
+        note(T("无法开始写入固件"));
+        return;
+    }
+    ESP_LOGW("vibe_fw", "[fw] pull why=%s tasks=%d task=%s size=%d bridge=%d url=%.160s",
+        firmware_trace_why_.c_str(), firmware_trace_tasks_, firmware_trace_task_.c_str(), size,
+        bridge_path.empty() ? 0 : 1, url.c_str());
+    mbedtls_md_context_t md;
+    mbedtls_md_init(&md);
+    const mbedtls_md_info_t *info = mbedtls_md_info_from_type(MBEDTLS_MD_SHA256);
+    bool hash_ok = info && mbedtls_md_setup(&md, info, 0) == 0 && mbedtls_md_starts(&md) == 0;
+    auto fail = [&](const char *text) {
+        mbedtls_md_free(&md);
+        if (handle) esp_ota_abort(handle);
+        handle = 0;
+        note(T(text));
+    };
+    size_t written = 0;
+    bool io_ok = false;
+    int last_http = 0;
+    auto pullChunks = [&]() {
+        if (bridge_path.empty()) return false;
+        constexpr size_t kChunk = 128 * 1024;
+        while (true) {
+            const std::string path = bridge_path + "?offset=" + std::to_string(written) + "&length=" + std::to_string(kChunk);
+            std::string chunk;
+            int chunk_status = 0;
+            const bool got = request(path, false, chunk, chunk_status, "", kChunk + 1024, 20000);
+            last_http = chunk_status;
+            firmware_trace_http_ = chunk_status;
+            firmware_trace_written_ = static_cast<int>(written);
+            if (!got || chunk_status != 200) {
+                ESP_LOGW("vibe_fw", "[fw] chunk off=%u http=%d got=%d bytes=%u",
+                    static_cast<unsigned>(written), chunk_status, got ? 1 : 0, static_cast<unsigned>(chunk.size()));
+                return false;
+            }
+            if (chunk.empty()) return written >= 16;
+            if (esp_ota_write(handle, chunk.data(), chunk.size()) != ESP_OK) {
+                ESP_LOGW("vibe_fw", "[fw] write off=%u bytes=%u", static_cast<unsigned>(written), static_cast<unsigned>(chunk.size()));
+                return false;
+            }
+            if (hash_ok) mbedtls_md_update(&md, reinterpret_cast<const unsigned char *>(chunk.data()), chunk.size());
+            written += chunk.size();
+            firmware_trace_written_ = static_cast<int>(written);
+            ESP_LOGI("vibe_fw", "[fw] chunk off=%u bytes=%u total=%u",
+                static_cast<unsigned>(written - chunk.size()), static_cast<unsigned>(chunk.size()), static_cast<unsigned>(written));
+            if (written > 8 * 1024 * 1024) return false;
+            if (chunk.size() < kChunk) return true;
+            if (size > 0 && written >= static_cast<size_t>(size)) return true;
+        }
+    };
+    if (!bridge_path.empty()) {
+        io_ok = pullChunks();
+    } else if (url.rfind("http://", 0) == 0 || url.rfind("https://", 0) == 0) {
+        if (url.rfind("https://", 0) == 0 && !vibe_pairing::tls_time_ready()) {
+            firmware_trace_stage_ = "fail";
+            firmware_trace_result_ = "tls";
+            ESP_LOGW("vibe_fw", "[fw] abort tls");
+            fail("正在同步设备时间，以校验 HTTPS 证书");
+            return;
+        }
+        esp_http_client_config_t config = {};
+        config.url = url.c_str();
+        config.timeout_ms = 20000;
+        config.buffer_size = 4096;
+        if (url.rfind("https://", 0) == 0) config.crt_bundle_attach = esp_crt_bundle_attach;
+        auto *client = esp_http_client_init(&config);
+        if (client && esp_http_client_open(client, 0) == ESP_OK &&
+            esp_http_client_fetch_headers(client) >= 0 &&
+            esp_http_client_get_status_code(client) == 200) {
+            last_http = 200;
+            io_ok = true;
+            char buf[1024];
+            int n = 0;
+            while ((n = esp_http_client_read(client, buf, sizeof(buf))) > 0) {
+                if (esp_ota_write(handle, buf, n) != ESP_OK) { io_ok = false; break; }
+                if (hash_ok) mbedtls_md_update(&md, reinterpret_cast<const unsigned char *>(buf), n);
+                written += static_cast<size_t>(n);
+                if (written > 8 * 1024 * 1024) { io_ok = false; break; }
+            }
+            if (n < 0) io_ok = false;
+        } else if (client) {
+            last_http = esp_http_client_get_status_code(client);
+        }
+        firmware_trace_http_ = last_http;
+        firmware_trace_written_ = static_cast<int>(written);
+        ESP_LOGW("vibe_fw", "[fw] direct http=%d written=%u io=%d", last_http, static_cast<unsigned>(written), io_ok ? 1 : 0);
+        if (client) esp_http_client_cleanup(client);
+    } else {
+        firmware_trace_stage_ = "fail";
+        firmware_trace_result_ = "badaddr";
+        ESP_LOGW("vibe_fw", "[fw] abort bad-url %.160s", url.c_str());
+        fail("固件地址无效");
+        return;
+    }
+    if (!io_ok || written < 16 || (size > 0 && written != static_cast<size_t>(size))) {
+        firmware_trace_stage_ = "fail";
+        firmware_trace_result_ = "incomplete";
+        firmware_trace_written_ = static_cast<int>(written);
+        firmware_trace_http_ = last_http;
+        ESP_LOGW("vibe_fw", "[fw] incomplete io=%d written=%u size=%d http=%d tasks=%d task=%s",
+            io_ok ? 1 : 0, static_cast<unsigned>(written), size, last_http,
+            firmware_trace_tasks_, firmware_trace_task_.c_str());
+        fail("固件下载不完整");
+        return;
+    }
+    unsigned char digest[32] = {};
+    if (!hash_ok || mbedtls_md_finish(&md, digest) != 0) {
+        firmware_trace_stage_ = "fail";
+        firmware_trace_result_ = "hash";
+        ESP_LOGW("vibe_fw", "[fw] hash-setup written=%u", static_cast<unsigned>(written));
+        fail("固件校验失败");
+        return;
+    }
+    mbedtls_md_free(&md);
+    char hex[65] = {};
+    for (int i = 0; i < 32; ++i) snprintf(hex + i * 2, 3, "%02x", digest[i]);
+    if (sha.size() == 64 && sha != hex) {
+        firmware_trace_stage_ = "fail";
+        firmware_trace_result_ = "mismatch";
+        ESP_LOGW("vibe_fw", "[fw] sha mismatch written=%u", static_cast<unsigned>(written));
+        esp_ota_abort(handle);
+        note(T("固件校验不一致"));
+        return;
+    }
+    if (esp_ota_end(handle) != ESP_OK || esp_ota_set_boot_partition(part) != ESP_OK) {
+        firmware_trace_stage_ = "fail";
+        firmware_trace_result_ = "boot";
+        ESP_LOGW("vibe_fw", "[fw] boot-partition written=%u", static_cast<unsigned>(written));
+        note(T("固件写入失败"));
+        return;
+    }
+    if (sha.size() == 64) rememberFirmwareMark("sha", sha);
+    rememberFirmwareMark("url", url);
+    firmware_trace_stage_ = "done";
+    firmware_trace_result_ = "ok";
+    firmware_trace_written_ = static_cast<int>(written);
+    ESP_LOGW("vibe_fw", "[fw] done written=%u size=%d", static_cast<unsigned>(written), size);
+    note(version.empty() ? T("固件已更新，正在重启") : T("固件已更新，正在重启"));
+    sendHeartbeat();
+    vTaskDelay(pdMS_TO_TICKS(400));
+    esp_restart();
+}
+
 void VibeCoding::sendHeartbeat()
 {
     std::string response;
@@ -5699,7 +6160,18 @@ void VibeCoding::sendHeartbeat()
         "&exit=" + std::to_string(exit_requested_.load()) +
         "&displayStage=" + std::to_string(display_stage_.load()) +
         "&displayCount=" + std::to_string(display_count_.load()) +
-        "&provider=" + std::to_string(selected_provider_.load());
+        "&provider=" + std::to_string(selected_provider_.load()) +
+        "&wifiReason=" + std::to_string(vibe_wifi::disconnect_reason()) +
+        "&wifiDrops=" + std::to_string(vibe_wifi::disconnect_count()) +
+        "&upMs=" + std::to_string(now_ms) +
+        "&fwStage=" + firmware_trace_stage_ +
+        "&fwWhy=" + firmware_trace_why_ +
+        "&fwResult=" + firmware_trace_result_ +
+        "&fwWritten=" + std::to_string(firmware_trace_written_) +
+        "&fwSize=" + std::to_string(firmware_trace_size_) +
+        "&fwHttp=" + std::to_string(firmware_trace_http_) +
+        "&fwTasks=" + std::to_string(firmware_trace_tasks_) +
+        "&fwTask=" + firmware_trace_task_;
     const bool sent = request(path, false, response, status);
     if (receiverVoiceUploading()) return;
     if (!sent) {
@@ -6263,6 +6735,7 @@ void VibeCoding::workerLoop()
                 artwork_request_.store(true);
             }
         }
+        if (firmware_update_requested_.exchange(false)) runFirmwareUpdate();
         preloadArtworkCache();
         PendingAction action;
         {

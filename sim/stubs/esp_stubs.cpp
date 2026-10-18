@@ -2,15 +2,19 @@
 // 原则：能跑 UI 的最小行为。WiFi 永不连上、HTTP 永远失败、NVS 用内存。
 #include "esp_err.h"
 #include "esp_log.h"
+#include "esp_sleep.h"
 #include "esp_system.h"
 #include "esp_timer.h"
 #include "esp_wifi.h"
 #include "esp_http_client.h"
 #include "esp_crt_bundle.h"
+#include "esp_ota_ops.h"
+#include "mbedtls/md.h"
 #include "nvs.h"
 #include "nvs_flash.h"
 #include "freertos/FreeRTOS.h"
 #include "driver/gpio.h"
+#include "driver/rtc_io.h"
 
 #include <atomic>
 #include <chrono>
@@ -431,6 +435,38 @@ esp_err_t gpio_set_level(gpio_num_t gpio_num, uint32_t level) { (void)gpio_num; 
 esp_err_t gpio_reset_pin(gpio_num_t gpio_num) { (void)gpio_num; return ESP_OK; }
 esp_err_t gpio_install_isr_service(int flags) { (void)flags; return ESP_OK; }
 esp_err_t gpio_set_direction(gpio_num_t gpio_num, int mode) { (void)gpio_num; (void)mode; return ESP_OK; }
+
+const esp_partition_t *esp_ota_get_next_update_partition(const esp_partition_t *) { return nullptr; }
+esp_err_t esp_ota_begin(const esp_partition_t *, size_t, esp_ota_handle_t *out)
+{
+    if (out) *out = 1;
+    return ESP_OK;
+}
+esp_err_t esp_ota_write(esp_ota_handle_t, const void *, size_t) { return ESP_OK; }
+esp_err_t esp_ota_end(esp_ota_handle_t) { return ESP_OK; }
+esp_err_t esp_ota_abort(esp_ota_handle_t) { return ESP_OK; }
+esp_err_t esp_ota_set_boot_partition(const esp_partition_t *) { return ESP_OK; }
+
+static const mbedtls_md_info_t sim_md_info = {};
+void mbedtls_md_init(mbedtls_md_context_t *ctx) { if (ctx) ctx->dummy = 0; }
+void mbedtls_md_free(mbedtls_md_context_t *ctx) { if (ctx) ctx->dummy = 0; }
+const mbedtls_md_info_t *mbedtls_md_info_from_type(mbedtls_md_type_t) { return &sim_md_info; }
+int mbedtls_md_setup(mbedtls_md_context_t *, const mbedtls_md_info_t *, int) { return 0; }
+int mbedtls_md_starts(mbedtls_md_context_t *) { return 0; }
+int mbedtls_md_update(mbedtls_md_context_t *, const unsigned char *, size_t) { return 0; }
+int mbedtls_md_finish(mbedtls_md_context_t *, unsigned char *output)
+{
+    if (output) memset(output, 0, 32);
+    return 0;
+}
+
+esp_err_t esp_sleep_disable_wakeup_source(esp_sleep_source_t) { return ESP_OK; }
+esp_err_t esp_sleep_enable_ext0_wakeup(gpio_num_t, int) { return ESP_OK; }
+void esp_deep_sleep_start(void) { printf("sim: deep sleep skipped\n"); }
+esp_err_t rtc_gpio_init(gpio_num_t) { return ESP_OK; }
+esp_err_t rtc_gpio_set_direction(gpio_num_t, rtc_gpio_mode_t) { return ESP_OK; }
+esp_err_t rtc_gpio_pullup_en(gpio_num_t) { return ESP_OK; }
+esp_err_t rtc_gpio_pulldown_dis(gpio_num_t) { return ESP_OK; }
 
 int bsp_display_backlight_on(void) { printf("sim: backlight on\n"); return 0; }
 int bsp_display_backlight_off(void) { printf("sim: backlight off\n"); return 0; }

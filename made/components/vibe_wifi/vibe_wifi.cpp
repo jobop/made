@@ -37,6 +37,7 @@ bool previous_had_credentials = false;
 std::atomic<bool> using_receiver{false};
 std::atomic<bool> station_hold{false};
 int last_disconnect_reason = 0;
+std::atomic<uint32_t> disconnects{0};
 // station_mutex protects scan ownership and snapshots as well as driver
 // connection changes. Only the retry gate is read without that mutex.
 std::atomic<bool> receiver_scan_in_flight{false};
@@ -273,7 +274,8 @@ void eventHandler(void*, esp_event_base_t base, int32_t event_id, void* data) {
         const auto* lost = static_cast<const wifi_event_sta_disconnected_t*>(data);
         if (lost != nullptr) {
             last_disconnect_reason = lost->reason;
-            ESP_LOGW(kTag, "Wi-Fi disconnected, reason=%d", lost->reason);
+            const uint32_t drops = disconnects.fetch_add(1) + 1;
+            ESP_LOGW(kTag, "Wi-Fi disconnected, reason=%d count=%u", lost->reason, drops);
         }
         const uint32_t current = retry_ms.load();
         scheduleRetry(current);
@@ -588,6 +590,7 @@ esp_err_t restore_station() {
 bool receiver_active() { return using_receiver.load(); }
 bool station_held() { return station_hold.load(); }
 int disconnect_reason() { return last_disconnect_reason; }
+uint32_t disconnect_count() { return disconnects.load(); }
 
 esp_err_t request_receiver_scan() {
     if (!started.load()) return ESP_ERR_INVALID_STATE;

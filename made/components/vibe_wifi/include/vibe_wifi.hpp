@@ -45,6 +45,7 @@ struct WifiThroughput {
     WifiThroughput& operator=(const WifiThroughput&) = delete;
 };
 int disconnect_reason();
+uint32_t disconnect_count();
 
 enum class ReceiverScanState { Idle, Scanning, Done, Failed };
 

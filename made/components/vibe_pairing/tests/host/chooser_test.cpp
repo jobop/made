@@ -242,5 +242,29 @@ int main()
     assert(vibe_i18n::set_locale("zh-CN"));
     assert(snapshot().bridges[0].name == "电脑 192.168.1.4");
     std::cout << "PASS: legacy generated bridge names localize; custom PC names remain unchanged\n";
-    std::cout << "9 chooser scenarios passed\n";
+
+    nvs["url"] = "http://192.168.1.75:8788";
+    nvs["token"] = token;
+    nvs["bridge"] = "pc_saved";
+    begin_foreground_connection();
+    request_scan();
+    on_discovery = [](const std::string &request) {
+        if (request == "VIBE_DISCOVER_V3")
+            packets.push_back({"192.168.1.75", modern("pc_saved", "原来的电脑")});
+    };
+    tick();
+    found = snapshot();
+    assert(found.phase == Phase::ChoosingBridge && found.bridges.size() == 1);
+    assert(found.bridges[0].url == "http://192.168.1.75:8788");
+    assert(udp_requests.size() == 8 && network_http_calls == 0);
+    on_discovery = {};
+    scan_bridges();
+    tick();
+    assert(snapshot().bridges.empty() && !snapshot().scanning);
+    const auto sent = udp_requests.size();
+    mock_clock += 2000000;
+    tick();
+    assert(udp_requests.size() > sent && snapshot().bridges.empty() && network_http_calls == 0);
+    std::cout << "PASS: saved computer is asked directly; an empty Wi-Fi list scans again\n";
+    std::cout << "10 chooser scenarios passed\n";
 }

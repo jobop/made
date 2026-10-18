@@ -72,6 +72,22 @@
             <p id="receiverHelp" class="panel-intro receiver-help"><span data-i18n="static.041">独立接收端无需屏幕：通过 USB 插入电脑后，这里自动显示热点名称和密码。在码得内打开“齿轮 → 连接 → 接收端”，扫描并点选热点，再输入这里显示的密码并保存；无需退出到桌面设置。新固件的热点密码为 8 位数字，六位配对码随后单独核对。码得直接用 USB 插电脑时，无需填写热点信息。</span></p>
           </section>
 
+          <section id="firmware" class="panel info-panel" aria-labelledby="firmware-title">
+            <div class="panel-head"><div><h2 id="firmware-title"><span data-i18n="static.150">固件更新</span></h2><p class="panel-intro"><span data-i18n="static.151">这个地址写在码得读取的配置里。码得拿到后只从该地址下载，桥接器不会把地址推下去。填本机路径时，码得从这台桥接器取下面管理的当前固件包。</span></p></div></div>
+            <p id="firmwareStatus" class="pairing-state" role="status" aria-live="polite"><span data-i18n="static.152">正在读取固件…</span></p>
+            <form id="firmwareForm" class="voice-settings-form" autocomplete="off">
+              <div><label class="field-label" for="firmwareUrl"><span data-i18n="static.153">固件地址</span></label><input id="firmwareUrl" class="secret-input" type="text" inputmode="url" spellcheck="false" placeholder="https://example.com/made.bin"></div>
+              <div class="voice-settings-actions"><button id="firmwareSaveUrl" class="primary-button" type="submit"><span data-i18n="static.154">保存地址</span></button><button id="firmwareSync" class="small-button" type="button"><span data-i18n="static.155">拉取到本地</span></button><button id="firmwareUseBridge" class="small-button" type="button"><span data-i18n="static.156">使用本机地址</span></button></div>
+            </form>
+            <form id="firmwareUploadForm" class="voice-settings-form">
+              <div><label class="field-label" for="firmwareVersion"><span data-i18n="static.157">本地版本号</span></label><input id="firmwareVersion" class="secret-input" type="text" spellcheck="false" maxlength="32" placeholder="1.2.3"></div>
+              <div><label class="field-label" for="firmwareFile"><span data-i18n="static.158">固件文件</span></label><input id="firmwareFile" type="file" accept=".bin,application/octet-stream"></div>
+              <div class="voice-settings-actions"><button id="firmwareUpload" class="small-button" type="submit"><span data-i18n="static.159">保存到本地</span></button></div>
+            </form>
+            <div id="firmwareList" class="pairing-list" aria-label="已保存固件" data-i18n-aria-label="static.160"></div>
+            <p id="firmwareMessage" class="voice-settings-message" role="status" aria-live="polite"></p>
+          </section>
+
         </div>
         <div class="stack">
           <section id="voiceSettings" class="panel info-panel" aria-labelledby="voice-settings-title">

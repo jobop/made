@@ -28,6 +28,7 @@ import { listInstalled, listThemes, removePlugin, removeTheme, savePluginSetting
 import { createBoardLink } from './board-link.mjs';
 import { spriteChunk } from './agent-sprites.mjs';
 import { createScreenshotStore, rgb565ToPng, validateScreenshotParams, MAX_UPLOAD } from './board-screenshot.mjs';
+import { createFirmwareStore } from './firmware-store.mjs';
 import { initializeSpeechSettings, saveSpeechSettings } from './speech-settings.mjs';
 import { builtinSpeechRecognizers } from './speech/index.mjs';
 const PAIRED_DISCOVERY_REQUEST = /^VIBE_DISCOVER_PAIRED_V2 ([0-9a-f]{12}) ([0-9a-f]{32})$/;
@@ -259,6 +260,13 @@ export function createApp(config, { run, transcribe, tunnel: providedTunnel, ena
   const pairing = new PairingStore(config.stateDir);
   const boardLink = createBoardLink();
   const screenshots = createScreenshotStore(path.join(config.stateDir, 'screenshots'));
+  const firmware = createFirmwareStore(path.join(config.stateDir, 'firmware'));
+  let firmwareSync = null;
+  const ensureLocalFirmware = async () => {
+    if (firmware.deviceOffer().path || !firmware.summary().otaUrl) return;
+    firmwareSync ||= firmware.syncFromUrl().finally(() => { firmwareSync = null; });
+    await firmwareSync;
+  };
   // 增强运行时：回合管道与生命周期通知给 JobStore 用，bridge 句柄给插件上下文用。
   const enhance = createEnhancement(config);
   const tunnel = providedTunnel || new TunnelManager({
@@ -359,6 +367,10 @@ export function createApp(config, { run, transcribe, tunnel: providedTunnel, ena
       }
       if (req.method === 'GET' && url.pathname === '/api/installed') {
         send(res, 200, await listInstalled(config), false);
+        return;
+      }
+      if (req.method === 'GET' && url.pathname === '/api/firmware') {
+        send(res, 200, firmware.summary(), false);
         return;
       }
       if (req.method === 'GET' && url.pathname === '/api/state') {
@@ -587,6 +599,42 @@ export function createApp(config, { run, transcribe, tunnel: providedTunnel, ena
           }
           throw new Error('码得未在 15 秒内回传截图（固件需要更新到支持 debug.screenshot 的版本）');
         }
+        if (url.pathname === '/api/firmware') {
+          const type = String(req.headers['content-type'] || '');
+          if (type.startsWith('application/octet-stream')) {
+            const version = String(req.headers['x-firmware-version'] || '');
+            let bytes;
+            try {
+              bytes = await binaryBody(req, 8 * 1024 * 1024);
+            } catch (error) {
+              if (error.message === '录音超过 30 秒上限') throw new Error('固件文件超过 8MB');
+              throw error;
+            }
+            send(res, 200, firmware.importBuffer({
+              version, bytes, notes: String(req.headers['x-firmware-notes'] || ''),
+            }), false);
+            return;
+          }
+          const payload = await body(req);
+          const action = payload && typeof payload.action === 'string' ? payload.action : '';
+          if (action === 'url') {
+            send(res, 200, firmware.setOtaUrl(payload.otaUrl), false);
+            return;
+          }
+          if (action === 'sync') {
+            send(res, 200, await firmware.syncFromUrl(), false);
+            return;
+          }
+          if (action === 'current') {
+            send(res, 200, firmware.setCurrent(payload.id), false);
+            return;
+          }
+          if (action === 'delete') {
+            send(res, 200, firmware.remove(payload.id), false);
+            return;
+          }
+          throw new Error('固件操作无效');
+        }
         const pairAction = url.pathname.match(/^\/api\/pair\/([0-9a-f]{12})\/(confirm|reject)$/);
         if (pairAction) {
           const { nonce } = await body(req);
@@ -727,7 +775,37 @@ export function createApp(config, { run, transcribe, tunnel: providedTunnel, ena
         deviceSend(res, 401, { error: '设备未授权' });
         return;
       }
+      if (req.method === 'GET' && url.pathname === '/device/firmware/current') {
+        try { await ensureLocalFirmware(); } catch (error) {
+          console.error(`[trace] fw-sync ${error?.message || error} ${new Date().toISOString()}`);
+        }
+        const offset = Number(url.searchParams.get('offset') || '0');
+        const length = Number(url.searchParams.get('length') || '131072');
+        if (!Number.isInteger(offset) || offset < 0 || offset > 8 * 1024 * 1024) {
+          console.error(`[trace] fw-get off=${url.searchParams.get('offset') ?? '-'} len=${url.searchParams.get('length') ?? '-'} -> 400 ${new Date().toISOString()}`);
+          deviceSend(res, 400, { error: '固件偏移无效' });
+          return;
+        }
+        const slice = firmware.readCurrent(offset, Number.isInteger(length) ? length : 128 * 1024);
+        console.error(`[trace] fw-get off=${offset} len=${Number.isInteger(length) ? length : 131072} -> ${slice ? slice.bytes.length : -1}B total=${slice ? slice.item.size : '-'} ${new Date().toISOString()}`);
+        if (!slice) {
+          deviceSend(res, 404, { error: '没有可更新的固件' });
+          return;
+        }
+        res.writeHead(200, {
+          'Content-Type': 'application/octet-stream',
+          'Content-Length': slice.bytes.length,
+          'Cache-Control': 'no-store',
+          'X-Content-Type-Options': 'nosniff',
+          'X-Firmware-Offset': String(slice.offset),
+          'X-Firmware-Size': String(slice.item.size),
+          'X-Firmware-Sha256': slice.item.sha256,
+        });
+        res.end(slice.bytes);
+        return;
+      }
       if (req.method === 'GET' && url.pathname === '/device/heartbeat') {
+        console.error(`[trace] hb upMs=${url.searchParams.get('upMs') ?? '-'} wifiReason=${url.searchParams.get('wifiReason') ?? '-'} wifiDrops=${url.searchParams.get('wifiDrops') ?? '-'} fwStage=${url.searchParams.get('fwStage') ?? '-'} fwWhy=${url.searchParams.get('fwWhy') ?? '-'} fwResult=${url.searchParams.get('fwResult') ?? '-'} fwWritten=${url.searchParams.get('fwWritten') ?? '-'} fwSize=${url.searchParams.get('fwSize') ?? '-'} fwHttp=${url.searchParams.get('fwHttp') ?? '-'} fwTasks=${url.searchParams.get('fwTasks') ?? '-'} fwTask=${url.searchParams.get('fwTask') ?? '-'} ${new Date().toISOString()}`);
         if (process.env.VIBE_UI_DIAGNOSTICS === '1') {
           const fields = Object.fromEntries(['uiStage', 'uiAge', 'bootAge', 'exit', 'provider', 'displayStage', 'displayCount']
             .map((key) => [key, url.searchParams.get(key)])
@@ -839,6 +917,7 @@ export function createApp(config, { run, transcribe, tunnel: providedTunnel, ena
       }
       if (req.method === 'GET' && url.pathname === '/device/config') {
         const voice = transcriptionState(config);
+        const firmwareSummary = firmware.summary();
         // Firmware creates sessions in the default project; the full project
         // picker lives on the desktop. Keep room for twelve bounded bitmaps.
         const payload = {
@@ -847,11 +926,16 @@ export function createApp(config, { run, transcribe, tunnel: providedTunnel, ena
           projects: config.projects.filter(({ id }) => id === config.defaultProject).map(({ id, label }) => ({ id, label: devicePreview(label, 64) })),
           defaultProject: config.defaultProject,
           voice: { mode: voice.mode, available: voice.available },
+          firmwareUrl: firmwareSummary.otaUrl,
+          firmwareVersion: firmwareSummary.current?.version || '',
+          firmwareSha256: firmwareSummary.current?.sha256 || '',
+          firmwareSize: firmwareSummary.current?.size || 0,
           board: { events: boardLink.subscription(pairing.deviceIdForToken(token), config.pluginsRuntime, config) },
           // 桥接器重启会丢掉板侧命令清单：让板子看到 announce 后重新上报。
           announce: !boardLink.hasCatalog(pairing.deviceIdForToken(token)),
         };
         if (Buffer.byteLength(JSON.stringify(payload)) > 32 * 1024) throw new Error('码得配置超过 32 KB，请检查助手元数据');
+        console.error(`[trace] fw-config url=${payload.firmwareUrl || '-'} ver=${payload.firmwareVersion || '-'} sha=${(payload.firmwareSha256 || '-').slice(0, 12)} size=${payload.firmwareSize || 0} ${new Date().toISOString()}`);
         if (process.env.VIBE_UI_DIAGNOSTICS === '1') console.info('[device-config]', deviceId, 'announce=', payload.announce,
           'providers=', payload.providers.map((p, i) => `${i}:${p.id}${p.sprite ? '@' + p.sprite.version : ''}`).join(' ') || 'none');
         deviceSend(res, 200, payload);
@@ -883,6 +967,7 @@ export function createApp(config, { run, transcribe, tunnel: providedTunnel, ena
         const chunk = plugin?.sprite ? spriteChunk(plugin.sprite, spriteMatch[2],
           Number(url.searchParams.get('offset')) || 0,
           requested === undefined ? SPRITE_DEVICE_CHUNK : Math.min(requested, SPRITE_DEVICE_CHUNK)) : null;
+        console.error(`[trace] sprite ${spriteMatch[1]}/${spriteMatch[2]} off=${url.searchParams.get('offset') ?? 0} -> ${chunk ? chunk.length : -1}B ${new Date().toISOString()}`);
         if (process.env.VIBE_UI_DIAGNOSTICS) {
           console.log(`[device-sprite] ${spriteMatch[2]} offset=${url.searchParams.get('offset') ?? 0} len=${url.searchParams.get('len') ?? '-'} -> ${chunk ? chunk.length : -1}B`);
         }

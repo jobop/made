@@ -7,7 +7,7 @@ import http from 'node:http';
 import net from 'node:net';
 import { createHmac } from 'node:crypto';
 import { createApp } from '../src/server.mjs';
-import { UsbReceiverProtocol, forwardUsbRequest, parseMacUsbSerialPorts, linuxUsbSerialPorts } from '../src/usb-receiver.mjs';
+import { UsbReceiverProtocol, forwardUsbRequest, parseMacUsbSerialDevices, parseMacUsbSerialPorts, linuxUsbSerialPorts, usbSerialNeedsLineCoding } from '../src/usb-receiver.mjs';
 import { testRegistry } from './helpers/fixture-agents.mjs';
 
 const HELLO = { type: 'hello', version: 1, ssid: 'Vibe-Receiver', password: 'private-passphrase' };
@@ -572,6 +572,10 @@ test('macOS 自动发现仅接受原生 ESP USB 和已验证的 WCH VID/PID', ()
     | "IOCalloutDevice" = "/dev/cu.usbmodem456"
 `;
   assert.deepEqual(parseMacUsbSerialPorts(registry), ['/dev/cu.usbmodem123', '/dev/cu.usbmodem5B7A1277141']);
+  assert.deepEqual(parseMacUsbSerialDevices(registry).map((device) => device.id), ['303a:1001', '1a86:55d3']);
+  assert.equal(usbSerialNeedsLineCoding('303a:1001'), false);
+  assert.equal(usbSerialNeedsLineCoding('1a86:55d3'), true);
+  assert.equal(usbSerialNeedsLineCoding(''), true);
 });
 
 test('Linux 从 ttyACM 和 ttyUSB 的 sysfs 父设备核对指定 USB ID', (t) => {

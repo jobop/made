@@ -79,6 +79,7 @@ esp_err_t restore_station() { return ESP_OK; }
 bool receiver_active() { return false; }
 bool station_held() { return false; }
 int disconnect_reason() { return 0; }
+uint32_t disconnect_count() { return 0; }
 
 esp_err_t request_receiver_scan() { return ESP_ERR_INVALID_STATE; }
 ReceiverScanSnapshot receiver_scan_snapshot() { return {}; }

@@ -25,6 +25,8 @@ const VOICE_TIMEOUT_MS = 150_000;
 const HELLO_TIMEOUT_MS = 7_000;
 const DISCOVERY_INTERVAL_MS = 2_000;
 const REJECTED_PORT_COOLDOWN_MS = 60_000;
+// 没握手的端口（码得平时只把 USB 当日志口）不能一直占着，否则烧录和串口监视都打不开。
+const IDLE_PORT_COOLDOWN_MS = 3_000;
 const BASE64 = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/;
 // Probe only the native ESP USB device and the WCH bridge verified on the
 // supported C3 receiver. A matching USB ID is a candidate, not a ready peer:
@@ -52,25 +54,45 @@ function limitedText(value, limit = 128) {
   return typeof value === 'string' && value.length <= limit && !/[\r\n\x00-\x1f\x7f]/.test(value);
 }
 
-export function parseMacUsbSerialPorts(output) {
-  const ports = new Set();
+function usbId(vendor, product) {
+  return `${vendor.toString(16)}:${product.toString(16)}`;
+}
+
+// 码得的原生 USB Serial/JTAG 不看波特率。对它跑 stty 会改 DTR/RTS，
+// ESP32-S3 因此复位，正在用的 Wi-Fi 连接被拔掉。WCH 才是真串口，要设波特率。
+export function usbSerialNeedsLineCoding(id) {
+  return id !== '303a:1001';
+}
+
+export function parseMacUsbSerialDevices(output) {
+  const devices = [];
+  const seen = new Set();
   const blocks = String(output).split(/(?=^[\s|]*\+-o [^\n]*<class IOUSBHostDevice,)/m);
   for (const block of blocks) {
     if (!block.includes('<class IOUSBHostDevice,')) continue;
     const vendor = block.match(/"idVendor"\s*=\s*(\d+)/);
     const product = block.match(/"idProduct"\s*=\s*(\d+)/);
-    if (!supportedUsbDevice(Number(vendor?.[1]), Number(product?.[1]))) continue;
+    const vendorId = Number(vendor?.[1]);
+    const productId = Number(product?.[1]);
+    if (!supportedUsbDevice(vendorId, productId)) continue;
+    const id = usbId(vendorId, productId);
     for (const match of block.matchAll(/"IOCalloutDevice"\s*=\s*"(\/dev\/cu\.[A-Za-z0-9._-]+)"/g)) {
-      ports.add(match[1]);
+      if (seen.has(match[1])) continue;
+      seen.add(match[1]);
+      devices.push({ path: match[1], id });
     }
   }
-  return [...ports];
+  return devices;
 }
 
-export function linuxUsbSerialPorts({ sysTtyRoot = '/sys/class/tty', devRoot = '/dev' } = {}) {
-  const ports = [];
+export function parseMacUsbSerialPorts(output) {
+  return parseMacUsbSerialDevices(output).map((device) => device.path);
+}
+
+export function linuxUsbSerialDevices({ sysTtyRoot = '/sys/class/tty', devRoot = '/dev' } = {}) {
+  const devices = [];
   let names;
-  try { names = fs.readdirSync(sysTtyRoot); } catch { return ports; }
+  try { names = fs.readdirSync(sysTtyRoot); } catch { return devices; }
   for (const name of names) {
     if (!/^tty(?:ACM|USB)\d+$/.test(name)) continue;
     let directory;
@@ -82,27 +104,35 @@ export function linuxUsbSerialPorts({ sysTtyRoot = '/sys/class/tty', devRoot = '
         const product = Number.parseInt(fs.readFileSync(path.join(directory, 'idProduct'), 'utf8'), 16);
         if (supportedUsbDevice(vendor, product)) {
           const device = path.join(devRoot, name);
-          if (fs.existsSync(device)) ports.push(device);
+          if (fs.existsSync(device)) devices.push({ path: device, id: usbId(vendor, product) });
           break;
         }
       } catch { /* Walk to the USB device parent. */ }
       directory = path.dirname(directory);
     }
   }
-  return ports;
+  return devices;
 }
 
-export async function discoverUsbSerialPorts(platform = process.platform) {
+export function linuxUsbSerialPorts(options) {
+  return linuxUsbSerialDevices(options).map((device) => device.path);
+}
+
+export async function discoverUsbSerialDevices(platform = process.platform) {
   if (platform === 'darwin') {
     try {
       const result = await execFileAsync('ioreg', ['-p', 'IOService', '-r', '-c', 'IOUSBHostDevice', '-l', '-t', '-w0'], {
         encoding: 'utf8', timeout: 3000, maxBuffer: 8 * 1024 * 1024,
       });
-      return parseMacUsbSerialPorts(result.stdout).filter((port) => fs.existsSync(port));
+      return parseMacUsbSerialDevices(result.stdout).filter((device) => fs.existsSync(device.path));
     } catch { return []; }
   }
-  if (platform === 'linux') return linuxUsbSerialPorts();
+  if (platform === 'linux') return linuxUsbSerialDevices();
   return [];
+}
+
+export async function discoverUsbSerialPorts(platform = process.platform) {
+  return (await discoverUsbSerialDevices(platform)).map((device) => device.path);
 }
 
 async function configureSerial(port, platform = process.platform) {
@@ -228,6 +258,9 @@ export class UsbReceiverProtocol {
       // 会插进来。只有「看着像帧」的坏行才算协议错误；日志必须原样放行，
       // 否则板子一打日志就会掐掉正在传输的响应（素材分片下载失败即此因）。
       if (!line.startsWith('{')) {
+        if (/ESP-ROM|rst:0x|boot:0x/.test(line)) {
+          console.error(`[trace] usb-boot ${new Date().toISOString()} ${line.slice(0, 180)}`);
+        }
         console.error(`[usb-link] log: ${line.slice(0, 240)}`);
         return;
       }
@@ -541,16 +574,17 @@ export class UsbReceiver {
     if (this.polling || this.stopped || this.state.status === 'disabled') return;
     this.polling = true;
     try {
-      const candidates = this.portPath ? [this.portPath] : await discoverUsbSerialPorts();
+      const devices = this.portPath ? [{ path: this.portPath, id: '' }] : await discoverUsbSerialDevices();
       if (this.stopped) return;
-      if (!candidates.length) {
+      if (!devices.length) {
         if (!this.links.size) {
           this.state.port = this.portPath;
           this.state.error = this.portPath ? 'USB 设备未连接' : '未发现受支持的 USB 设备；可设置 VIBE_USB_PORT';
         }
         return;
       }
-      for (const port of candidates) {
+      for (const device of devices) {
+        const port = device.path;
         if (this.stopped) break;
         if (this.links.has(port)) continue;
         if (Date.now() < (this.cooldown.get(port) || 0)) continue;
@@ -562,9 +596,12 @@ export class UsbReceiver {
           const fd = fs.openSync(port, fs.constants.O_RDWR | fs.constants.O_NONBLOCK |
             (fs.constants.O_NOCTTY || 0));
           unregisteredFd = fd;
+          const lineCoding = usbSerialNeedsLineCoding(device.id);
+          console.error(`[trace] usb-open port=${port} id=${device.id || '-'} stty=${lineCoding} ${new Date().toISOString()}`);
           // WCH resets the baud rate when its final handle closes. Keep our
           // handle open while stty opens, configures and closes its own handle.
-          await configureSerial(port);
+          // 码得自己的口跳过这一步，避免插入 USB 时把 Wi-Fi 连接复位掉。
+          if (lineCoding) await configureSerial(port);
           if (this.stopped) break;
           const link = { fd, port, helloTimer: null, inputTimer: null,
             protocol: null, writeQueue: Promise.resolve() };
@@ -656,12 +693,11 @@ export class UsbReceiver {
           link.inputTimer = setTimeout(readAvailable, 20);
           link.inputTimer.unref?.();
           link.helloTimer = setTimeout(() => {
-            if (this.link === link && this.state.status !== 'connected') {
-              // A round display only says hello while Vibe is open. Keep this
-              // nonblocking reader alive so opening Vibe is detected at once,
-              // without reopening/resetting the board or delaying other ports.
-              this.state.error = 'USB 已连接，等待打开码得应用的 USB 直连';
-            }
+            if (this.links.get(port) !== link || this.state.status === 'connected') return;
+            // 没握手就先放开串口，烧录可以插空占用。冷却只有几秒，板子每 3 秒
+            // 发一次 hello，下一轮打开就能接上，不用对准打开的时刻。
+            this.cooldown.set(port, Date.now() + IDLE_PORT_COOLDOWN_MS);
+            this.disconnect(link, '未握手，已暂时释放串口，马上会再试');
           }, HELLO_TIMEOUT_MS);
           link.helloTimer.unref?.();
         } catch {

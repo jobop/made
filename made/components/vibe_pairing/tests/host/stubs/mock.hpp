@@ -92,7 +92,7 @@ constexpr int MBEDTLS_MD_SHA256=1;
 struct mbedtls_md_info_t{};
 inline const mbedtls_md_info_t* mbedtls_md_info_from_type(int) { static mbedtls_md_info_t s; return &s; }
 inline int mbedtls_md_hmac(const mbedtls_md_info_t*,const unsigned char *key,size_t kl,const unsigned char *data,size_t dl,unsigned char *out) { test_hmac(key,kl,data,dl,out); return 0; }
-namespace vibe_wifi { inline bool receiver=false; inline int reads=0; inline bool receiver_active() { ++reads; return receiver; } }
+namespace vibe_wifi { inline bool receiver=false; inline bool connected=true; inline int reads=0; inline bool receiver_active() { ++reads; return receiver; } inline bool is_connected() { return connected; } }
 namespace vibe_usb {
 inline constexpr const char* kReceiverUrl = "http://192.168.4.1:8788";
 inline bool enabled=true,online=true;
