@@ -4653,26 +4653,22 @@ void VibeCoding::invalidateCatalog(bool clear)
     ++model_.revision;
 }
 
-// 形象素材下载（worker 线程）。目标与最近一次尝试一致且成功过就不再动网络；
-// 待确认任务在屏上等 BOOT 时也跳过，避免分片下载拖慢确认链路。
+// 形象素材下载（worker 线程）。目标与最近一次尝试一致且成功过就不再动网络。
+// 曾经在待确认任务在屏时整体跳过素材下载（怕分片拖慢确认链路），但 USB
+// 是请求/响应串行协议，分片不会吞掉命令应答，最多慢一两拍；而待确认可能
+// 无限期驻留（用户不点 BOOT），门禁会把素材永久卡死（2026-10-18 实锤：
+// 假 OTA 任务常驻 waiting_confirmation 期间素材一直加载不出）——已删除。
 void VibeCoding::syncArtwork()
 {
     std::string provider;
     vibe_provider::SpriteInfo sprite;
     size_t provider_count = 0;
-    bool waiting = false;
     {
         std::lock_guard<std::mutex> lock(model_mutex_);
         const auto &selected = selectedProviderLocked();
         provider = selected.id;
         sprite = selected.sprite;
         provider_count = providers_.size();
-        waiting = !model_.tasks.empty() && model_.tasks.front().status == "waiting_confirmation";
-    }
-    // 每个跳过分支都必须留痕：素材不下发时，日志要能直接指出是哪一道闸拦的。
-    if (waiting) {
-        ESP_LOGI(BUTTON_TAG, "[sprite] skip=waiting_confirmation provider=%s", provider.c_str());
-        return;
     }
     {
         std::lock_guard<std::mutex> lock(artwork_mutex_);
@@ -4732,8 +4728,10 @@ bool VibeCoding::artworkRetryDue() const
 // 开机预加载（worker 线程）：目录就绪后把所有带素材的助手排队，后台逐个
 // 把素材缓存拉齐——滑动切换走 tryApplyCachedArtwork 只看本地 manifest，
 // 缓存齐了就是秒换，不用现等下载。约束：每轮循环只处理一个（下载最坏
-// 30s，不能把 worker 循环堵住 delaying 命令下发）；待确认任务在屏上等
-// BOOT 时不抢链路；已缓存（manifest 版本一致）直接跳过，不做哈希复核。
+// 30s，不能把 worker 循环堵住 delaying 命令下发）；已缓存（manifest 版本
+// 一致）直接跳过，不做哈希复核。曾经待确认在屏时整体放弃（怕抢链路），
+// 理由同 syncArtwork：USB 串行协议分片不吞命令应答，而待确认可能无限期
+// 驻留，门禁只会把预载永久卡死——已删除（2026-10-18）。
 void VibeCoding::preloadArtworkCache()
 {
     const uint64_t epoch = catalog_epoch_.load();
@@ -4747,9 +4745,6 @@ void VibeCoding::preloadArtworkCache()
                 if (entry.sprite.valid())
                     artwork_preload_queue_.push_back({entry.id, entry.sprite.version, 0});
         }
-        // 待确认在屏上时与 syncArtwork 同一策略：不占链路，本轮放弃。
-        if (!model_.tasks.empty() && model_.tasks.front().status == "waiting_confirmation")
-            return;
         if (artwork_preload_queue_.empty()) return;
     }
     for (;;) {
@@ -5278,7 +5273,19 @@ bool VibeCoding::tryApplyCachedArtwork(const std::string &provider)
     }
     ESP_LOGI(BUTTON_TAG, "[sprite] cached_applied provider=%s version=%u",
         provider.c_str(), static_cast<unsigned>(version));
+    deferSidesForDecodePeak();
     return true;
+}
+
+// 换装错峰（LVGL 线程）：主舞台刚解码完整套素材（峰值已过但分配器还没
+// 归还干净），立刻补两侧台就是三套解码 + 烘焙同窗叠加，开机时序最挤的
+// 几秒会把 PSRAM 打到低谷（2026-10-18 排查：psram_free 曾跌到 658KB）。
+// 侧台推迟 2.5s 再补，用户无感（侧台不在视野内）；拖动方向侧不受
+// defer 限制（ensureSide 的 defer 条件对 drag_side_ 例外），不影响翻页。
+void VibeCoding::deferSidesForDecodePeak()
+{
+    const uint32_t until = lv_tick_get() + 2500;
+    for (auto &slot : sides_) slot.defer_until = until;
 }
 
 std::string savedFirmwareMark(const char *key)
@@ -6316,6 +6323,8 @@ void VibeCoding::sendHeartbeat()
         "&wifiHist=" + vibe_wifi::disconnect_history() +
         "&heap=" + std::to_string(esp_get_free_heap_size()) +
         "&minHeap=" + std::to_string(esp_get_minimum_free_heap_size()) +
+        "&psram=" + std::to_string(heap_caps_get_free_size(MALLOC_CAP_SPIRAM)) +
+        "&psramMin=" + std::to_string(heap_caps_get_minimum_free_size(MALLOC_CAP_SPIRAM)) +
         "&upMs=" + std::to_string(now_ms) +
         "&fwStage=" + firmware_trace_stage_ +
         "&fwWhy=" + firmware_trace_why_ +

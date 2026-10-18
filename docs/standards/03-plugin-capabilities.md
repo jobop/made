@@ -14,7 +14,8 @@ The list is reported by the firmware (`announceBoardCatalog` in `esp_brookesia_a
 | `boot.double` | Double press (confirm) |
 | `boot.triple` | Triple press (cancel) |
 | `boot.long` | Long press (back to home) |
-| `motion.shake` | Shake gesture detected by the on-board IMU (QMI8658, `vibe_motion` component; ≥3 accel spikes within 700 ms, 2.5 s cooldown). Field `agent` = assistant id whose sprite page is current — the firmware tracks it in memory at page-switch time, no heartbeat delay. The event only fires while some board plugin subscribes it |
+| `motion.shake` | Shake gesture detected by the on-board IMU (QMI8658, `vibe_motion` component; ≥3 accel spikes within 700 ms, 2.5 s cooldown). Field `agent` = assistant id whose sprite page is current — the firmware tracks it in memory at page-switch time, no heartbeat delay. The event only fires while some board plugin subscribes it. Boards without an IMU never report it (verify with the firmware I2C bus scan) |
+| `touch.double` | Two short taps on the assistant page within 450 ms (empty screen areas only; taps on buttons/drawer/dialogs don't bubble to the screen). Field `agent` = current assistant id, same as `motion.shake`. Introduced as the no-IMU substitute trigger for fall-style reactions; fires only while subscribed |
 
 | Command | Purpose |
 | --- | --- |
@@ -37,6 +38,8 @@ The list is reported by the firmware (`announceBoardCatalog` in `esp_brookesia_a
 The device owns its action list: the actions available are whatever the active assistant's sprite manifest declares (`actions` table, see [docs/SPRITES.md](../SPRITES.md)). There is no separate action channel — the firmware folds the actions into the command catalog as `action.<name>` entries and re-announces the whole catalog (`POST /device/capabilities`) whenever the sprite changes the list. The bridge derives the names from the catalog and exposes them as `deviceActions` in `/api/state` and via the facade `deviceActions(deviceId)`; the list is advisory only (the board silently ignores unknown `action.*` commands).
 
 Two action forms share this surface: track-table actions (per-layer frame sequences) and whole-frame GIF actions (`{"gif": "x.gif", "ms": 3000}` — the firmware streams a built-in minimal GIF decoder onto a full-canvas overlay and hides the layered sprite for the duration). Asset-side constraints (canvas ≤512², ≤256 KB/file, ≤10 fps, per-frame transparency) and authoring recipes live in `docs/SPRITES.md` and the made-kit skill pack (`check_gif.py`, `action_gif.py`, the action-plugin template).
+
+**Cross-role naming contract**: sprite authors and board-plugin authors are usually different people; the only coupling point is the *action semantic name* (`fall`, `dance`, `yawn`, `cheer`, `nod`, `wave`, `sleep` — see the recommended-name table in [docs/SPRITES.md](../SPRITES.md) "跨角色平台契约"). Plugins trigger `action.<semantic-name>` and must tolerate the action being absent (silent degradation, no error/retry storms); sprites implement whichever subset they like. Asset authors name actions semantically (lowercase English), frame files follow `<layer>-<action>-<n>.png` and GIFs `<action>.gif` — file names are package-internal and never part of the contract.
 
 ## Bridge side
 

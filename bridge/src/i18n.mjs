@@ -59,6 +59,8 @@ const messages = new Map([
   ['插件状态检查必须同步返回', 'The plugin status check must return synchronously'],
   ['任务已取消', 'Task cancelled'],
   ['默认编程助手未安装或已禁用', 'The default assistant is not installed or is disabled'],
+  ['这是默认编程助手，不能停用；请先在设置里把默认编程助手切换为其他助手', 'This is the default assistant and cannot be disabled; switch the default assistant to another one in settings first'],
+  ['这是默认编程助手，不能删除；请先在设置里把默认编程助手切换为其他助手', 'This is the default assistant and cannot be removed; switch the default assistant to another one in settings first'],
   ['配对请求格式无效', 'Invalid pairing request'],
   ['设备名称无效', 'Invalid device name'],
   ['电脑配对窗口未开启', 'Pairing is not open on the computer'],

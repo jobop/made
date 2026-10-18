@@ -189,6 +189,12 @@ export async function setPluginEnabled(config, id, enabled) {
   if (!PLUGIN_ID.test(id || '')) throw fail('插件不存在');
   const installed = (await listInstalled(config)).plugins;
   if (!installed.some((plugin) => plugin.id === id)) throw fail('插件不存在');
+  // 默认编程助手不能停用：loadConfiguredPlugins 会守卫 defaultProvider，
+  // 但那里的报错不含操作指引，用户只会看到一句没头没尾的「未安装或已禁用」。
+  // 在动作入口给出可操作的前置报错。
+  if (!enabled && id === config.defaultProvider) {
+    throw fail('这是默认编程助手，不能停用；请先在设置里把默认编程助手切换为其他助手');
+  }
   const previous = [...(config.disabledPlugins || [])];
   const next = new Set(previous);
   if (enabled) next.delete(id);
@@ -246,6 +252,11 @@ export async function removePlugin(config, { id = '', file = '' } = {}) {
   target = removalTarget(config, target);
   const described = await describeModule(target, config);
   const ids = described.map((plugin) => plugin.id).filter((item) => PLUGIN_ID.test(item));
+  // 同 setPluginEnabled：删默认助手会被 defaultProvider 守卫拦下但报错没有指引，
+  // 在动作入口就说清楚（2026-10-18 实锤：删除 codex 后桥接器重启都起不来）。
+  if (ids.includes(config.defaultProvider)) {
+    throw fail('这是默认编程助手，不能删除；请先在设置里把默认编程助手切换为其他助手');
+  }
   const previousDisabled = [...(config.disabledPlugins || [])];
   const previousPlugins = [...(config.plugins || [])];
   config.disabledPlugins = [...new Set([...previousDisabled, ...ids])];

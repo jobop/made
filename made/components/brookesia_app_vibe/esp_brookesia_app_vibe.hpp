@@ -215,6 +215,7 @@ private:
     void notifyMotionShake();   // 摇晃回调：把当前助手 ID 塞进事件字段再入队
     void queueAssistantScopedEvent(const char *name); // 同上，事件名参数化（touch.double 复用）
     static void homeShortClickCallback(lv_event_t *event); // 助手页双击检测（本板无 IMU 的替代触发源）
+    void deferSidesForDecodePeak(); // 换装后侧台推迟解码，避免三舞台解码+烘焙同窗叠加
     void announceBoardCatalog();
     void syncAvailableActions();
     void flushBoardEvent();
