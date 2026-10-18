@@ -159,7 +159,7 @@ export interface BridgeFacade {
   cancelJob(id: string): Record<string, unknown>;
   themes(): { name: string; title: string; sound: boolean; icon: boolean; background: boolean }[];
   devices(): string[];
-  /** Action system: action names derived from the device command catalog (`action.<name>` entries, decided by the current assistant sprite). Advisory only — the board silently ignores unknown action commands. */
+  /** Action system: command names derived from the device command catalog (`action.<name>` entries). Two-level binding model (docs/SPRITES.md): sprites declaring a `commands` map expose abstract slots `action.A1`–`action.A9` ("command binds artwork", decided by the sprite author); legacy sprites expose semantic action names (deprecated). Advisory only — the board silently ignores unknown action commands. */
   deviceActions(deviceId: string): string[];
   /** Enqueue a board command directly; only the board-side catalog constrains the name. */
   send(deviceId: string, command: BoardCommand, audio?: Uint8Array): QueuedBoardCommand;

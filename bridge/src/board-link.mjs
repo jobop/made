@@ -1,4 +1,7 @@
-export const CAPABILITY_NAME = /^[a-z][a-z0-9_]{0,15}(?:\.[a-z][a-z0-9_]{0,15}){0,2}$/;
+// 能力名：段 = 字母开头的 [A-Za-z0-9_]{0,15}，1–3 段点分。大写段用于行动
+// 系统的抽象命令号（action.A1–A9，两级绑定模型 docs/SPRITES.md）；老语义
+// 动作名与事件名全小写不受影响。
+export const CAPABILITY_NAME = /^[a-zA-Z][a-zA-Z0-9_]{0,15}(?:\.[a-zA-Z][a-zA-Z0-9_]{0,15}){0,2}$/;
 const FIELD_KEY = /^[a-z][a-z0-9_]{0,15}$/;
 const COMMAND_ID = /^[1-9][0-9]{0,15}$/;
 const MAX_ITEMS = 32;

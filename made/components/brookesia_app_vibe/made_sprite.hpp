@@ -64,16 +64,22 @@ uint8_t *decodePngArgbMem(const uint8_t *data, size_t size, int &width, int &hei
 // 当前是否处于分层素材模式。
 bool artworkActive(lv_obj_t *root);
 
-// —— 行动系统（manifest 的 actions 表）——
+// —— 行动系统（manifest 的 actions 表 + commands 命令映射）——
 // 动作 = 对既有层的帧序覆盖（tracks: 层id → 帧序号序列），播完自动回到
 // 情绪/状态驱动。支持哪些动作由素材包决定：当前助手的 manifest 没声明、
 // 或声明的动作引用了不存在的层/帧，这个动作就不可用。
+//
+// 两级绑定模型（docs/SPRITES.md）：素材 manifest 的 commands 表（可选，
+// "A1"–"A9" → 动作名）定义「命令绑素材」。声明了 commands 的素材只认抽象
+// 命令号（playAction("A1")），语义名直发废弃；未声明的老素材保持语义名
+// 直发（弃用中，向后兼容）。事件绑定（增强插件）只发命令号。
 //
 // playAction 必须在 LVGL 线程调用；未知动作/素材缺失时返回 false 且无任何
 // 副作用（静默降级，调用方无需处理）。再次调用会打断上一个动作。
 bool playAction(lv_obj_t *root, const char *name);
 
-// 当前素材可用的动作名单（LVGL 线程调用；应用层拿它向桥接器上报）。
+// 当前素材对外可触发的命令名单（LVGL 线程调用；应用层拿它向桥接器上报）：
+// 声明了 commands 映射的素材返回命令号（A1–A9），否则返回动作语义名。
 std::vector<std::string> actionNames(lv_obj_t *root);
 
 // 开关该舞台的后台呼吸烘焙（默认开）。侧舞台应关闭：烘焙是内存换 CPU

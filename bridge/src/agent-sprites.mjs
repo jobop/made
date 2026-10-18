@@ -54,7 +54,7 @@ function readManifestFile(dir) {
 
 function validateManifest(raw) {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new SpriteError('manifest 必须是对象');
-  if (Object.keys(raw).some((key) => !['version', 'canvas', 'layers', 'motion', 'emotions', 'actions'].includes(key))) {
+  if (Object.keys(raw).some((key) => !['version', 'canvas', 'layers', 'motion', 'emotions', 'actions', 'commands'].includes(key))) {
     throw new SpriteError('manifest 包含不支持的字段');
   }
   if (!isInt(raw.version, 1, 2147483647)) throw new SpriteError('manifest.version 必须是正整数');
@@ -204,9 +204,27 @@ function validateManifest(raw) {
       }
     }
   }
+  // 两级绑定模型（docs/SPRITES.md）：commands 表（可选）定义「命令绑素材」
+  // ——抽象命令号 A1–A9 → actions 表动作名，纯编号不定语义。事件绑定（增强
+  // 插件）只发命令号；声明了本表的素材只认命令号，语义名直发废弃。
+  if (raw.commands !== undefined) {
+    const commands = raw.commands;
+    if (!commands || typeof commands !== 'object' || Array.isArray(commands)) {
+      throw new SpriteError('commands 必须是对象（A1–A9 → 动作名）');
+    }
+    const keys = Object.keys(commands);
+    if (keys.length > 9) throw new SpriteError('commands 最多 9 个命令号（A1–A9）');
+    const actionNames = new Set(Object.keys(raw.actions ?? {}));
+    for (const [slot, target] of Object.entries(commands)) {
+      if (!/^A[1-9]$/.test(slot)) throw new SpriteError(`commands.${slot} 命令号必须是 A1–A9`);
+      if (typeof target !== 'string' || !actionNames.has(target)) {
+        throw new SpriteError(`commands.${slot} 映射目标必须是 actions 表已声明的动作名`);
+      }
+    }
+  }
   return {
     version: raw.version, canvas: canvas, layers: raw.layers, motion: raw.motion ?? null,
-    emotions: raw.emotions ?? null, actions: raw.actions ?? null,
+    emotions: raw.emotions ?? null, actions: raw.actions ?? null, commands: raw.commands ?? null,
   };
 }
 
@@ -299,7 +317,7 @@ export function readSprite(packageDir) {
   const value = Object.freeze({
     dir: spriteDir, version: manifest.version, canvas: manifest.canvas,
     layers: manifest.layers, motion: manifest.motion, emotions: manifest.emotions,
-    actions: manifest.actions,
+    actions: manifest.actions, commands: manifest.commands,
     files: Object.freeze(files.map((file) => Object.freeze(file))),
   });
   cache.set(spriteDir, { stamp, value });

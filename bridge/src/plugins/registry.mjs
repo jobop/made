@@ -33,7 +33,9 @@ export function validatePlugin(plugin) {
   } else if (plugin.kind === 'board-plugin') {
     const names = (key, min) => {
       const list = plugin[key];
-      if (!Array.isArray(list) || list.length > 16 || list.length < min || list.some((name) => typeof name !== 'string' || !/^[a-z][a-z0-9_]{0,15}(?:\.[a-z][a-z0-9_]{0,15}){0,2}$/.test(name))) fail(`${key} 无效`);
+      // 能力名与桥接器 CAPABILITY_NAME 同形（字母开头的段，1–3 段点分）；
+      // 大写段用于行动系统的抽象命令号（action.A1–A9，docs/SPRITES.md）。
+      if (!Array.isArray(list) || list.length > 16 || list.length < min || list.some((name) => typeof name !== 'string' || !/^[a-zA-Z][a-zA-Z0-9_]{0,15}(?:\.[a-zA-Z][a-zA-Z0-9_]{0,15}){0,2}$/.test(name))) fail(`${key} 无效`);
       if (new Set(list).size !== list.length) fail(`${key} 有重复项`);
     };
     names('events', 1);

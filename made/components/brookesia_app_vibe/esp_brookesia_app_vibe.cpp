@@ -5473,7 +5473,8 @@ void VibeCoding::refreshConfig()
 // 行动系统（LVGL 线程，maybeApplyArtwork 每帧调用）：读当前素材舞台的
 // 可用动作名单，与已上报的比对，变了就置 board_catalog_sent_ 为假等 worker
 // 重报整张清单——动作作为命令条目（action.<名>）并入清单，不单开通道。
-// 名单的真源是素材包 manifest 的 actions 表——素材没声明的动作天然不可用。
+// 名单的真源是素材包 manifest：声明了 commands 表的素材上报命令号（A1–A9，
+// 「命令绑素材」由素材作者定义），否则上报 actions 语义名（老素材兼容）。
 void VibeCoding::syncAvailableActions()
 {
     std::vector<std::string> names = made_sprite::actionNames(sprite_stage_);
@@ -5552,10 +5553,12 @@ void VibeCoding::homeShortClickCallback(lv_event_t *event)
 
 void VibeCoding::announceBoardCatalog()
 {
-    // 动作作为命令条目并入清单：每个可用动作一条 action.<名>。设备自己决定
-    // 支持哪些动作（来自素材 manifest 的 actions 表）；名单变化时调用方会
-    // 重新上报整张清单。只输出符合桥接器 CAPABILITY_NAME 的名字（小写字母
-    // 开头的 [a-z0-9_]{0,15}），不合规的静默跳过，避免整张清单被拒。
+    // 动作作为命令条目并入清单：每个可用条目一条 action.<名>。设备自己决定
+    // 支持哪些（两级绑定模型，docs/SPRITES.md）：素材 manifest 声明了
+    // commands 表的，上报抽象命令号（A1–A9，事件绑定只发命令号）；没声明
+    // 的老素材上报动作语义名（弃用中，向后兼容）。名单变化时调用方会重新
+    // 上报整张清单。只输出符合桥接器 CAPABILITY_NAME 的名字（字母开头的
+    // [A-Za-z0-9_]{0,15}），不合规的静默跳过，避免整张清单被拒。
     std::vector<std::string> actions;
     {
         std::lock_guard<std::mutex> lock(model_mutex_);
@@ -5587,9 +5590,12 @@ void VibeCoding::announceBoardCatalog()
     std::string body = head;
     auto valid_action = [](const std::string &name) {
         if (name.empty() || name.size() > 16) return false;
-        if (name[0] < 'a' || name[0] > 'z') return false;
+        // 抽象命令号（A1–A9）或老语义名（小写字母开头 [a-z0-9_]{0,15}）
+        const bool slot = name.size() == 2 && name[0] == 'A' && name[1] >= '1' && name[1] <= '9';
+        if (!slot && (name[0] < 'a' || name[0] > 'z')) return false;
         for (const char c : name) {
-            const bool ok = (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_';
+            const bool ok = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+                            (c >= '0' && c <= '9') || c == '_';
             if (!ok) return false;
         }
         return true;
@@ -5994,7 +6000,9 @@ void VibeCoding::applyRemoteCommands()
             startScreenshotUpload();
         } else if (command.name == "action.play" || command.name.rfind("action.", 0) == 0) {
             // 行动系统：动作即命令（action.<名>，或兼容旧 action.play+fields.action）。
-            // 素材没声明这个动作就静默忽略（降级不播，不报错）。
+            // 两级绑定模型：命令名通常是抽象命令号（action.A1…），playAction
+            // 按 manifest 的 commands 表映射到真实动作；素材没映射就静默
+            // 忽略（降级不播，不报错）。
             std::string action = command.action;
             if (command.name.size() > 7) action = command.name.substr(7);
             if (!action.empty() && action.size() <= 16)

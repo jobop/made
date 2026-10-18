@@ -966,6 +966,7 @@ export function createApp(config, { run, transcribe, tunnel: providedTunnel, ena
             layers: plugin.sprite.layers, ...(plugin.sprite.motion ? { motion: plugin.sprite.motion } : {}),
             ...(plugin.sprite.emotions ? { emotions: plugin.sprite.emotions } : {}),
             ...(plugin.sprite.actions ? { actions: plugin.sprite.actions } : {}),
+            ...(plugin.sprite.commands ? { commands: plugin.sprite.commands } : {}),
           });
           return;
         }

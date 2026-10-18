@@ -107,6 +107,11 @@ struct Parts {
         bool active = false;
         uint64_t epoch = 0;          // 每次 commitArt 递增；后台烘焙结果按它对账
         std::vector<ActionSpec> actions;   // 行动系统：素材声明的具名动作
+        // 两级绑定模型：抽象命令号 → 动作名（"A1" → "fall"）。素材作者在
+        // manifest 的 commands 表里定义「命令绑素材」；事件绑定（增强插件）
+        // 只发命令号，不发语义名。槽位 A1–A9，纯编号不定语义。声明了本表
+        // 的素材只认命令号（语义名直发废弃）；没声明的老素材保持语义名直发。
+        std::vector<std::pair<std::string, std::string>> commands;
         int active_action = -1;      // 正在播放的动作下标，-1 = 无
         uint32_t action_started_ms = 0;    // lv_tick_get() 起点
         std::vector<uint8_t> action_layers; // 被任意动作引用的层（禁止烘焙）
@@ -570,7 +575,9 @@ void bakeTick(Parts *parts)
 // 的层或越界帧的轨道就地修剪——动作可用性由素材本身决定，坏条目只影响
 // 自己（缺素材的动作不可用，其余照常）。
 bool commitArt(Parts *parts, const MotionSpec &motion, std::vector<LayerSpec> &&specs,
-               std::vector<ActionSpec> &&actions, bool builtin, const std::string &base_dir) {
+               std::vector<ActionSpec> &&actions,
+               std::vector<std::pair<std::string, std::string>> &&commands,
+               bool builtin, const std::string &base_dir) {
     if (specs.empty()) return false;
     gifStop(parts);   // 上一套素材的 GIF 播放状态先行退场（含覆盖层与解码内存）
     auto *container = lv_obj_create(parts->root);
@@ -639,6 +646,7 @@ bool commitArt(Parts *parts, const MotionSpec &motion, std::vector<LayerSpec> &&
     parts->art.base_dir = base_dir;
     // —— 动作表落地：解析层下标 + 修剪越界帧 ——
     parts->art.actions.clear();
+    parts->art.commands = std::move(commands);   // 命令号→动作映射随素材整体换（两级绑定）
     parts->art.action_layers.assign(parts->art.layers.size(), 0);
     for (auto &action : actions) {
         ActionSpec resolved;
@@ -981,7 +989,8 @@ void update(lv_obj_t *root, uint32_t elapsed_ms, int mood) {
 // static：签名引用匿名命名空间类型，保持内部链接。
 static bool buildSpecsFromManifest(const std::string &manifest_json, const std::string &base_dir,
                                    MotionSpec &motion, std::vector<LayerSpec> &specs,
-                                   std::vector<ActionSpec> &actions) {
+                                   std::vector<ActionSpec> &actions,
+                                   std::vector<std::pair<std::string, std::string>> &commands) {
     cJSON *manifest = cJSON_Parse(manifest_json.c_str());
     if (!manifest) return false;
     const cJSON *canvas = cJSON_GetObjectItemCaseSensitive(manifest, "canvas");
@@ -1184,6 +1193,28 @@ static bool buildSpecsFromManifest(const std::string &manifest_json, const std::
         }
     }
 
+    // —— 命令映射（可选）——
+    // "commands": { "A1": "<动作名>" }：抽象命令号 → actions 表动作。事件
+    // 绑定（增强插件配置）发命令号，素材作者决定命令号播什么，两级解耦。
+    // 槽位固定 A1–A9，纯编号不定语义；坏条目（号不合规/动作未声明）跳过。
+    if (cJSON_IsObject(cJSON_GetObjectItemCaseSensitive(manifest, "commands"))) {
+        const cJSON *commands_json = cJSON_GetObjectItemCaseSensitive(manifest, "commands");
+        for (const cJSON *cmd = commands_json->child; cmd && commands.size() < 9; cmd = cmd->next) {
+            if (!cmd->string || !cJSON_IsString(cmd) || !cmd->valuestring || !cmd->valuestring[0]) continue;
+            const std::string slot = cmd->string;
+            const std::string target = cmd->valuestring;
+            if (slot.size() != 2 || slot[0] != 'A' || slot[1] < '1' || slot[1] > '9') continue;
+            bool known = false;
+            for (const auto &action : actions)
+                if (action.name == target) { known = true; break; }
+            if (!known) continue;   // 映射目标必须是 actions 表已声明的动作
+            bool dup = false;
+            for (const auto &entry : commands)
+                if (entry.first == slot) { dup = true; break; }
+            if (!dup) commands.emplace_back(slot, target);
+        }
+    }
+
     cJSON_Delete(manifest);
     return true;
 fail:
@@ -1229,9 +1260,11 @@ bool applyArtwork(lv_obj_t *root, const std::string &manifest_json, const std::s
     MotionSpec motion;
     std::vector<LayerSpec> specs;
     std::vector<ActionSpec> actions;
-    if (!buildSpecsFromManifest(manifest_json, base_dir, motion, specs, actions)) return false;
+    std::vector<std::pair<std::string, std::string>> commands;
+    if (!buildSpecsFromManifest(manifest_json, base_dir, motion, specs, actions, commands)) return false;
 
-    if (commitArt(parts, motion, std::move(specs), std::move(actions), false, base_dir)) {
+    if (commitArt(parts, motion, std::move(specs), std::move(actions), std::move(commands),
+                  false, base_dir)) {
         lv_obj_invalidate(root);
         return true;
     }
@@ -1280,8 +1313,24 @@ bool playAction(lv_obj_t *root, const char *name) {
     auto *parts = static_cast<Parts *>(lv_obj_get_user_data(root));
     if (!parts || !parts->art.active) return false;
     auto &art = parts->art;
+    // 两级绑定模型：素材声明了命令映射（commands 表）时只认抽象命令号
+    // （A1–A9），命中后转成目标动作名再播；未映射的命令号静默降级。
+    // 语义名直发废弃——防插件作者绕过命令层与素材隐式耦合。
+    // 没声明 commands 的老素材保持语义名直发（向后兼容，文档已标记弃用）。
+    std::string target = name;
+    if (!art.commands.empty()) {
+        bool hit = false;
+        for (const auto &entry : art.commands) {
+            if (entry.first == name) {
+                target = entry.second;
+                hit = true;
+                break;
+            }
+        }
+        if (!hit) return false;
+    }
     for (size_t i = 0; i < art.actions.size(); ++i) {
-        if (art.actions[i].name != name) continue;
+        if (art.actions[i].name != target) continue;
         // 重复点名同一段动作：重新从头播（打断当前拍比忽略更符合直觉）
         if (art.actions[i].gif) {
             // GIF 动作：读缓存文件 → 起解码器 → 建全画布覆盖层 → 解首帧
@@ -1350,6 +1399,14 @@ std::vector<std::string> actionNames(lv_obj_t *root) {
     if (!root) return names;
     auto *parts = static_cast<Parts *>(lv_obj_get_user_data(root));
     if (!parts || !parts->art.active) return names;
+    // 两级绑定模型：声明了命令映射的素材上报命令号（action.A1 …），否则
+    // 上报动作语义名（老素材兼容，弃用中）。
+    if (!parts->art.commands.empty()) {
+        names.reserve(parts->art.commands.size());
+        for (const auto &entry : parts->art.commands)
+            names.push_back(entry.first);
+        return names;
+    }
     names.reserve(parts->art.actions.size());
     for (const auto &action : parts->art.actions)
         names.push_back(action.name);
@@ -1382,6 +1439,7 @@ struct PrefetchState {
     MotionSpec motion;               // worker 发布后只由 LVGL 线程读写
     std::vector<LayerSpec> specs;    // 同上
     std::vector<ActionSpec> actions; // 同上（动作表无堆像素，纯元数据）
+    std::vector<std::pair<std::string, std::string>> commands; // 命令映射（同上）
 };
 PrefetchState g_prefetch;
 
@@ -1390,7 +1448,9 @@ void prefetchWorker(void *param) {
     MotionSpec motion;
     std::vector<LayerSpec> specs;
     std::vector<ActionSpec> actions;
-    const bool ok = buildSpecsFromManifest(job->manifest_json, job->base_dir, motion, specs, actions);
+    std::vector<std::pair<std::string, std::string>> commands;
+    const bool ok = buildSpecsFromManifest(job->manifest_json, job->base_dir, motion, specs, actions,
+                                           commands);
     const bool stale = g_prefetch.generation.load(std::memory_order_acquire) != job->generation;
     if (stale) {
         // 预取目标已易主（方向反转/松手取消）：结果就地丢弃。
@@ -1400,6 +1460,7 @@ void prefetchWorker(void *param) {
         g_prefetch.motion = motion;
         g_prefetch.specs = std::move(specs);
         g_prefetch.actions = std::move(actions);
+        g_prefetch.commands = std::move(commands);
         g_prefetch.done.store(true, std::memory_order_release);
         ESP_LOGI("made_sprite", "[sprite] prefetch_ready layers=%u psram_free=%u",
             static_cast<unsigned>(g_prefetch.specs.size()),
@@ -1464,13 +1525,15 @@ bool commitPrefetched(lv_obj_t *root) {
     if (!parts || !parts->root) return false;
     std::vector<LayerSpec> specs = std::move(g_prefetch.specs);
     std::vector<ActionSpec> actions = std::move(g_prefetch.actions);
+    std::vector<std::pair<std::string, std::string>> commands = std::move(g_prefetch.commands);
     g_prefetch.specs.clear();
     g_prefetch.actions.clear();
+    g_prefetch.commands.clear();
     g_prefetch.done.store(false, std::memory_order_relaxed);
     // commitArt 只在成功时撤旧素材（旧容器+旧帧整体退场，不闪空白）；
     // 失败时旧素材原样保留，暂存帧就地释放，上层回退老路。
-    if (commitArt(parts, g_prefetch.motion, std::move(specs), std::move(actions), false,
-                  g_prefetch.base_dir)) {
+    if (commitArt(parts, g_prefetch.motion, std::move(specs), std::move(actions),
+                  std::move(commands), false, g_prefetch.base_dir)) {
         ESP_LOGI("made_sprite", "[sprite] prefetch_committed layers=%u",
             static_cast<unsigned>(parts->art.layers.size()));
         return true;
