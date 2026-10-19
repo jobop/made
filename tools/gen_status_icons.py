@@ -12,8 +12,10 @@ from PIL import Image, ImageDraw
 OUT_HEADER = Path(__file__).resolve().parent.parent / "made" / "components" / "brookesia_app_vibe" / "status_icons.h"
 OUT_PREVIEW = Path("/tmp/status-icons-preview.png")
 
-SS = 12  # 超采样倍数：16 网格 × 12 = 192 画布，LANCZOS 缩回 16 得抗锯齿 alpha
-GRID = 16
+SS = 12  # 超采样倍数：16 网格 × 12 = 192 画布，LANCZOS 缩回 48 得抗锯齿 alpha
+GRID = 16            # 绘图网格坐标系（所有 draw_* 的坐标都是 0..16）
+ICON_PX = 48         # 落盘位图边长（设计像素）：2026-10-20 用户要求图标放大 3 倍，
+                     # 48 原生分辨率避免运行时 3 倍最近邻放大的锯齿
 STROKE = 1.5  # 线条宽（网格像素）——对应 LV_SYMBOL 16px 的视觉粗细
 
 ICONS = ["idle", "mic", "wave1", "wave2", "ask", "run"]
@@ -80,7 +82,7 @@ DRAWERS = {
 def rasterize(name):
     img = new_canvas()
     DRAWERS[name](ImageDraw.Draw(img))
-    small = img.resize((GRID, GRID), Image.LANCZOS)
+    small = img.resize((ICON_PX, ICON_PX), Image.LANCZOS)
     return small
 
 
@@ -88,22 +90,22 @@ def to_c_array(small):
     # LVGL ARGB8888 小端内存序：B,G,R,A。像素全白，颜色交给运行时 recolor。
     out = []
     px = small.load()
-    for y in range(GRID):
+    for y in range(ICON_PX):
         row = []
-        for x in range(GRID):
+        for x in range(ICON_PX):
             a = px[x, y]
             row.append(f"0x{a:02x}")
-        out.append("    " + ", ".join(f"0xff, 0xff, 0xff, {row[i]}" for i in range(0, GRID, 1)) + ",")
+        out.append("    " + ", ".join(f"0xff, 0xff, 0xff, {row[i]}" for i in range(0, ICON_PX, 1)) + ",")
     return "\n".join(out)
 
 
 def main():
     rendered = {name: rasterize(name) for name in ICONS}
 
-    # 预览：8 倍最近邻放大，检查形状
-    preview = Image.new("RGBA", (len(ICONS) * 20 * 8, 20 * 8), (228, 225, 218, 255))
+    # 预览：4 倍最近邻放大，检查形状
+    preview = Image.new("RGBA", (len(ICONS) * 56 * 4, 56 * 4), (228, 225, 218, 255))
     for i, name in enumerate(ICONS):
-        big = rendered[name].resize((16 * 8, 16 * 8), Image.NEAREST)
+        big = rendered[name].resize((ICON_PX * 4, ICON_PX * 4), Image.NEAREST)
         colored = Image.new("RGBA", big.size, (0, 0, 0, 0))
         cp = colored.load()
         bp = big.load()
@@ -111,12 +113,12 @@ def main():
             for x in range(big.size[0]):
                 a = bp[x, y]
                 cp[x, y] = (59, 64, 61, a)
-        preview.alpha_composite(colored, (i * 20 * 8 + 2 * 8, 2 * 8))
+        preview.alpha_composite(colored, (i * 56 * 4 + 4 * 4, 4 * 4))
     preview.save(OUT_PREVIEW)
 
     parts = [
         "#pragma once",
-        "// 由 tools/gen_status_icons.py 生成（素材页状态图标，16×16 白色+alpha，",
+        "// 由 tools/gen_status_icons.py 生成（素材页状态图标，48×48 白色+alpha，",
         "// 运行时 lv_image recolor 上色）。改图形请改生成器重跑，勿手改。",
         "#include \"lvgl.h\"",
         "",
@@ -126,11 +128,11 @@ def main():
         parts.append("    .header = {")
         parts.append(f"        .magic = LV_IMAGE_HEADER_MAGIC,")
         parts.append(f"        .cf = LV_COLOR_FORMAT_ARGB8888,")
-        parts.append(f"        .w = {GRID},")
-        parts.append(f"        .h = {GRID},")
-        parts.append(f"        .stride = {GRID * 4},")
+        parts.append(f"        .w = {ICON_PX},")
+        parts.append(f"        .h = {ICON_PX},")
+        parts.append(f"        .stride = {ICON_PX * 4},")
         parts.append("    },")
-        parts.append(f"    .data_size = {GRID * GRID * 4},")
+        parts.append(f"    .data_size = {ICON_PX * ICON_PX * 4},")
         parts.append("    .data = (const uint8_t[]){")
         parts.append(to_c_array(rendered[name]))
         parts.append("    },")

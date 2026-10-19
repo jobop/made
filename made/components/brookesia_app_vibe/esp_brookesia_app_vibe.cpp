@@ -690,9 +690,10 @@ bool VibeCoding::run()
     made_text(provider_label_, 220, false);
 
     // 素材页顶部状态图标（单一位置换图标，设计稿 2026-10-19）：药丸底
-    // bg_row + 16×16 recolor 位图。抽屉打开时隐藏（抽屉右上已有文字徽章）。
-    const int icon_pill_w = made_s(44);
-    const int icon_pill_h = made_s(24);
+    // bg_row + 48×48 recolor 位图（2026-10-20 放大 3 倍）。抽屉打开时隐藏
+    // （抽屉右上已有文字徽章）。
+    const int icon_pill_w = made_s(76);
+    const int icon_pill_h = made_s(60);
     status_icon_pill_ = lv_obj_create(screen);
     lv_obj_remove_style_all(status_icon_pill_);
     lv_obj_set_size(status_icon_pill_, icon_pill_w, icon_pill_h);
@@ -3009,11 +3010,17 @@ void VibeCoding::updateStatusIcon(int voice_phase, const std::string &task_statu
         return;
     }
     int state = 0;
+    // 优先级：用户正在说话 > 任务状态 > 语音提交残留。Submitted 在提交
+    // 成功后不会自动复位（下次录音才覆盖），若让它压过任务状态，任务
+    // 进入 waiting_confirmation 会显示处理中、完成后永远转圈（2026-10-20
+    // 实测）。所以任务状态可见时一律以任务为准，Submitted 只兜底「任务
+    // 还没出现在快照里」的窗口期。
     if (voice_phase == static_cast<int>(vibe_voice::Phase::Recording)) state = 1;
     else if (voice_phase == static_cast<int>(vibe_voice::Phase::Uploading)) state = 2;
-    else if (voice_phase == static_cast<int>(vibe_voice::Phase::Submitted)) state = 4;
     else if (task_status == "waiting_confirmation") state = 3;
     else if (task_status == "running" || task_status == "queued") state = 4;
+    else if (voice_phase == static_cast<int>(vibe_voice::Phase::Submitted) && task_status.empty())
+        state = 4;
 
     // 声波两帧交替（tick 驱动 160ms/帧），不占 anim 通道。
     if (state == 2 && status_icon_state_ == 2) {
