@@ -229,6 +229,7 @@ private:
     void startScreenshotUpload();
     void handleUiSwipe(const std::string &direction);
     void handleUiTap(const std::string &x_text, const std::string &y_text);
+    void smokeTick();  // 冒烟测试：自动随机左右滑（VIBE_SMOKE_TEST 才有实现体）
     void setConnectionError(std::string error);
     void queueActionForId(const char *verb, const std::string &task_id);
     void queueSubmittedVoiceCancel(const std::string &task_id);
@@ -241,6 +242,21 @@ private:
     void setActivityRunning(bool running);             // 活动条循环扫动动画开关
 
     std::mutex model_mutex_;
+    // 冒烟测试状态（仅 LVGL 线程访问）：开机延时后自动随机左右滑，
+    // 每滑一次打一行 PSRAM 水位，心跳 URL 带遥测计数（switch 源见
+    // vibe_usb/include/vibe_smoke_test.h）。
+    uint32_t burnin_next_ms_ = 0;   // 下一次滑动的 lv_tick 时刻（0=未启动）
+    int burnin_count_ = 0;
+    bool burnin_left_next_ = false;
+    // 滑动链路遥测（worker 心跳 URL 携带，&burnin=&swipe=&choose=&cmd=）：
+    // console 抓取不可靠，心跳是唯一稳定观测通道。原子量跨线程读。
+    std::atomic<uint32_t> burnin_ticks_{0};   // smokeTick 到点次数（含空转）
+    std::atomic<uint32_t> swipe_calls_{0};    // handleUiSwipe 进入次数
+    std::atomic<uint32_t> choose_calls_{0};   // chooseProvider 通过 voice 守卫次数
+    std::atomic<uint32_t> cmd_calls_{0};      // applyRemoteCommands 收到的命令数
+    // burn-in 水位事件的直发 body（model_mutex_ 保护）：绕过订阅门禁，
+    // flushBoardEvent 优先发它——观察通道走桥接器日志，串口留给连接。
+    std::string burnin_event_body_;
     // 形象素材同步状态：worker 线程负责下载（syncArtwork），LVGL 线程负责
     // 解码与显示（maybeApplyArtwork）；两边只通过 artwork_dirty_ 握手。
     std::mutex artwork_mutex_;
@@ -303,6 +319,11 @@ private:
     uint32_t prefetch_version_ = 0;
     int prefetch_slot_ = -1;               // 在飞解码归属的侧台（0/1）
     uint32_t prefetch_retry_ms_ = 0;       // 起飞失败/解码失败的退避重试时刻
+    // 连败计数（仅 LVGL 线程）：同一 provider+version 连败 ≥5 次 = 缓存残缺
+    // （manifest 版本一致但文件丢了，ENOENT 永远重试不好），触发 purge+重下。
+    std::string prefetch_fail_provider_;
+    uint32_t prefetch_fail_version_ = 0;
+    int prefetch_fail_streak_ = 0;
     void maybeStartPrefetch(int direction);
     void prefetchTick();                   // 每帧：解码完挂上归属侧台+对齐两侧
     void ensureSide(int index);            // 侧台内容对齐相邻助手（按需解码）
