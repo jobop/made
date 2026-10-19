@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cstring>
+#include <mutex>
 #include <new>
 #include <string>
 #include <vector>
@@ -26,6 +27,8 @@
 
 namespace made_sprite {
 namespace {
+
+void frameFree(uint8_t *p);   // 帧内存统一释放口（池槽/堆），定义见下方帧槽池一节
 
 struct Frame {
     lv_image_dsc_t dsc{};
@@ -126,9 +129,9 @@ struct Parts {
         ~Art() {
             for (auto &layer : layers) {
                 for (auto &frame : layer.frames)
-                    if (frame.pixels) heap_caps_free(frame.pixels);
+                    if (frame.pixels) frameFree(frame.pixels);
                 for (auto &frame : layer.baked_frames)
-                    if (frame.pixels) heap_caps_free(frame.pixels);
+                    if (frame.pixels) frameFree(frame.pixels);
             }
         }
     } art;
@@ -136,7 +139,7 @@ struct Parts {
 
 void freeFrames(std::vector<Frame> &frames) {
     for (auto &frame : frames)
-        if (frame.pixels) heap_caps_free(frame.pixels);
+        if (frame.pixels) frameFree(frame.pixels);
     frames.clear();
 }
 
@@ -161,6 +164,9 @@ struct LayerSpec {
     int x = 0;
     int y = 0;
     int scale_mul = 1;           // 素材基准像素相对设计像素的倍数（内置豆 = 3）
+    int source_w = made_design;  // manifest 画布宽：帧像素所在的坐标系，解码帧
+                                 // 要放大 made_design/source_w 倍才落在设计画布
+                                 // （240 素材 ×1.5、360 素材 ×1，360 时代隐含 1:1）
     bool blink = false;
     bool talk = false;
     bool alert = false;
@@ -206,6 +212,133 @@ int wave(uint32_t elapsed_ms, uint32_t period, int amplitude, int phase = 0) {
     return lv_trigo_sin((angle + phase) % 360) * amplitude / LV_TRIGO_SIN_MAX;
 }
 
+// 最近一次 applyArtwork 失败原因。prefetchWorker 也会写（同样用 atomic），
+// 读方只在 LVGL 线程 applyArtwork 返回 false 后立刻读，偶发竞态只影响
+// alloc/decode 归因精度，后果可忽略（见 tryApplyCachedArtwork）。
+// 归因必须线程私有：LVGL 线程（tryApplyCachedArtwork）与 worker 线程
+// （syncArtwork）可能并发各跑一次 applyArtwork，共享 atomic 会被对方线程
+// 的「入口重置为 none」覆盖——alloc 失败被误读成 none，上层判成缓存损坏
+// 走 purge+redownload（实机 2026-10-19 晨：PSRAM 紧张时 alloc 失败连打
+// purge，越清越糟）。写方（decodePngArgb/applyArtwork）与读方总在同一
+// 线程，thread_local 语义正好。
+thread_local ApplyFail t_last_apply_fail = ApplyFail::none;
+
+// —— 帧槽池 v2：双尺寸分级 ——
+// 帧缓冲直接驻留在 decodePngArgb 的分配里。变长帧分配与长驻帧在堆里交错
+// 会把 PSRAM 切碎（2026-10-19 压测实锤：稳态 free≈1.3MB 但最大连续块仅
+// 496KB，360 画布单帧 518KB 解码必败，png_alloc_failed 337 次）。ESP-IDF
+// 堆不支持搬移式碎片整理，唯一可行机制是让碎片不产生：等尺寸槽从池里
+// 取还，堆里只剩池本身这几次启动期分配。
+// v1 教训（soak2 实测）：单一 225KB 槽对小帧是灾难——codex 一套 14 帧里
+// 13 帧是 bbox 特征帧（eyes 解码 33KB / mouth 3KB），每帧也占一个 225KB
+// 槽，3.15MB 只装了 0.5MB 有效像素，池被小帧抽干后 body 解码只能堆回退，
+// 耗尽 → wm=67KB、16 分钟 1345 次 alloc 失败。
+// v2：大槽（body/全画布帧）+ 小槽（bbox 特征帧）两档；扩池带余量守卫
+//（自由 PSRAM 低于阈值不再扩），池尽仍回退堆（旧 360 素材缓存也走堆）。
+constexpr size_t kSlotBigBytes = 240 * 240 * 4;   // 225KB：body/全画布帧
+constexpr int kSlotBigMax = 10;                   // 大槽上限 ≤2.25MB（最坏三套驻留 8 + 未来加助手/加帧余量 2）
+constexpr size_t kSlotSmallBytes = 48 * 1024;     // 48KB：bbox 特征帧（实测 eyes 33KB）
+constexpr int kSlotSmallMax = 20;                 // 小槽上限 ≤0.96MB（实测 codex 全套 11 小帧 + 余量）
+constexpr size_t kPoolReserveBytes = 600 * 1024;  // 扩池前必须留出的自由余量
+
+std::mutex g_slot_mutex;
+
+struct SlotPool {
+    size_t bytes;
+    int max;
+    int count = 0;
+    // 硬容量上限必须 ≥ kSlotSmallMax（20）——数组按最大档位留足。
+    uint8_t *base[24] = {};
+    bool used[24] = {};
+};
+
+SlotPool g_pool_big{kSlotBigBytes, kSlotBigMax};
+SlotPool g_pool_small{kSlotSmallBytes, kSlotSmallMax};
+
+// 取一个空闲槽；池空且未达上限、且自由余量足够时增长一个新槽；失败返回
+// nullptr（调用方回退更大槽或堆分配）。
+uint8_t *slotTake(SlotPool &p) {
+    std::lock_guard<std::mutex> lock(g_slot_mutex);
+    for (int i = 0; i < p.count; ++i) {
+        if (!p.used[i]) {
+            p.used[i] = true;
+            return p.base[i];
+        }
+    }
+    if (p.count < p.max &&
+        heap_caps_get_free_size(MALLOC_CAP_SPIRAM) > kPoolReserveBytes + p.bytes) {
+        auto *q = static_cast<uint8_t *>(
+            heap_caps_malloc(p.bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+        if (q) {
+            p.base[p.count] = q;
+            p.used[p.count] = true;
+            ++p.count;
+            return q;
+        }
+    }
+    return nullptr;
+}
+
+void slotRelease(uint8_t *p) {
+    if (!p) return;
+    std::lock_guard<std::mutex> lock(g_slot_mutex);
+    for (SlotPool *pool : {&g_pool_big, &g_pool_small}) {
+        for (int i = 0; i < pool->count; ++i) {
+            if (pool->base[i] == p) {
+                pool->used[i] = false;
+                return;
+            }
+        }
+    }
+}
+
+// 帧内存统一分配口：≤小槽走小槽（尽可借大槽），≤大槽走大槽，更大或池
+// 尽回退堆。与 frameFree 配对（帧可能来自两档池或堆，释放无需区分来源）。
+// 烘焙帧（resampleArgb 输出）也走这里——它们与解码帧同样长寿，若留在
+// 堆里就是残留的碎片源（每次换助手 free+alloc 12 个变长块）。
+uint8_t *frameAlloc(size_t bytes) {
+    if (bytes <= kSlotBigBytes) {
+        if (bytes <= kSlotSmallBytes) {
+            if (uint8_t *p = slotTake(g_pool_small)) return p;
+        }
+        if (uint8_t *p = slotTake(g_pool_big)) return p;
+    }
+    return static_cast<uint8_t *>(
+        heap_caps_malloc(bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+}
+
+// 所有权检查（不释放）：诊断日志用 pooled= 归因帧是否来自池。
+bool frameSlotOwnedAny(uint8_t *p) {
+    if (!p) return false;
+    std::lock_guard<std::mutex> lock(g_slot_mutex);
+    for (SlotPool *pool : {&g_pool_big, &g_pool_small}) {
+        for (int i = 0; i < pool->count; ++i)
+            if (pool->base[i] == p) return true;
+    }
+    return false;
+}
+
+// 帧内存统一释放口：池指针还槽，堆指针 free。帧可能来自两档池或堆，
+// freeFrames/Art 析构无需区分来源。
+void frameFree(uint8_t *p) {
+    if (!p) return;
+    bool owned = false;
+    {
+        std::lock_guard<std::mutex> lock(g_slot_mutex);
+        for (SlotPool *pool : {&g_pool_big, &g_pool_small}) {
+            for (int i = 0; i < pool->count; ++i) {
+                if (pool->base[i] == p) {
+                    pool->used[i] = false;
+                    owned = true;
+                    break;
+                }
+            }
+            if (owned) break;
+        }
+    }
+    if (!owned) heap_caps_free(p);
+}
+
 // PNG → ARGB8888（PNG_FORMAT_BGRA 的内存字节序与 LVGL ARGB8888 一致，同
 // esp_lv_decoder 的做法）。缓冲驻留 PSRAM，只在应用素材时各调一次。
 uint8_t *decodePngArgb(const std::string &path, int &width, int &height) {
@@ -220,12 +353,15 @@ uint8_t *decodePngArgb(const std::string &path, int &width, int &height) {
     }
     image.format = PNG_FORMAT_BGRA;
     const size_t bytes = static_cast<size_t>(image.width) * image.height * 4;
-    auto *buffer = static_cast<uint8_t *>(heap_caps_malloc(bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+    uint8_t *buffer = frameAlloc(bytes);
+    const bool pooled = buffer && frameSlotOwnedAny(buffer);
     if (!buffer) {
-        ESP_LOGE("made_sprite", "[sprite] png_alloc_failed path=%s bytes=%u psram_free=%u largest=%u",
+        t_last_apply_fail = ApplyFail::alloc;
+        ESP_LOGE("made_sprite", "[sprite] png_alloc_failed path=%s bytes=%u psram_free=%u largest=%u pooled=%d",
             path.c_str(), static_cast<unsigned>(bytes),
             static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_SPIRAM)),
-            static_cast<unsigned>(heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM)));
+            static_cast<unsigned>(heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM)),
+            pooled ? 1 : 0);
         png_image_free(&image);
         return nullptr;
     }
@@ -233,7 +369,11 @@ uint8_t *decodePngArgb(const std::string &path, int &width, int &height) {
         ESP_LOGE("made_sprite", "[sprite] png_read_failed path=%s msg=%s",
             path.c_str(), image.message);
         png_image_free(&image);
-        heap_caps_free(buffer);
+        if (pooled) {
+            slotRelease(buffer);
+        } else {
+            heap_caps_free(buffer);
+        }
         return nullptr;
     }
     width = static_cast<int>(image.width);
@@ -283,8 +423,7 @@ uint8_t *resampleArgb(const uint8_t *src, int sw, int sh,
     if (dw <= 0 || dh <= 0 || sw_box <= 0 || sh_box <= 0 ||
         sx0 < 0 || sy0 < 0 || sx0 + sw_box > sw || sy0 + sh_box > sh)
         return nullptr;
-    auto *dst = static_cast<uint8_t *>(
-        heap_caps_malloc(static_cast<size_t>(dw) * dh * 4, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+    auto *dst = frameAlloc(static_cast<size_t>(dw) * dh * 4);
     if (!dst) return nullptr;
     // 每输出像素在源图上前进的距离（Q16）
     const int rx_q16 = static_cast<int>((static_cast<int64_t>(sw_box) << 16) / dw);
@@ -596,11 +735,14 @@ bool commitArt(Parts *parts, const MotionSpec &motion, std::vector<LayerSpec> &&
         passive(object);
         lv_image_set_src(object, &spec.frames.front().dsc);
         lv_obj_set_pos(object, made_x(spec.x), made_home_y(spec.y));
-        const int base_scale = spec.scale_mul * made_lv_scale();
+        // 帧像素在 manifest 画布坐标系里，先放大到 360 设计画布（240 素材
+        // ×1.5），再走 made_lv_scale 的设计→屏幕缩放。360 素材时与旧公式
+        // scale_mul*made_lv_scale() 等价。缩放支点必须显式设为左上角：
+        // lv_image 的 pivot 默认是图片中心，不设的话每层绕各自中心放大，
+        // 层间相对位置全部漂移（实机右下角的「绿色色块」就是被甩出去的
+        // 嘴层/豆脚）。
+        const int base_scale = spec.scale_mul * (256 * made_fit() / spec.source_w);
         lv_image_set_scale(object, base_scale);
-        // 缩放支点必须显式设为左上角：lv_image 的 pivot 默认是图片中心，
-        // 不设的话每层绕各自中心放大，层间相对位置全部漂移（实机右下角
-        // 的「绿色色块」就是被甩出去的嘴层/豆脚）。
         lv_image_set_pivot(object, 0, 0);
         lv_image_set_antialias(object, true);
         // 呼吸缩放用逐层 lv_image_set_scale + 位置补偿（见 artUpdate）：
@@ -1003,8 +1145,11 @@ static bool buildSpecsFromManifest(const std::string &manifest_json, const std::
         return false;
     }
 
-    motion.canvas_w = canvas_w->valueint;
-    motion.canvas_h = canvas_h->valueint;
+    // 画布已整体映射到 360 设计画布（层坐标/缩放都在 buildSpecs 里换算），
+    // 呼吸/摆动支点取构图中心 = 设计画布中心。 MotionSpec.canvas_* 唯一
+    // 消费点就是 pivot，直接存设计值。
+    motion.canvas_w = made_design;
+    motion.canvas_h = made_design;
     const cJSON *motion_json = cJSON_GetObjectItemCaseSensitive(manifest, "motion");
     if (cJSON_IsObject(motion_json)) {
         const cJSON *breath = cJSON_GetObjectItemCaseSensitive(motion_json, "breath");
@@ -1088,8 +1233,11 @@ static bool buildSpecsFromManifest(const std::string &manifest_json, const std::
             spec.frames.push_back(frame);
         }
         if (spec.frames.empty() || !cJSON_IsNumber(x) || !cJSON_IsNumber(y)) goto fail;
-        spec.x = x->valueint;
-        spec.y = y->valueint;
+        // manifest 层坐标是画布像素，统一换算到 360 设计画布（2026-10-19 素材
+        // 降档 360→240 后不再隐含 1:1；manifest 契约不变，固件负责映射）。
+        spec.source_w = canvas_w->valueint;
+        spec.x = x->valueint * made_design / canvas_w->valueint;
+        spec.y = y->valueint * made_design / canvas_h->valueint;
         specs.push_back(std::move(spec));
     }
 
@@ -1224,13 +1372,23 @@ fail:
 }
 
 bool applyArtwork(lv_obj_t *root, const std::string &manifest_json, const std::string &base_dir) {
-    if (!root) return false;
+    t_last_apply_fail = ApplyFail::none;
+    if (!root) {
+        t_last_apply_fail = ApplyFail::bad_input;
+        return false;
+    }
     auto *parts = static_cast<Parts *>(lv_obj_get_user_data(root));
-    if (!parts || !parts->root) return false;
+    if (!parts || !parts->root) {
+        t_last_apply_fail = ApplyFail::bad_input;
+        return false;
+    }
     // 先快速校验 manifest 合法（完整解析在 buildSpecsFromManifest 里再做，
     // 纯解析开销可忽略）——manifest 不合法时不能撤旧素材。
     cJSON *manifest = cJSON_Parse(manifest_json.c_str());
-    if (!manifest) return false;
+    if (!manifest) {
+        t_last_apply_fail = ApplyFail::bad_input;
+        return false;
+    }
     const cJSON *canvas = cJSON_GetObjectItemCaseSensitive(manifest, "canvas");
     const cJSON *canvas_w = cJSON_GetObjectItemCaseSensitive(canvas, "w");
     const cJSON *canvas_h = cJSON_GetObjectItemCaseSensitive(canvas, "h");
@@ -1238,7 +1396,21 @@ bool applyArtwork(lv_obj_t *root, const std::string &manifest_json, const std::s
     if (!cJSON_IsNumber(canvas_w) || !cJSON_IsNumber(canvas_h) || !cJSON_IsArray(layers) ||
         canvas_w->valueint <= 0 || canvas_h->valueint <= 0) {
         cJSON_Delete(manifest);
+        t_last_apply_fail = ApplyFail::bad_input;
         return false;
+    }
+    // 最大连续块容不下最大层的解码像素（ARGB8888）：先丢预取暂存帧腾内存。
+    // 预取是邻页的备胎，优先级低于当前页显示；prefetchBegin 有 1.5MB 门槛，
+    // 内存紧张期被丢弃后不会立即重占。不腾的话解码 alloc 失败，旧素材已撤，
+    // 舞台白屏等重试（实机「划着划着雪球变白」）。
+    const size_t layer_bytes =
+        static_cast<size_t>(canvas_w->valueint) * canvas_h->valueint * 4;
+    if (heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM) < layer_bytes) {
+        ESP_LOGW("made_sprite",
+            "[sprite] alloc_tight need=%u largest=%u -> drop prefetch frames",
+            static_cast<unsigned>(layer_bytes),
+            static_cast<unsigned>(heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM)));
+        prefetchCancel();
     }
     cJSON_Delete(manifest);
 
@@ -1261,12 +1433,18 @@ bool applyArtwork(lv_obj_t *root, const std::string &manifest_json, const std::s
     std::vector<LayerSpec> specs;
     std::vector<ActionSpec> actions;
     std::vector<std::pair<std::string, std::string>> commands;
-    if (!buildSpecsFromManifest(manifest_json, base_dir, motion, specs, actions, commands)) return false;
+    if (!buildSpecsFromManifest(manifest_json, base_dir, motion, specs, actions, commands)) {
+        t_last_apply_fail = ApplyFail::bad_input;
+        return false;
+    }
 
     if (commitArt(parts, motion, std::move(specs), std::move(actions), std::move(commands),
                   false, base_dir)) {
         lv_obj_invalidate(root);
         return true;
+    }
+    if (t_last_apply_fail == ApplyFail::none) {
+        t_last_apply_fail = ApplyFail::decode;
     }
     return false;
 }
@@ -1301,7 +1479,13 @@ static std::string readCachedFile(const std::string &path, size_t limit) {
     char buffer[4096];
     size_t read;
     while ((read = fread(buffer, 1, sizeof(buffer), file)) > 0) {
-        out.append(buffer, read);
+        try {
+            out.append(buffer, read);
+        } catch (...) {
+            // 内存紧张降级：返回空让上层走 gif_unavailable，异常逃出线程会 abort。
+            fclose(file);
+            return {};
+        }
         if (out.size() > limit) break;
     }
     fclose(file);
@@ -1540,6 +1724,10 @@ bool commitPrefetched(lv_obj_t *root) {
     }
     for (auto &spec : specs) freeFrames(spec.frames);
     return false;
+}
+
+ApplyFail lastApplyFail() {
+    return t_last_apply_fail;
 }
 
 } // namespace made_sprite
