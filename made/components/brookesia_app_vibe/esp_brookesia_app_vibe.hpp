@@ -239,6 +239,7 @@ private:
     void layoutReadableText();
     void applyDrawerAnswerLayout(); // 回显区抽屉坐标（配对布局退出后必须恢复，否则叠进指令行）
     void renderStatusBadge(const std::string &status); // 空串=隐藏
+    void updateStatusIcon(int voice_phase, const std::string &task_status, bool offline);
     void setActivityRunning(bool running);             // 活动条循环扫动动画开关
 
     std::mutex model_mutex_;
@@ -434,6 +435,13 @@ private:
     lv_obj_t *activity_bar_ = nullptr;
     lv_obj_t *activity_fill_ = nullptr;
     bool activity_anim_running_ = false; // LVGL task only.
+    // 素材页顶部状态图标：单一位置，状态变了换图标（tools/gen_status_icons.py
+    // 生成的 16×16 recolor 位图）。抽屉打开时隐藏（抽屉有自己的文字徽章）。
+    lv_obj_t *status_icon_pill_ = nullptr;
+    lv_obj_t *status_icon_img_ = nullptr;
+    int status_icon_state_ = -1;          // -1 未初始化；0 空闲 1 录音 2 识别 3 等确认 4 处理
+    bool status_icon_wave_alt_ = false;   // 声波两帧交替
+    uint32_t status_icon_wave_ms_ = 0;
     lv_obj_t *language_panel_ = nullptr;
     lv_obj_t *language_zh_button_ = nullptr;
     lv_obj_t *language_en_button_ = nullptr;

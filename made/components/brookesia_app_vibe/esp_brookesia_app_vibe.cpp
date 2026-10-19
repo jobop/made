@@ -1,5 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
+// 冒烟测试标准路径开关（唯一源：vibe_usb/include/vibe_smoke_test.h）。
+#include "vibe_smoke_test.h"
 #include "esp_brookesia_app_vibe.hpp"
+#include "vibe_ui_shared.hpp"
 
 #include <algorithm>
 #include <cstdio>
@@ -14,12 +17,15 @@
 #include "made_sprite.hpp"
 #include "made_sprite_cache.hpp"
 #include "new_message_chime.hpp"
+#include "status_icons.h"
 #include "vibe_motion.hpp"
 #include "cJSON.h"
 #include "bsp/display.h"
 #include "driver/gpio.h"
 #include "driver/rtc_io.h"
 #include "esp_crt_bundle.h"
+#include "esp_heap_caps.h"
+#include "esp_heap_task_info.h"
 #include "esp_heap_caps.h"
 #include "esp_http_client.h"
 #include "esp_log.h"
@@ -44,29 +50,66 @@
 
 using esp_brookesia::systems::phone::App;
 
+// debug.heap 命令：dump 堆诊断（debug.heap）。需要 CONFIG_HEAP_TASK_TRACKING=y
+// 才有 per-task 表——用它把「heap 越用越少」点名到具体线程（2026-10-19 晨
+// 实机：解锁后 free 仅 303KB / largest 156KB，与前一晚差 ~800KB，来源不明）。
+void logHeapDiagnostics()
+{
+    ESP_LOGW("vibe_heap",
+        "[heap] psram free=%u largest=%u min=%u | internal free=%u largest=%u min=%u",
+        static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_SPIRAM)),
+        static_cast<unsigned>(heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM)),
+        static_cast<unsigned>(heap_caps_get_minimum_free_size(MALLOC_CAP_SPIRAM)),
+        static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)),
+        static_cast<unsigned>(heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)),
+        static_cast<unsigned>(heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)));
+    // 注意：CONFIG_HEAP_TASK_TRACKING=y 在 IDF v5.5.5 上开机即崩
+    // （heap_caps_update_per_task_info_alloc 早期中断分配空指针，
+    // 实机 2026-10-19 复现），任务级表保持关闭，这里只出池级统计。
+    const auto pool = [](const char *name, uint32_t caps) {
+        ESP_LOGW("vibe_heap", "[heap][%s] free=%u largest=%u min=%u", name,
+            static_cast<unsigned>(heap_caps_get_free_size(caps)),
+            static_cast<unsigned>(heap_caps_get_largest_free_block(caps)),
+            static_cast<unsigned>(heap_caps_get_minimum_free_size(caps)));
+    };
+    pool("psram", MALLOC_CAP_SPIRAM);
+    pool("internal", MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    pool("dma", MALLOC_CAP_DMA);
+    pool("8bit", MALLOC_CAP_8BIT);
+#if CONFIG_HEAP_TASK_TRACKING
+    constexpr int kMaxTasks = 24;
+    static heap_task_totals_t s_totals[kMaxTasks];
+    static size_t s_num_totals = 0;
+    heap_task_info_params_t params = {};
+    params.caps[0] = MALLOC_CAP_INTERNAL;
+    params.mask[0] = MALLOC_CAP_INTERNAL;
+    params.caps[1] = MALLOC_CAP_SPIRAM;
+    params.mask[1] = MALLOC_CAP_SPIRAM;
+    params.tasks = nullptr;          // nullptr = 全部任务
+    params.num_tasks = 0;
+    params.totals = s_totals;
+    params.num_totals = &s_num_totals;
+    params.max_totals = kMaxTasks;
+    params.blocks = nullptr;         // 只要任务汇总，不要逐块明细
+    params.max_blocks = 0;
+    heap_caps_get_per_task_info(&params);
+    for (size_t i = 0; i < s_num_totals; ++i) {
+        const char *name = s_totals[i].task ? pcTaskGetName(s_totals[i].task) : "(deleted)";
+        ESP_LOGW("vibe_heap", "[heap][task] %-16s internal=%uKB blocks=%u spiram=%uKB blocks=%u",
+            name ? name : "?",
+            static_cast<unsigned>(s_totals[i].size[0] / 1024),
+            static_cast<unsigned>(s_totals[i].count[0]),
+            static_cast<unsigned>(s_totals[i].size[1] / 1024),
+            static_cast<unsigned>(s_totals[i].count[1]));
+    }
+#endif
+}
+
 LV_IMG_DECLARE(img_app_vibe);
 LV_FONT_DECLARE(font_puhui_16_4);
 LV_FONT_DECLARE(font_puhui_14_4);
 
 namespace {
-using vibe_i18n::tr;
-const char *T(const char *key) { return tr(key); }
-struct LocalizedLabel { lv_obj_t *object; std::string key; };
-std::vector<LocalizedLabel> localized_labels; // LVGL thread only; all belong to this app screen.
-void bindLabel(lv_obj_t *label, const char *key) {
-    if (key && vibe_i18n::known(key)) localized_labels.push_back({label, key});
-}
-
-#define VT(key) (vibe_theme::palette().key)
-
-constexpr size_t MAX_RESPONSE_BYTES = 32 * 1024;
-constexpr uint32_t POLL_INTERVAL_MS = 2200;
-constexpr uint64_t HEARTBEAT_INTERVAL_MS = 12000;
-// 公网隧道（HTTPS）的一次往返远慢于局域网：握手本身常常就要数秒，
-// 默认 5 秒预算会被握手吃光。局域网/USB 仍保留调用方给的短超时。
-constexpr int REMOTE_REQUEST_TIMEOUT_MS = 15000;
-constexpr char BUTTON_TAG[] = "vibe_boot";
-
 constexpr App::Config vibePhoneConfig()
 {
     auto config = App::Config::SIMPLE_CONSTRUCTOR(&img_app_vibe, false, false);
@@ -75,263 +118,6 @@ constexpr App::Config vibePhoneConfig()
     config.flags.enable_navigation_gesture = false;
     return config;
 }
-
-bool receiverVoiceUploading()
-{
-    const auto mode = vibe_pairing::snapshot().access_mode;
-    return (mode == vibe_pairing::AccessMode::Receiver || mode == vibe_pairing::AccessMode::UsbDirect) &&
-           vibe_voice::status().phase == vibe_voice::Phase::Uploading;
-}
-
-// The bundled Puhui font includes common Han characters missing from LVGL's
-// small Source Han Sans subset. Its glyph data lives in flash, not PSRAM.
-// 中文正文固定 16px。主题包 font 写 20 时也按 16px 显示。
-const lv_font_t *text_font = &font_puhui_16_4;
-// 抽屉任务区比正文小一号，用 14px。
-// 14px 必须用 4bpp 版（fonts/font_puhui_14_4.c 由 ttf/puhui-common.ttf 生成）：
-// 字库组件自带的 font_puhui_14_1 是 1bpp 单色版，浅色底上无抗锯齿会发糊。
-const lv_font_t *drawer_text_font = &font_puhui_14_4;
-
-// 主题风格半径：made_s(设计像素) 后再乘主题包的圆角缩放。
-int made_radius(int design_radius)
-{
-    const int scaled = made_s(design_radius) * vibe_theme::radiusScale() / 100;
-    return scaled > 0 ? scaled : 1;
-}
-
-constexpr uintptr_t kPageSurface = 0x50414745;
-
-void markPage(lv_obj_t *object)
-{
-    if (object) lv_obj_set_user_data(object, reinterpret_cast<void *>(kPageSurface));
-}
-
-bool isPage(lv_obj_t *object)
-{
-    return object && lv_obj_get_user_data(object) == reinterpret_cast<void *>(kPageSurface);
-}
-
-// Side buttons stay tappable; the title uses the gap between them so 16 px
-// text is not drawn across the buttons on a narrower panel.
-void placePageHeader(lv_obj_t *left, lv_obj_t *title, lv_obj_t *right)
-{
-    if (!made_rect()) return;
-    const int margin = 8;
-    const int y = 8;
-    const int height = 40;
-    const int width = 72;
-    if (left) {
-        lv_obj_set_pos(left, margin, y);
-        lv_obj_set_size(left, width, height);
-    }
-    if (right) {
-        lv_obj_set_pos(right, made_screen_w() - margin - width, y);
-        lv_obj_set_size(right, width, height);
-    }
-    if (!title) return;
-    const int left_edge = left ? margin + width + 6 : margin;
-    const int right_edge = right ? made_screen_w() - margin - width - 6 : made_screen_w() - margin;
-    int box = right_edge - left_edge;
-    if (box < 1) box = 1;
-    lv_obj_set_pos(title, left_edge, y + 11);
-    lv_obj_set_width(title, box);
-    lv_obj_set_style_text_align(title, LV_TEXT_ALIGN_CENTER, 0);
-    lv_label_set_long_mode(title, LV_LABEL_LONG_DOT);
-}
-
-lv_point_t tap_origin{};
-bool tap_tracking = false;
-
-void trackTap(lv_event_t *event)
-{
-    if (lv_event_get_code(event) != LV_EVENT_PRESSED) return;
-    lv_indev_t *indev = lv_indev_active();
-    tap_tracking = false;
-    if (!indev) return;
-    lv_indev_get_point(indev, &tap_origin);
-    tap_tracking = true;
-}
-
-// A swipe that starts on a button must not activate it. Registered ahead of
-// the click callback so stop_processing drops that click.
-void ignoreSwipeClick(lv_event_t *event)
-{
-    if (lv_event_get_code(event) != LV_EVENT_CLICKED) return;
-    lv_indev_t *indev = lv_indev_active();
-    if (!indev || !tap_tracking) return;
-    lv_point_t now{};
-    lv_indev_get_point(indev, &now);
-    tap_tracking = false;
-    if (std::abs(now.x - tap_origin.x) > 12 || std::abs(now.y - tap_origin.y) > 12 ||
-        lv_indev_get_gesture_dir(indev) != LV_DIR_NONE)
-        lv_event_stop_processing(event);
-}
-
-// 线性混合两色（整型权重），用于推导按钮的高光/暗部。
-uint32_t mixColor(uint32_t a, uint32_t b, uint32_t weight_a, uint32_t weight_b)
-{
-    const uint32_t sum = weight_a + weight_b ? weight_a + weight_b : 1;
-    const uint32_t r = (((a >> 16) & 0xFF) * weight_a + ((b >> 16) & 0xFF) * weight_b) / sum;
-    const uint32_t g = (((a >> 8) & 0xFF) * weight_a + ((b >> 8) & 0xFF) * weight_b) / sum;
-    const uint32_t bl = ((a & 0xFF) * weight_a + (b & 0xFF) * weight_b) / sum;
-    return (r << 16) | (g << 8) | bl;
-}
-
-// 按钮统一表面：上亮下暗的微渐变 + 柔和投影代替硬描边；按下整体提亮、
-// 投影收紧并轻微下沉，150ms 过渡让反馈可感知而不突兀。
-void styleSurface(lv_obj_t *button, uint32_t color)
-{
-    const uint32_t highlight = mixColor(color, 0xFFFFFF, 7, 1);
-    // 浅色底上黑色投影会显得脏而沉重：换暖灰并大幅降低不透明度。
-    const bool light = vibe_theme::isLightBase();
-    lv_obj_set_style_bg_color(button, lv_color_hex(color), 0);
-    lv_obj_set_style_bg_grad_color(button, lv_color_hex(mixColor(color, 0x000000, 15, 1)), 0);
-    lv_obj_set_style_bg_grad_dir(button, LV_GRAD_DIR_VER, 0);
-    lv_obj_set_style_border_width(button, 0, 0);
-    lv_obj_set_style_shadow_color(button, lv_color_hex(light ? 0x51655B : 0x000000), 0);
-    lv_obj_set_style_shadow_width(button, made_s(14), 0);
-    lv_obj_set_style_shadow_spread(button, made_s(1), 0);
-    lv_obj_set_style_shadow_opa(button, light ? LV_OPA_20 : LV_OPA_50, 0);
-    lv_obj_set_style_shadow_offset_y(button, made_s(3), 0);
-    lv_obj_set_style_bg_color(button, lv_color_hex(highlight), LV_STATE_PRESSED);
-    lv_obj_set_style_shadow_width(button, made_s(5), LV_STATE_PRESSED);
-    lv_obj_set_style_shadow_opa(button, LV_OPA_30, LV_STATE_PRESSED);
-    lv_obj_set_style_translate_y(button, made_s(1), LV_STATE_PRESSED);
-    static lv_style_prop_t surface_props[] = {
-        LV_STYLE_BG_COLOR, LV_STYLE_BG_GRAD_COLOR, LV_STYLE_SHADOW_WIDTH,
-        LV_STYLE_SHADOW_OPA, LV_STYLE_TRANSLATE_Y,
-    };
-    static lv_style_transition_dsc_t surface_transition;
-    lv_style_transition_dsc_init(&surface_transition, surface_props,
-                                 lv_anim_path_ease_out, 150, 0, nullptr);
-    lv_obj_set_style_transition(button, &surface_transition, 0);
-    lv_obj_set_style_transition(button, &surface_transition, LV_STATE_PRESSED);
-}
-
-lv_obj_t *touchButton(lv_obj_t *parent, int x, int y, int width, int height,
-                      const char *caption, lv_event_cb_t callback, void *user,
-                      uint32_t color = 0)
-{
-    const bool page = isPage(parent);
-    lv_obj_t *button = lv_btn_create(parent);
-    lv_obj_set_pos(button, page ? made_page_x(x) : made_x(x), page ? made_page_y(y) : made_y(y));
-    lv_obj_set_size(button, page ? made_page_w(width) : made_s(width), page ? made_page_h(height) : made_s(height));
-    // 形状语言：square=2px 直角，circle=胶囊，rounded=主题缩放的圆角。
-    const int shape = vibe_theme::shapeMode();
-    const int radius = shape == vibe_theme::kShapeSquare ? 2 :
-        shape == vibe_theme::kShapeCircle ? made_s(width < height ? width : height) / 2 :
-        made_radius(12);
-    lv_obj_set_style_radius(button, radius, 0);
-    lv_obj_set_overflow_visible(button, true);
-    if (color == 0) {
-        // Ghost 次级按钮（Air 语言默认）：无底色 + 1px 细描边，按下泛灰。
-        // 去掉实底色块与投影，界面立刻轻下来；主操作才允许实底。
-        lv_obj_set_style_bg_opa(button, LV_OPA_TRANSP, 0);
-        lv_obj_set_style_border_color(button, lv_color_hex(VT(border)), 0);
-        lv_obj_set_style_border_width(button, 1, 0);
-        lv_obj_set_style_bg_color(button, lv_color_hex(VT(bg_row)), LV_STATE_PRESSED);
-        lv_obj_set_style_bg_opa(button, LV_OPA_COVER, LV_STATE_PRESSED);
-        lv_obj_set_style_shadow_width(button, 0, 0);
-    } else {
-        styleSurface(button, color);
-    }
-    lv_obj_set_style_pad_all(button, 0, 0);
-    lv_obj_remove_flag(button, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_add_flag(button, LV_OBJ_FLAG_GESTURE_BUBBLE);
-    lv_obj_add_event_cb(button, trackTap, LV_EVENT_PRESSED, nullptr);
-    lv_obj_add_event_cb(button, ignoreSwipeClick, LV_EVENT_CLICKED, nullptr);
-    if (callback) lv_obj_add_event_cb(button, callback, LV_EVENT_CLICKED, user);
-    if (caption) {
-        lv_obj_t *label = lv_label_create(button);
-        lv_label_set_text(label, T(caption));
-        bindLabel(label, caption);
-        lv_label_set_long_mode(label, LV_LABEL_LONG_DOT);
-        lv_obj_set_style_text_align(label, LV_TEXT_ALIGN_CENTER, 0);
-        lv_obj_set_style_text_color(label, lv_color_hex(VT(text_primary)), 0);
-        lv_obj_set_style_text_font(label, text_font, 0);
-        made_text(label, width - 12, true);
-        lv_obj_center(label);
-        lv_obj_remove_flag(label, LV_OBJ_FLAG_CLICKABLE);
-    }
-    return button;
-}
-
-lv_obj_t *settingsLabel(lv_obj_t *parent, const char *caption, int x, int y, int width,
-                        uint32_t color = 0, bool localize = true)
-{
-    lv_obj_t *label = lv_label_create(parent);
-    if (color == 0) color = VT(title);
-    lv_label_set_text(label, localize ? T(caption) : caption);
-    if (localize) bindLabel(label, caption);
-    lv_obj_set_style_text_align(label, LV_TEXT_ALIGN_CENTER, 0);
-    lv_obj_set_style_text_color(label, lv_color_hex(color), 0);
-    lv_obj_set_style_text_font(label, text_font, 0);
-    if (isPage(parent)) made_page_label(label, x, y, width);
-    else {
-        lv_obj_set_pos(label, made_x(x), made_y(y));
-        made_text(label, width, false);
-    }
-    return label;
-}
-
-std::string jsonString(const cJSON *object, const char *key)
-{
-    const cJSON *item = cJSON_GetObjectItemCaseSensitive(object, key);
-    return cJSON_IsString(item) && item->valuestring ? item->valuestring : "";
-}
-
-bool validTaskId(const std::string &id)
-{
-    if (id.empty() || id.size() > 64) return false;
-    return std::all_of(id.begin(), id.end(), [](unsigned char c) {
-        return (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-';
-    });
-}
-
-bool validProjectId(const std::string &id)
-{
-    if (id.empty() || id.size() > 40) return false;
-    return std::all_of(id.begin(), id.end(), [](unsigned char c) {
-        return (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-' || c == '_';
-    });
-}
-
-bool validCommandId(const char *id)
-{
-    if (!id || id[0] < '1' || id[0] > '9') return false;
-    const size_t length = strnlen(id, 17);
-    if (length > 16) return false;
-    for (size_t i = 1; i < length; ++i) {
-        if (id[i] < '0' || id[i] > '9') return false;
-    }
-    return true;
-}
-
-bool validSessionId(const std::string &id)
-{
-    if (id.size() != 36) return false;
-    for (size_t index = 0; index < id.size(); ++index) {
-        const char c = id[index];
-        if (index == 8 || index == 13 || index == 18 || index == 23) {
-            if (c != '-') return false;
-        } else if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') ||
-                     (c >= 'A' && c <= 'F'))) return false;
-    }
-    return true;
-}
-
-const char *statusName(const std::string &status)
-{
-    if (status == "waiting_confirmation") return T("待确认");
-    if (status == "queued") return T("已排队");
-    if (status == "running") return T("运行中");
-    if (status == "completed") return T("已完成");
-    if (status == "failed") return T("失败");
-    if (status == "cancelled") return T("已取消");
-    if (status == "handed_off") return T("已转交");
-    return T("未知状态");
-}
-
 } // namespace
 
 namespace esp_brookesia::apps {
@@ -902,6 +688,27 @@ bool VibeCoding::run()
     lv_obj_set_style_text_color(provider_label_, lv_color_hex(VT(text_primary)), 0);
     lv_obj_set_style_text_font(provider_label_, &lv_font_montserrat_26, 0);
     made_text(provider_label_, 220, false);
+
+    // 素材页顶部状态图标（单一位置换图标，设计稿 2026-10-19）：药丸底
+    // bg_row + 16×16 recolor 位图。抽屉打开时隐藏（抽屉右上已有文字徽章）。
+    const int icon_pill_w = made_s(44);
+    const int icon_pill_h = made_s(24);
+    status_icon_pill_ = lv_obj_create(screen);
+    lv_obj_remove_style_all(status_icon_pill_);
+    lv_obj_set_size(status_icon_pill_, icon_pill_w, icon_pill_h);
+    lv_obj_set_pos(status_icon_pill_, made_x(180) - icon_pill_w / 2, made_home_y(6));
+    lv_obj_set_style_radius(status_icon_pill_, icon_pill_h / 2, 0);
+    lv_obj_set_style_bg_color(status_icon_pill_, lv_color_hex(VT(bg_row)), 0);
+    lv_obj_set_style_bg_opa(status_icon_pill_, LV_OPA_COVER, 0);
+    lv_obj_clear_flag(status_icon_pill_, LV_OBJ_FLAG_CLICKABLE);
+    status_icon_img_ = lv_image_create(status_icon_pill_);
+    lv_image_set_src(status_icon_img_, &kStatusIconIdle);
+    lv_image_set_scale(status_icon_img_, made_lv_scale());
+    lv_obj_center(status_icon_img_);
+    lv_obj_set_style_img_recolor(status_icon_img_, lv_color_hex(VT(text_hint)), 0);
+    lv_obj_set_style_img_recolor_opa(status_icon_img_, LV_OPA_COVER, 0);
+    lv_obj_clear_flag(status_icon_img_, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_flag(status_icon_pill_, LV_OBJ_FLAG_HIDDEN);
 
     // 顶部状态角标（主页专属，不进抽屉）：左上圆点 = 助手连接/工作状态，
     // 右上铃铛 = 有新回显还没打开抽屉看过。不拦截触摸与手势。
@@ -1595,8 +1402,56 @@ void VibeCoding::timerCallback(lv_timer_t *timer)
         self->applyRemoteCommands();
         self->render();
     }
+#if VIBE_SMOKE_TEST
+    self->smokeTick();
+#endif
     self->ui_stage_.store(100);
 }
+
+#if VIBE_SMOKE_TEST
+// 冒烟测试：开机 3s（LVGL 起来）后每 200ms 自动随机左右滑（esp_random
+// 掷硬币换向，覆盖双向净位移为零的死角）——模拟真实
+// 用户「滑溜」连续快滑，不等素材拉齐（未就绪时 handleUiSwipe 内部自然
+// 空转），走 handleUiSwipe→chooseProvider 的真实切页路径（预取晋升/缓存
+// 直换/worker 老路全都在循环里），每次打一行 PSRAM 水位。这是内存问题
+// 的闭环复现器：free 单调下滑=泄漏，largest 远低于 free=碎片，wm 递降=
+// 累积恶化。
+void VibeCoding::smokeTick()
+{
+    const uint32_t now = lv_tick_get();
+    if (burnin_next_ms_ == 0) {
+        burnin_next_ms_ = now + 3000;
+        ESP_LOGW(BUTTON_TAG, "[burnin] start in 3s: auto swipe left/right every 200ms");
+        return;
+    }
+    if (now < burnin_next_ms_) return;
+    burnin_next_ms_ = now + 200;
+    burnin_ticks_.fetch_add(1);
+    if (!canOperate() || settings_open_.load() || drawer_open_.load()) return;
+    const int before = selected_provider_.load();
+    // 随机方向：固定交替净位移为零，只能在两个邻居间弹跳（用户实测指出）；
+    // 硬件随机数让四个助手都能被访问，连续同向连滑的序列也更像真实用户。
+    burnin_left_next_ = (esp_random() & 1) != 0;
+    handleUiSwipe(burnin_left_next_ ? "left" : "right");
+    if (selected_provider_.load() == before) return;  // 目录未就绪，空转不计次
+    ++burnin_count_;
+    const unsigned free_kb = static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_SPIRAM) / 1024);
+    const unsigned largest_kb = static_cast<unsigned>(heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM) / 1024);
+    const unsigned wm_kb = static_cast<unsigned>(heap_caps_get_minimum_free_size(MALLOC_CAP_SPIRAM) / 1024);
+    ESP_LOGW(BUTTON_TAG,
+        "[burnin] #%d %s free=%uKB largest=%uKB wm=%uKB",
+        burnin_count_, burnin_left_next_ ? "left" : "right", free_kb, largest_kb, wm_kb);
+    // 水位经事件通道直发桥接器（观察期串口归桥接器连接；未订阅事件桥接器
+    // 只打日志后拒收，无副作用）。字段 ≤120 字节协议上限内。
+    {
+        char msg[128];
+        snprintf(msg, sizeof(msg), "#%d %s free=%uKB largest=%uKB wm=%uKB",
+                 burnin_count_, burnin_left_next_ ? "left" : "right", free_kb, largest_kb, wm_kb);
+        std::lock_guard<std::mutex> lock(model_mutex_);
+        burnin_event_body_ = std::string("{\"name\":\"burnin.mem\",\"fields\":{\"msg\":\"") + msg + "\"}}";
+    }
+}
+#endif
 
 void VibeCoding::openForeground()
 {
@@ -1631,6 +1486,7 @@ void VibeCoding::providerSwipeCallback(lv_event_t *event)
 
 void VibeCoding::chooseProvider(int direction)
 {
+    choose_calls_.fetch_add(1);
     const auto voice = vibe_voice::status();
     if (voice.phase == vibe_voice::Phase::Recording ||
         voice.phase == vibe_voice::Phase::Uploading) {
@@ -2048,1343 +1904,6 @@ void VibeCoding::languageBackCallback(lv_event_t *event)
 }
 
 // ---- 电源设置：空闲自动熄屏（只控背光，业务逻辑不变） ----
-
-namespace {
-// 候选超时（秒）；0 表示不熄屏。
-constexpr uint32_t kScreenOffOptions[] = {0, 30, 60, 300};
-
-void loadScreenOffTimeoutImpl(uint32_t &out)
-{
-    nvs_handle_t handle;
-    if (nvs_open("vibe_power", NVS_READONLY, &handle) != ESP_OK) return;
-    uint8_t stored = 0;
-    if (nvs_get_u8(handle, "off_s", &stored) == ESP_OK) out = stored;
-    nvs_close(handle);
-}
-
-bool saveScreenOffTimeoutImpl(uint32_t value)
-{
-    nvs_handle_t handle;
-    if (nvs_open("vibe_power", NVS_READWRITE, &handle) != ESP_OK) return false;
-    esp_err_t result = nvs_set_u8(handle, "off_s", static_cast<uint8_t>(value));
-    if (result == ESP_OK) result = nvs_commit(handle);
-    nvs_close(handle);
-    return result == ESP_OK;
-}
-} // namespace
-
-void VibeCoding::loadScreenOffTimeout()
-{
-    loadScreenOffTimeoutImpl(screen_off_timeout_s_);
-    // NVS 里存了不认识的值就退回不熄屏。
-    bool known = false;
-    for (uint32_t option : kScreenOffOptions)
-        if (screen_off_timeout_s_ == option) known = true;
-    if (!known) screen_off_timeout_s_ = 0;
-}
-
-void VibeCoding::renderPower()
-{
-    if (!power_timeout_label_) return;
-    const char *text = screen_off_timeout_s_ == 0   ? T("不熄屏") :
-                       screen_off_timeout_s_ == 30  ? "30 s" :
-                       screen_off_timeout_s_ == 60  ? "60 s" : "300 s";
-    lv_label_set_text(power_timeout_label_, (std::string(T("空闲熄屏：")) + text).c_str());
-}
-
-void VibeCoding::showPower(bool visible)
-{
-    if (!power_panel_) return;
-    if (visible) {
-        lv_obj_add_flag(settings_home_, LV_OBJ_FLAG_HIDDEN);
-        lv_obj_add_flag(theme_panel_, LV_OBJ_FLAG_HIDDEN);
-        if (firmware_panel_) lv_obj_add_flag(firmware_panel_, LV_OBJ_FLAG_HIDDEN);
-        shutdown_armed_ = false;
-        if (power_shutdown_label_) lv_label_set_text(power_shutdown_label_, T("关机"));
-        renderPower();
-        lv_obj_remove_flag(power_panel_, LV_OBJ_FLAG_HIDDEN);
-        lv_obj_move_foreground(power_panel_);
-    } else {
-        lv_obj_add_flag(power_panel_, LV_OBJ_FLAG_HIDDEN);
-        lv_obj_remove_flag(settings_home_, LV_OBJ_FLAG_HIDDEN);
-    }
-}
-
-void VibeCoding::powerOpenCallback(lv_event_t *event)
-{
-    auto *self = static_cast<VibeCoding *>(lv_event_get_user_data(event));
-    if (self) self->showPower(true);
-}
-
-void VibeCoding::showFirmware(bool visible)
-{
-    if (!firmware_panel_) return;
-    if (visible) {
-        lv_obj_add_flag(settings_home_, LV_OBJ_FLAG_HIDDEN);
-        if (power_panel_) lv_obj_add_flag(power_panel_, LV_OBJ_FLAG_HIDDEN);
-        if (theme_panel_) lv_obj_add_flag(theme_panel_, LV_OBJ_FLAG_HIDDEN);
-        firmware_status_drawn_.clear();
-        lv_obj_remove_flag(firmware_panel_, LV_OBJ_FLAG_HIDDEN);
-        lv_obj_move_foreground(firmware_panel_);
-        renderFirmware();
-    } else {
-        lv_obj_add_flag(firmware_panel_, LV_OBJ_FLAG_HIDDEN);
-        lv_obj_remove_flag(settings_home_, LV_OBJ_FLAG_HIDDEN);
-    }
-}
-
-void VibeCoding::renderFirmware()
-{
-    if (!firmware_status_label_ || lv_obj_has_flag(firmware_panel_, LV_OBJ_FLAG_HIDDEN)) return;
-    std::string text;
-    {
-        std::lock_guard<std::mutex> lock(model_mutex_);
-        text = firmware_status_;
-    }
-    if (text.empty()) text = T("电脑上还没有配置固件地址");
-    if (text == firmware_status_drawn_) return;
-    firmware_status_drawn_ = text;
-    lv_label_set_text(firmware_status_label_, text.c_str());
-}
-
-void VibeCoding::firmwareOpenCallback(lv_event_t *event)
-{
-    auto *self = static_cast<VibeCoding *>(lv_event_get_user_data(event));
-    if (self) self->showFirmware(true);
-}
-
-void VibeCoding::firmwareBackCallback(lv_event_t *event)
-{
-    auto *self = static_cast<VibeCoding *>(lv_event_get_user_data(event));
-    if (self) self->showFirmware(false);
-}
-
-void VibeCoding::firmwareUpdateCallback(lv_event_t *event)
-{
-    auto *self = static_cast<VibeCoding *>(lv_event_get_user_data(event));
-    if (!self || self->firmware_busy_.load() || self->firmware_update_requested_.load()) return;
-    std::lock_guard<std::mutex> lock(self->model_mutex_);
-    if (!self->firmware_available_.load()) {
-        self->firmware_status_ = T("电脑上还没有配置固件地址");
-        return;
-    }
-    self->firmware_status_ = T("正在从配置的地址下载固件…");
-    self->firmware_trace_stage_ = "ready";
-    self->firmware_update_requested_.store(true);
-    ESP_LOGW("vibe_fw", "[fw] tap");
-}
-
-void VibeCoding::powerBackCallback(lv_event_t *event)
-{
-    auto *self = static_cast<VibeCoding *>(lv_event_get_user_data(event));
-    if (self) self->showPower(false);
-}
-
-void VibeCoding::powerShutdownCallback(lv_event_t *event)
-{
-    auto *self = static_cast<VibeCoding *>(lv_event_get_user_data(event));
-    if (!self || !self->power_shutdown_label_) return;
-    const uint32_t now = lv_tick_get();
-    if (!self->shutdown_armed_ || now - self->shutdown_armed_ms_ > 4000) {
-        self->shutdown_armed_ = true;
-        self->shutdown_armed_ms_ = now;
-        lv_label_set_text(self->power_shutdown_label_, T("再点一次关机"));
-        return;
-    }
-    self->shutdownDevice();
-}
-
-void VibeCoding::shutdownDevice()
-{
-    if (power_shutdown_label_) lv_label_set_text(power_shutdown_label_, T("正在关机"));
-    lv_refr_now(nullptr);
-    (void)bsp_display_backlight_off();
-    // BOOT 是按住说话，不能拿来开机。触摸中断脚平时被上拉为高，
-    // 点屏幕时被拉低。等手指离开后再睡，避免这一下立刻把机器唤醒。
-#if CONFIG_BSP_BOARD_LCD_2_8
-    constexpr gpio_num_t wake_pin = GPIO_NUM_17;
-#else
-    constexpr gpio_num_t wake_pin = GPIO_NUM_4;
-#endif
-    for (int i = 0; i < 100 && gpio_get_level(wake_pin) == 0; ++i)
-        vTaskDelay(pdMS_TO_TICKS(20));
-    vTaskDelay(pdMS_TO_TICKS(40));
-    esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_ALL);
-    if (rtc_gpio_init(wake_pin) != ESP_OK ||
-        rtc_gpio_set_direction(wake_pin, RTC_GPIO_MODE_INPUT_ONLY) != ESP_OK ||
-        rtc_gpio_pulldown_dis(wake_pin) != ESP_OK ||
-        rtc_gpio_pullup_en(wake_pin) != ESP_OK ||
-        esp_sleep_enable_ext0_wakeup(wake_pin, 0) != ESP_OK) {
-        (void)bsp_display_backlight_on();
-        if (power_shutdown_label_) lv_label_set_text(power_shutdown_label_, T("关机失败"));
-        shutdown_armed_ = false;
-        return;
-    }
-    esp_deep_sleep_start();
-}
-
-void VibeCoding::powerTimeoutCallback(lv_event_t *event)
-{
-    auto *self = static_cast<VibeCoding *>(lv_event_get_user_data(event));
-    if (!self) return;
-    const size_t count = sizeof(kScreenOffOptions) / sizeof(kScreenOffOptions[0]);
-    size_t index = 0;
-    for (size_t i = 0; i < count; ++i)
-        if (kScreenOffOptions[i] == self->screen_off_timeout_s_) index = i;
-    self->screen_off_timeout_s_ = kScreenOffOptions[(index + 1) % count];
-    saveScreenOffTimeoutImpl(self->screen_off_timeout_s_);
-    self->renderPower();
-}
-
-void VibeCoding::renderVolume()
-{
-    if (!volume_value_label_) return;
-    const int volume = bsp_extra_out_volume_get();
-    if (volume <= 0) {
-        lv_label_set_text(volume_value_label_, T("静音"));
-        return;
-    }
-    char text[16];
-    std::snprintf(text, sizeof text, "%d%%", volume);
-    lv_label_set_text(volume_value_label_, text);
-}
-
-void VibeCoding::showVolume(bool visible)
-{
-    if (!volume_panel_) return;
-    if (visible) {
-        lv_obj_add_flag(settings_home_, LV_OBJ_FLAG_HIDDEN);
-        lv_obj_add_flag(theme_panel_, LV_OBJ_FLAG_HIDDEN);
-        lv_obj_add_flag(power_panel_, LV_OBJ_FLAG_HIDDEN);
-        if (firmware_panel_) lv_obj_add_flag(firmware_panel_, LV_OBJ_FLAG_HIDDEN);
-        renderVolume();
-        lv_obj_remove_flag(volume_panel_, LV_OBJ_FLAG_HIDDEN);
-        lv_obj_move_foreground(volume_panel_);
-    } else {
-        lv_obj_add_flag(volume_panel_, LV_OBJ_FLAG_HIDDEN);
-        lv_obj_remove_flag(settings_home_, LV_OBJ_FLAG_HIDDEN);
-    }
-}
-
-void VibeCoding::volumeOpenCallback(lv_event_t *event)
-{
-    auto *self = static_cast<VibeCoding *>(lv_event_get_user_data(event));
-    if (self) self->showVolume(true);
-}
-
-void VibeCoding::volumeBackCallback(lv_event_t *event)
-{
-    auto *self = static_cast<VibeCoding *>(lv_event_get_user_data(event));
-    if (self) self->showVolume(false);
-}
-
-void VibeCoding::adjustVolume(int delta)
-{
-    const int current = bsp_extra_out_volume_get();
-    int next = current + delta;
-    if (next < 0) next = 0;
-    if (next > 100) next = 100;
-    if (next == current) return;
-    if (bsp_extra_out_volume_set(next) != ESP_OK) return;
-    renderVolume();
-    if (next > 0) made_chime_preview();
-}
-
-void VibeCoding::volumeDownCallback(lv_event_t *event)
-{
-    auto *self = static_cast<VibeCoding *>(lv_event_get_user_data(event));
-    if (self) self->adjustVolume(-10);
-}
-
-void VibeCoding::volumeUpCallback(lv_event_t *event)
-{
-    auto *self = static_cast<VibeCoding *>(lv_event_get_user_data(event));
-    if (self) self->adjustVolume(10);
-}
-
-void VibeCoding::screenWakeCallback(lv_event_t *event)
-{
-    auto *self = static_cast<VibeCoding *>(lv_event_get_user_data(event));
-    if (self) self->applyScreenOff(false);
-}
-
-void VibeCoding::applyScreenOff(bool off)
-{
-    if (off == screen_off_) return;
-    screen_off_ = off;
-    if (off) {
-        // 全屏遮罩放在 LVGL 顶层：吸收点亮屏幕的那一次触摸，
-        // 不会穿透到底下的按钮。
-        power_off_overlay_ = lv_obj_create(lv_layer_top());
-        lv_obj_remove_style_all(power_off_overlay_);
-        lv_obj_set_size(power_off_overlay_, made_screen_w(), made_screen_h());
-        lv_obj_set_style_bg_color(power_off_overlay_, lv_color_hex(0x000000), 0);
-        lv_obj_set_style_bg_opa(power_off_overlay_, LV_OPA_COVER, 0);
-        lv_obj_add_flag(power_off_overlay_, LV_OBJ_FLAG_CLICKABLE);
-        lv_obj_add_event_cb(power_off_overlay_, screenWakeCallback, LV_EVENT_PRESSED, this);
-        (void)bsp_display_backlight_off();
-        ESP_LOGI("vibe_power", "Screen off after %u s idle", (unsigned)screen_off_timeout_s_);
-    } else {
-        if (power_off_overlay_) {
-            lv_obj_delete(power_off_overlay_);
-            power_off_overlay_ = nullptr;
-        }
-        (void)bsp_display_backlight_on();
-        ESP_LOGI("vibe_power", "Screen on");
-    }
-}
-
-void VibeCoding::themeRebootCallback(lv_timer_t *timer)
-{
-    (void)timer;
-    esp_restart();
-}
-
-void VibeCoding::themeSelectCallback(lv_event_t *event)
-{
-    auto *self = static_cast<VibeCoding *>(lv_event_get_user_data(event));
-    if (!self) return;
-    auto *button = static_cast<lv_obj_t *>(lv_event_get_target(event));
-    const char *selected = static_cast<const char *>(lv_obj_get_user_data(button));
-    if (selected == nullptr || self->theme_list_loading_.load()) return;
-    const auto pairing = vibe_pairing::snapshot();
-    const bool usb_mode = pairing.access_mode == vibe_pairing::AccessMode::UsbDirect;
-    std::string base = !pairing.url.empty() ? pairing.url : pairing.manual_url;
-    if (!usb_mode && base.empty()) {
-        if (self->theme_status_label_) lv_label_set_text(self->theme_status_label_, T("尚未连接电脑，无法应用"));
-        return;
-    }
-    struct ApplyArgs {
-        VibeCoding *self;
-        std::string name;
-        std::string base;
-        bool usb_mode;
-    };
-    if (xTaskCreate([](void *arg) {
-            auto *args = static_cast<ApplyArgs *>(arg);
-            const esp_err_t result = args->usb_mode
-                                         ? vibe_theme::applyFromBridge(args->name, "")
-                                         : vibe_theme::applyFromBridge(args->name, args->base);
-            if (result == ESP_OK) args->self->theme_reboot_pending_.store(true);
-            delete args;
-            vTaskDelete(nullptr);
-        }, "vibe_theme_apply", 12288,
-        new ApplyArgs{self, selected, base, usb_mode}, 3, nullptr) != pdPASS) {
-        if (self->theme_status_label_) lv_label_set_text(self->theme_status_label_, T("应用任务启动失败"));
-    }
-}
-
-void VibeCoding::themeSyncCallback(lv_event_t *event)
-{
-    auto *self = static_cast<VibeCoding *>(lv_event_get_user_data(event));
-    if (!self || self->theme_list_loading_.load()) return;
-    const auto pairing = vibe_pairing::snapshot();
-    const bool usb_mode = pairing.access_mode == vibe_pairing::AccessMode::UsbDirect;
-    std::string base = !pairing.url.empty() ? pairing.url : pairing.manual_url;
-    if (!usb_mode && base.empty()) {
-        if (self->theme_status_label_) lv_label_set_text(self->theme_status_label_, T("尚未连接电脑，无法获取"));
-        return;
-    }
-    self->theme_list_loading_.store(true);
-    self->theme_rows_signature_ = "";  // 立即显示加载态
-    struct ListArgs {
-        VibeCoding *self;
-        std::string base;
-        bool usb_mode;
-    };
-    if (xTaskCreate([](void *arg) {
-            auto *args = static_cast<ListArgs *>(arg);
-            std::vector<vibe_theme::ThemeInfo> list;
-            const bool ok = (args->usb_mode
-                                 ? vibe_theme::fetchThemeList("", list)
-                                 : vibe_theme::fetchThemeList(args->base, list)) == ESP_OK;
-            ESP_LOGI("vibe_ui", "[task] list fetched ok=%d", ok);
-            args->self->theme_list_loading_.store(false);  // 先清标志：后续任何卡顿都不拖累 UI 状态
-            {
-                std::lock_guard<std::mutex> lock(args->self->model_mutex_);
-                args->self->theme_live_list_ =
-                    ok ? std::move(list) : std::vector<vibe_theme::ThemeInfo>{};
-            }
-            ESP_LOGI("vibe_ui", "[task] list published");
-            delete args;
-            vTaskDelete(nullptr);
-        }, "vibe_theme_list", 12288, new ListArgs{self, base, usb_mode}, 3, nullptr) != pdPASS) {
-        self->theme_list_loading_.store(false);
-        if (self->theme_status_label_) lv_label_set_text(self->theme_status_label_, T("列表任务启动失败"));
-    }
-}
-
-void VibeCoding::themeBackCallback(lv_event_t *event)
-{
-    auto *self = static_cast<VibeCoding *>(lv_event_get_user_data(event));
-    if (self) self->showTheme(false);
-}
-
-void VibeCoding::themeOpenCallback(lv_event_t *event)
-{
-    auto *self = static_cast<VibeCoding *>(lv_event_get_user_data(event));
-    if (self) self->showTheme(true);
-}
-
-void VibeCoding::showTheme(bool visible)
-{
-    if (!theme_panel_) return;
-    if (visible) {
-        lv_obj_add_flag(settings_home_, LV_OBJ_FLAG_HIDDEN);
-        if (firmware_panel_) lv_obj_add_flag(firmware_panel_, LV_OBJ_FLAG_HIDDEN);
-        lv_obj_remove_flag(theme_panel_, LV_OBJ_FLAG_HIDDEN);
-        lv_obj_move_foreground(theme_panel_);
-        // 打开即实时拉取主题列表。
-        if (!theme_list_loading_.load()) {
-            const auto pairing = vibe_pairing::snapshot();
-            const bool usb_mode = pairing.access_mode == vibe_pairing::AccessMode::UsbDirect;
-            std::string base = !pairing.url.empty() ? pairing.url : pairing.manual_url;
-            if (usb_mode || !base.empty()) {
-                theme_list_loading_.store(true);
-                theme_rows_signature_ = "";
-                struct ListArgs {
-                    VibeCoding *self;
-                    std::string base;
-                    bool usb_mode;
-                };
-                if (xTaskCreate([](void *arg) {
-                        auto *args = static_cast<ListArgs *>(arg);
-                        std::vector<vibe_theme::ThemeInfo> list;
-                        const bool ok = (args->usb_mode
-                                             ? vibe_theme::fetchThemeList("", list)
-                                             : vibe_theme::fetchThemeList(args->base, list)) == ESP_OK;
-                        ESP_LOGI("vibe_ui", "[task] list fetched ok=%d", ok);
-                        args->self->theme_list_loading_.store(false);  // 先清标志：后续任何卡顿都不拖累 UI 状态
-                        {
-                            std::lock_guard<std::mutex> lock(args->self->model_mutex_);
-                            args->self->theme_live_list_ =
-                                ok ? std::move(list) : std::vector<vibe_theme::ThemeInfo>{};
-                        }
-                        ESP_LOGI("vibe_ui", "[task] list published");
-                        delete args;
-                        vTaskDelete(nullptr);
-                    }, "vibe_theme_list", 12288, new ListArgs{this, base, usb_mode}, 3, nullptr) != pdPASS) {
-                    theme_list_loading_.store(false);
-                }
-            }
-        }
-        renderThemes();
-    } else {
-        lv_obj_add_flag(theme_panel_, LV_OBJ_FLAG_HIDDEN);
-        lv_obj_remove_flag(settings_home_, LV_OBJ_FLAG_HIDDEN);
-    }
-}
-
-void VibeCoding::renderThemes()
-{
-    if (!theme_panel_ || lv_obj_has_flag(theme_panel_, LV_OBJ_FLAG_HIDDEN)) return;
-    const auto sync = vibe_theme::syncStatus();
-    bool loading = theme_list_loading_.load();
-    // 看门狗：加载超过 45 秒强制结束，避免状态行永久卡住。
-    if (loading) {
-        if (theme_loading_since_ms_ == 0) theme_loading_since_ms_ = static_cast<int32_t>(lv_tick_get());
-        else if (lv_tick_get() - theme_loading_since_ms_ > 45000) {
-            ESP_LOGW("vibe_ui", "[render] loading watchdog fired");
-            theme_list_loading_.store(false);
-            loading = false;
-            theme_loading_since_ms_ = 0;
-            std::lock_guard<std::mutex> lock(model_mutex_);
-            theme_live_list_.clear();
-        }
-    } else {
-        theme_loading_since_ms_ = 0;
-    }
-    std::vector<vibe_theme::ThemeInfo> themes;
-    {
-        std::lock_guard<std::mutex> lock(model_mutex_);
-        themes = theme_live_list_;
-    }
-    static bool logged_loading = false;
-    if (loading != logged_loading) {
-        logged_loading = loading;
-        ESP_LOGI("vibe_ui", "[render] loading=%d msg='%s' list=%zu", loading,
-                 sync.message.c_str(), themes.size());
-    }
-    if (theme_status_label_) {
-        std::string status = sync.message;
-        if (loading && status.empty())
-            status = T(themes.empty() ? "正在获取主题列表…" : "正在刷新列表…");
-        lv_label_set_text(theme_status_label_, status.c_str());
-    }
-    // 应用成功后安排重启（LVGL 任务内创建一次性定时器）。
-    if (theme_reboot_pending_.load() && !theme_reboot_started_.exchange(true)) {
-        lv_timer_t *timer = lv_timer_create(themeRebootCallback, 1200, nullptr);
-        lv_timer_set_repeat_count(timer, 1);
-    }
-    std::string signature = vibe_theme::activeName() + "|" + std::to_string(themes.size()) +
-                            "|" + std::to_string(loading ? 1 : 0) + "|" + sync.message;
-    for (const auto &theme : themes) signature += "|" + theme.name;
-    if (signature == theme_rows_signature_) return;
-    theme_rows_signature_ = signature;
-
-    lv_obj_clean(theme_rows_);
-    // 第一行：内置默认。
-    {
-        const bool active = vibe_theme::activeName().empty();
-        lv_obj_t *button = touchButton(theme_rows_, 16, 4, 248, 40,
-            nullptr, themeSelectCallback, this, active ? VT(accent) : VT(bg_row));
-        lv_obj_set_overflow_visible(button, false);
-        lv_obj_set_user_data(button, strdup(""));
-        lv_obj_add_event_cb(button, [](lv_event_t *event) {
-            if (lv_event_get_code(event) == LV_EVENT_DELETE) {
-                auto *name = static_cast<char *>(lv_obj_get_user_data(lv_event_get_target(event)));
-                if (name != nullptr) free(name);
-            }
-        }, LV_EVENT_DELETE, nullptr);
-        lv_obj_t *name = settingsLabel(button, T("默认主题（当前界面）"), 10, 11, 228,
-                                       active ? VT(text_primary) : VT(text_secondary), false);
-        lv_obj_set_style_text_font(name, text_font, 0);
-        lv_label_set_long_mode(name, LV_LABEL_LONG_DOT);
-        // 按钮刚创建还没布局，lv_obj_get_width 会读到 0，字会整行消失；
-        // 宽度直接用设计值：按钮 248，两侧各留 8。
-        lv_obj_set_width(name, made_s(232));
-        // 固定一行高：DOT 截断只在文字高度超过标签高度时生效，
-        // 高度自适应会让长主题名换行溢出按钮。
-        lv_obj_set_height(name, lv_font_get_line_height(text_font));
-        lv_obj_set_style_text_align(name, LV_TEXT_ALIGN_CENTER, 0);
-        lv_obj_align(name, LV_ALIGN_CENTER, 0, 0);
-        lv_obj_remove_flag(name, LV_OBJ_FLAG_CLICKABLE);
-    }
-    int row = 1;
-    for (const auto &theme : themes) {
-        const int y = 4 + row * 46;
-        const bool active = vibe_theme::activeName() == theme.name;
-        lv_obj_t *button = touchButton(theme_rows_, 16, y, 248, 40,
-            nullptr, themeSelectCallback, this, active ? VT(accent) : VT(bg_row));
-        lv_obj_set_overflow_visible(button, false);
-        lv_obj_set_user_data(button, strdup(theme.name.c_str()));
-        lv_obj_add_event_cb(button, [](lv_event_t *event) {
-            if (lv_event_get_code(event) == LV_EVENT_DELETE) {
-                auto *name = static_cast<char *>(lv_obj_get_user_data(lv_event_get_target(event)));
-                if (name != nullptr) free(name);
-            }
-        }, LV_EVENT_DELETE, nullptr);
-        char title[96];
-        std::snprintf(title, sizeof(title), "%s%s", theme.title.c_str(), active ? T(" · 使用中") : "");
-        lv_obj_t *name = settingsLabel(button, title, 10, 11, 228,
-                                       active ? VT(text_primary) : VT(text_secondary), false);
-        lv_obj_set_style_text_font(name, text_font, 0);
-        lv_label_set_long_mode(name, LV_LABEL_LONG_DOT);
-        lv_obj_set_width(name, made_s(232));
-        lv_obj_set_height(name, lv_font_get_line_height(text_font));
-        lv_obj_set_style_text_align(name, LV_TEXT_ALIGN_CENTER, 0);
-        lv_obj_align(name, LV_ALIGN_CENTER, 0, 0);
-        lv_obj_remove_flag(name, LV_OBJ_FLAG_CLICKABLE);
-        ++row;
-    }
-}
-
-void VibeCoding::accessOpenCallback(lv_event_t *event)
-{
-    auto *self = static_cast<VibeCoding *>(lv_event_get_user_data(event));
-    if (self) self->showAccess(true);
-}
-
-void VibeCoding::accessBackCallback(lv_event_t *event)
-{
-    auto *self = static_cast<VibeCoding *>(lv_event_get_user_data(event));
-    if (self) {
-        if (self->access_editor_panel_ && !lv_obj_has_flag(self->access_editor_panel_, LV_OBJ_FLAG_HIDDEN))
-            self->closeAccessEditor(false);
-        else if (self->receiver_picker_ && !lv_obj_has_flag(self->receiver_picker_, LV_OBJ_FLAG_HIDDEN))
-            self->showReceiverScan(false);
-        else self->showAccess(false);
-    }
-}
-
-void VibeCoding::accessPickerCallback(lv_event_t *event)
-{
-    auto *self = static_cast<VibeCoding *>(lv_event_get_user_data(event));
-    if (!self) return;
-    self->access_picker_open_ = true;
-    self->updateAccessModeButtons();
-}
-
-void VibeCoding::phoneSetupOpenCallback(lv_event_t *event)
-{
-    auto *self = static_cast<VibeCoding *>(lv_event_get_user_data(event));
-    if (self && self->canOperate()) self->showPhoneSetup(true);
-}
-
-void VibeCoding::phoneSetupBackCallback(lv_event_t *event)
-{
-    auto *self = static_cast<VibeCoding *>(lv_event_get_user_data(event));
-    if (self) self->showPhoneSetup(false);
-}
-
-void VibeCoding::showPhoneSetup(bool visible)
-{
-    if (!phone_setup_panel_) return;
-    phone_setup_requested_.store(false);
-    phone_setup_epoch_.fetch_add(1);
-    phone_setup_result_.store(0);
-    if (!visible) {
-        lv_obj_add_flag(phone_setup_panel_, LV_OBJ_FLAG_HIDDEN);
-        lv_label_set_text(phone_setup_password_, "");
-        return;
-    }
-    showReceiverScan(false);
-    closeAccessEditor(false);
-    {
-        std::lock_guard<std::mutex> lock(voice_action_mutex_);
-        vibe_voice::cancel();
-    }
-    phone_setup_revision_ = UINT32_MAX;
-    lv_obj_add_flag(phone_setup_qr_, LV_OBJ_FLAG_HIDDEN);
-    lv_label_set_text(phone_setup_hint_, T("正在开启手机配置…"));
-    made_page_label(phone_setup_hint_, 55, 142, 250);
-    lv_label_set_text(phone_setup_network_, "");
-    lv_label_set_text(phone_setup_password_, "");
-    lv_label_set_text(phone_setup_address_, "");
-    lv_obj_remove_flag(phone_setup_panel_, LV_OBJ_FLAG_HIDDEN);
-    lv_obj_move_foreground(phone_setup_panel_);
-    phone_setup_requested_.store(true);
-}
-
-void VibeCoding::renderPhoneSetup()
-{
-    if (!phone_setup_panel_ || lv_obj_has_flag(phone_setup_panel_, LV_OBJ_FLAG_HIDDEN)) return;
-    const int result = phone_setup_result_.exchange(0);
-    if (result == 1) {
-        showSettings(false);
-        drawn_revision_ = UINT32_MAX;
-        return;
-    }
-    if (result == -1) {
-        std::string error;
-        { std::lock_guard<std::mutex> lock(model_mutex_); error = phone_setup_error_; }
-        lv_obj_add_flag(phone_setup_qr_, LV_OBJ_FLAG_HIDDEN);
-        made_page_label(phone_setup_hint_, 55, 142, 250);
-        lv_label_set_text(phone_setup_hint_, error.c_str());
-        lv_label_set_text(phone_setup_network_, "");
-        lv_label_set_text(phone_setup_password_, "");
-        lv_label_set_text(phone_setup_address_, T("返回后可重新开启"));
-        return;
-    }
-    if (!phone_setup_requested_.load() || phone_setup_ready_epoch_.load() != phone_setup_epoch_.load()) return;
-    const auto phone = vibe_phone_setup::snapshot();
-    if (phone.revision == phone_setup_revision_) return;
-    phone_setup_revision_ = phone.revision;
-    if (phone.phase == vibe_phone_setup::Phase::Ready) {
-        made_page_label(phone_setup_hint_, 55, 78, 250);
-        lv_label_set_text(phone_setup_hint_, T("手机扫码连接热点"));
-        const lv_result_t result = lv_qrcode_update(phone_setup_qr_, phone.qr_payload.data(), phone.qr_payload.size());
-        if (result == LV_RESULT_OK) lv_obj_remove_flag(phone_setup_qr_, LV_OBJ_FLAG_HIDDEN);
-        else lv_label_set_text(phone_setup_hint_, T("在手机 Wi-Fi 里连接下方热点"));
-        lv_label_set_text(phone_setup_network_, phone.ssid.c_str());
-        lv_label_set_text(phone_setup_password_, (std::string(T("密码")) + ": " + phone.password).c_str());
-        lv_label_set_text(phone_setup_address_, "192.168.8.1");
-    } else if (phone.phase == vibe_phone_setup::Phase::Submitted) {
-        lv_obj_add_flag(phone_setup_qr_, LV_OBJ_FLAG_HIDDEN);
-        made_page_label(phone_setup_hint_, 55, 142, 250);
-        lv_label_set_text(phone_setup_hint_, T("已收到，正在应用设置…"));
-        lv_label_set_text(phone_setup_network_, "");
-        lv_label_set_text(phone_setup_password_, "");
-        lv_label_set_text(phone_setup_address_, "");
-    }
-}
-
-bool VibeCoding::applyPhoneSetup(const vibe_phone_setup::Submission &input, std::string &error)
-{
-    // The HTTP worker has finished its response and the setup AP is already
-    // stopped. Reuse the same persisted modes and six-digit pairing as touch.
-    bool saved = false;
-    if (input.mode == "receiver") {
-        if (vibe_wifi::save_receiver_credentials(input.receiver_ssid.c_str(), input.receiver_password.c_str()) != ESP_OK)
-            error = T("保存接收端热点信息失败");
-        else if (!vibe_pairing::use_receiver()) error = T("保存接收端模式失败");
-        else if (vibe_wifi::connect_receiver() != ESP_OK) error = T("连接接收端热点失败，请核对信息");
-        else saved = true;
-    } else {
-        if (vibe_wifi::receiver_active() && vibe_wifi::restore_station() != ESP_OK) {
-            error = T("恢复原 Wi-Fi 失败，请重试");
-            return false;
-        }
-        if (!input.wifi_ssid.empty() && vibe_wifi::save_credentials(input.wifi_ssid.c_str(), input.wifi_password.c_str()) != ESP_OK) {
-            error = T("保存 Wi-Fi 失败，请重试");
-            return false;
-        }
-        if (input.mode == "manual")
-            saved = vibe_pairing::set_manual_endpoint(input.host, input.port, input.https, error);
-        else if (input.mode == "automatic") {
-            saved = vibe_pairing::use_automatic_discovery();
-            if (!saved) error = T("保存自动发现设置失败");
-        }
-    }
-    if (!saved) return false;
-    vibe_usb::set_active(false);
-    invalidateCatalog(true);
-    {
-        std::lock_guard<std::mutex> lock(model_mutex_);
-        model_.sessions.clear();
-        model_.tasks.clear();
-        model_.connection_error = input.mode == "receiver" ? T("正在连接 USB 接收端") : T("正在连接电脑");
-        for (auto &provider : providers_) provider.selected_session_id.clear();
-        ++model_.revision;
-    }
-    return true;
-}
-
-void VibeCoding::showSettings(bool visible)
-{
-    if (!settings_overlay_) return;
-    showPhoneSetup(false);
-    showWifiScan(false);
-    settings_open_ = visible;
-    showReceiverScan(false);
-    button_epoch_.fetch_add(1);
-    if (visible) {
-        lv_obj_remove_flag(settings_overlay_, LV_OBJ_FLAG_HIDDEN);
-        lv_obj_remove_flag(settings_home_, LV_OBJ_FLAG_HIDDEN);
-        lv_obj_add_flag(access_panel_, LV_OBJ_FLAG_HIDDEN);
-        lv_obj_add_flag(language_panel_, LV_OBJ_FLAG_HIDDEN);
-        if (volume_panel_) lv_obj_add_flag(volume_panel_, LV_OBJ_FLAG_HIDDEN);
-        if (power_panel_) lv_obj_add_flag(power_panel_, LV_OBJ_FLAG_HIDDEN);
-        if (firmware_panel_) lv_obj_add_flag(firmware_panel_, LV_OBJ_FLAG_HIDDEN);
-        lv_obj_move_foreground(settings_overlay_);
-    } else {
-        lv_obj_add_flag(settings_overlay_, LV_OBJ_FLAG_HIDDEN);
-    }
-}
-
-void VibeCoding::showLanguage(bool visible)
-{
-    if (!language_panel_) return;
-    if (visible) {
-        lv_obj_add_flag(settings_home_, LV_OBJ_FLAG_HIDDEN);
-        lv_obj_add_flag(access_panel_, LV_OBJ_FLAG_HIDDEN);
-        if (firmware_panel_) lv_obj_add_flag(firmware_panel_, LV_OBJ_FLAG_HIDDEN);
-        lv_obj_remove_flag(language_panel_, LV_OBJ_FLAG_HIDDEN);
-        refreshLanguage();
-    } else {
-        lv_obj_add_flag(language_panel_, LV_OBJ_FLAG_HIDDEN);
-        lv_obj_remove_flag(settings_home_, LV_OBJ_FLAG_HIDDEN);
-    }
-}
-
-void VibeCoding::showAccess(bool visible)
-{
-    if (!access_panel_) return;
-    if (!visible) {
-        showReceiverScan(false);
-        showWifiScan(false);
-        closeAccessEditor(false);
-        lv_obj_add_flag(access_panel_, LV_OBJ_FLAG_HIDDEN);
-        lv_obj_remove_flag(settings_home_, LV_OBJ_FLAG_HIDDEN);
-        return;
-    }
-    const auto pairing = vibe_pairing::snapshot();
-    access_manual_selected_ = pairing.access_mode == vibe_pairing::AccessMode::Manual;
-    access_receiver_selected_ = pairing.access_mode == vibe_pairing::AccessMode::Receiver;
-    access_usb_selected_ = pairing.access_mode == vibe_pairing::AccessMode::UsbDirect;
-    access_https_selected_ = pairing.manual_url.empty() ||
-        pairing.manual_url.rfind("https://", 0) == 0;
-    std::string host;
-    std::string port = access_https_selected_ ? "443" : "8788";
-    if (!pairing.manual_url.empty()) {
-        const size_t scheme = pairing.manual_url.find("://");
-        const std::string authority = scheme == std::string::npos ? pairing.manual_url :
-            pairing.manual_url.substr(scheme + 3);
-        const size_t colon = authority.rfind(':');
-        host = colon == std::string::npos ? authority : authority.substr(0, colon);
-        if (colon != std::string::npos) port = authority.substr(colon + 1);
-    }
-    if (access_receiver_selected_) {
-        char ssid[33] = {};
-        if (vibe_wifi::receiver_ssid(ssid, sizeof(ssid))) host = ssid;
-        else host.clear();
-    }
-    lv_textarea_set_max_length(access_host_input_, access_receiver_selected_ ? 32 : 100);
-    lv_textarea_set_text(access_host_input_, host.c_str());
-    lv_textarea_set_text(access_port_input_, port.c_str());
-    lv_textarea_set_text(access_password_input_, "");
-    lv_obj_add_flag(settings_home_, LV_OBJ_FLAG_HIDDEN);
-    lv_obj_add_flag(language_panel_, LV_OBJ_FLAG_HIDDEN);
-    lv_obj_remove_flag(access_panel_, LV_OBJ_FLAG_HIDDEN);
-    access_picker_open_ = true;
-    updateAccessModeButtons();
-}
-
-void VibeCoding::updateAccessModeButtons()
-{
-    if (!access_panel_) return;
-    // 选中态：accent 实底 + text_on_accent；未选中回到 ghost（透明底）。
-    auto setAccessSelected = [](lv_obj_t *button, bool selected) {
-        lv_obj_set_style_bg_color(button, lv_color_hex(selected ? VT(accent) : VT(btn_normal)), 0);
-        lv_obj_set_style_bg_opa(button, selected ? LV_OPA_COVER : LV_OPA_TRANSP, 0);
-        if (button && lv_obj_get_child_cnt(button) > 0) {
-            lv_obj_set_style_text_color(lv_obj_get_child(button, 0),
-                                        lv_color_hex(selected ? VT(text_on_accent) : VT(text_primary)), 0);
-        }
-    };
-    setAccessSelected(access_auto_button_,
-        !(access_manual_selected_ || access_receiver_selected_ || access_usb_selected_));
-    setAccessSelected(access_manual_button_, access_manual_selected_);
-    setAccessSelected(access_receiver_button_, access_receiver_selected_);
-    setAccessSelected(access_usb_button_, access_usb_selected_);
-    for (lv_obj_t *item : {access_auto_button_, access_manual_button_,
-                          access_receiver_button_, access_usb_button_, access_picker_hint_, phone_setup_button_}) {
-        if (access_picker_open_) lv_obj_remove_flag(item, LV_OBJ_FLAG_HIDDEN);
-        else lv_obj_add_flag(item, LV_OBJ_FLAG_HIDDEN);
-    }
-    for (lv_obj_t *item : {access_save_button_, access_change_button_, access_usb_hint_,
-                          access_host_input_, access_port_input_, access_password_input_,
-                          access_https_button_, receiver_scan_button_}) {
-        if (access_picker_open_) lv_obj_add_flag(item, LV_OBJ_FLAG_HIDDEN);
-        else lv_obj_remove_flag(item, LV_OBJ_FLAG_HIDDEN);
-    }
-    made_page_label(access_status_label_, access_picker_open_ ? 70 : 47,
-                    access_picker_open_ ? 269 : 109, access_picker_open_ ? 220 : 266);
-    if (access_picker_open_) lv_obj_add_flag(access_status_label_, LV_OBJ_FLAG_HIDDEN);
-    else lv_obj_remove_flag(access_status_label_, LV_OBJ_FLAG_HIDDEN);
-    if (access_picker_open_) {
-        lv_label_set_text(access_status_label_, T("选中后设置，保存后生效"));
-        return;
-    }
-    const char *mode_name = access_usb_selected_ ? T("USB 直连") : access_receiver_selected_ ?
-                            T("接收端") : access_manual_selected_ ? T("手动地址") : "Wi-Fi";
-    lv_label_set_text(access_change_label_, (std::string(mode_name) + T(" · 更换方式")).c_str());
-    if (access_usb_selected_) lv_obj_remove_flag(access_usb_hint_, LV_OBJ_FLAG_HIDDEN);
-    else lv_obj_add_flag(access_usb_hint_, LV_OBJ_FLAG_HIDDEN);
-    if (access_manual_selected_ || access_receiver_selected_)
-        lv_obj_remove_flag(access_host_input_, LV_OBJ_FLAG_HIDDEN);
-    else lv_obj_add_flag(access_host_input_, LV_OBJ_FLAG_HIDDEN);
-    for (lv_obj_t *item : {access_port_input_, access_https_button_}) {
-        if (access_manual_selected_) lv_obj_remove_flag(item, LV_OBJ_FLAG_HIDDEN);
-        else lv_obj_add_flag(item, LV_OBJ_FLAG_HIDDEN);
-    }
-    if (access_receiver_selected_) lv_obj_remove_flag(receiver_scan_button_, LV_OBJ_FLAG_HIDDEN);
-    else lv_obj_add_flag(receiver_scan_button_, LV_OBJ_FLAG_HIDDEN);
-    if (access_receiver_selected_) lv_obj_remove_flag(access_password_input_, LV_OBJ_FLAG_HIDDEN);
-    else lv_obj_add_flag(access_password_input_, LV_OBJ_FLAG_HIDDEN);
-    lv_textarea_set_max_length(access_host_input_, access_receiver_selected_ ? 32 : 100);
-    lv_textarea_set_placeholder_text(access_host_input_,
-        access_receiver_selected_ ? T("接收端热点名称 SSID") : T("主机名或 IPv4 地址"));
-    lv_label_set_text(access_https_label_, access_https_selected_ ? T("HTTPS · 开") : T("HTTPS · 关"));
-    if (access_usb_selected_)
-        lv_label_set_text(access_status_label_, T("USB 直连，无需 Wi-Fi"));
-    else if (access_receiver_selected_)
-        lv_label_set_text(access_status_label_, T("点选接收端，再输入热点密码"));
-    else if (!access_manual_selected_) {
-        if (!vibe_wifi::receiver_active() && vibe_wifi::is_connected()) {
-            wifi_ap_record_t ap = {};
-            std::string status = T("已连接 Wi-Fi");
-            if (esp_wifi_sta_get_ap_info(&ap) == ESP_OK) {
-                char ssid[33] = {};
-                std::memcpy(ssid, ap.ssid, sizeof(ap.ssid));
-                status += std::string("：") + ssid;
-            }
-            lv_label_set_text(access_status_label_, status.c_str());
-        } else {
-            lv_label_set_text(access_status_label_, T("请先在网络设置连接 Wi-Fi"));
-        }
-    }
-    else
-        lv_label_set_text(access_status_label_, T("公网地址请选择 HTTPS"));
-}
-
-void VibeCoding::accessModeCallback(lv_event_t *event)
-{
-    auto *self = static_cast<VibeCoding *>(lv_event_get_user_data(event));
-    if (!self) return;
-    const bool was_receiver = self->access_receiver_selected_;
-    const bool was_manual = self->access_manual_selected_;
-    lv_obj_t *target = static_cast<lv_obj_t *>(lv_event_get_target(event));
-    self->access_manual_selected_ = target == self->access_manual_button_;
-    self->access_receiver_selected_ = target == self->access_receiver_button_;
-    self->access_usb_selected_ = target == self->access_usb_button_;
-    lv_textarea_set_max_length(self->access_host_input_, self->access_receiver_selected_ ? 32 : 100);
-    if (self->access_receiver_selected_ && !was_receiver) {
-        char ssid[33] = {};
-        (void)vibe_wifi::receiver_ssid(ssid, sizeof(ssid));
-        lv_textarea_set_text(self->access_host_input_, ssid);
-        lv_textarea_set_text(self->access_password_input_, "");
-    } else if (self->access_manual_selected_ && !was_manual) {
-        const std::string url = vibe_pairing::snapshot().manual_url;
-        const size_t scheme = url.find("://");
-        const std::string authority = scheme == std::string::npos ? url : url.substr(scheme + 3);
-        const size_t colon = authority.rfind(':');
-        lv_textarea_set_text(self->access_host_input_,
-            (colon == std::string::npos ? authority : authority.substr(0, colon)).c_str());
-        lv_textarea_set_text(self->access_port_input_,
-            colon == std::string::npos ? "443" : authority.substr(colon + 1).c_str());
-    }
-    self->access_picker_open_ = false;
-    self->updateAccessModeButtons();
-    if (self->access_receiver_selected_) self->showReceiverScan(true);
-}
-
-void VibeCoding::accessFieldCallback(lv_event_t *event)
-{
-    auto *self = static_cast<VibeCoding *>(lv_event_get_user_data(event));
-    if (!self || !self->access_editor_panel_) return;
-    lv_obj_t *field = static_cast<lv_obj_t *>(lv_event_get_target(event));
-    self->access_editor_target_ = field;
-    const bool port = field == self->access_port_input_;
-    const bool password = field == self->access_password_input_;
-    lv_label_set_text(self->access_editor_title_, port ? T("端口") : password ? T("密码") :
-                      self->access_receiver_selected_ ? "SSID" : T("地址"));
-    lv_textarea_set_password_mode(self->access_editor_input_, password);
-    lv_textarea_set_max_length(self->access_editor_input_, lv_textarea_get_max_length(field));
-    lv_textarea_set_accepted_chars(self->access_editor_input_, port ? "0123456789" : nullptr);
-    lv_textarea_set_text(self->access_editor_input_, lv_textarea_get_text(field));
-    if (self->access_keyboard_) lv_obj_delete(self->access_keyboard_);
-    const int keyboard_y = made_page_y(157);
-    self->access_keyboard_ = vibe_touch_keyboard::create(self->access_editor_panel_,
-        self->access_editor_input_, made_page_x(36), keyboard_y, made_page_w(288),
-        made_screen_h() - keyboard_y - 8, port, password && self->access_receiver_selected_);
-    lv_obj_remove_flag(self->access_editor_panel_, LV_OBJ_FLAG_HIDDEN);
-    lv_obj_move_foreground(self->access_editor_panel_);
-}
-
-void VibeCoding::closeAccessEditor(bool save)
-{
-    if (!access_editor_panel_) return;
-    const bool was_wifi_password = access_editor_target_ == wifi_password_input_;
-    if (save && access_editor_target_ && access_editor_input_)
-        lv_textarea_set_text(access_editor_target_, lv_textarea_get_text(access_editor_input_));
-    access_editor_target_ = nullptr;
-    lv_obj_add_flag(access_editor_panel_, LV_OBJ_FLAG_HIDDEN);
-    if (save && was_wifi_password) connectSelectedWifi();
-}
-
-void VibeCoding::accessEditorDoneCallback(lv_event_t *event)
-{
-    auto *self = static_cast<VibeCoding *>(lv_event_get_user_data(event));
-    if (!self) return;
-    // The keyboard can dispatch READY from inside its own event callback.
-    // Defer the UI transition until that dispatch has returned.
-    lv_async_call([](void *arg) { static_cast<VibeCoding *>(arg)->closeAccessEditor(true); }, self);
-}
-
-void VibeCoding::accessEditorCancelCallback(lv_event_t *event)
-{
-    auto *self = static_cast<VibeCoding *>(lv_event_get_user_data(event));
-    if (self) self->closeAccessEditor(false);
-}
-
-void VibeCoding::receiverScanOpenCallback(lv_event_t *event)
-{
-    auto *self = static_cast<VibeCoding *>(lv_event_get_user_data(event));
-    if (self) self->showReceiverScan(true);
-}
-
-void VibeCoding::receiverScanBackCallback(lv_event_t *event)
-{
-    auto *self = static_cast<VibeCoding *>(lv_event_get_user_data(event));
-    if (self) self->showReceiverScan(false);
-}
-
-void VibeCoding::receiverScanRefreshCallback(lv_event_t *event)
-{
-    auto *self = static_cast<VibeCoding *>(lv_event_get_user_data(event));
-    if (!self) return;
-    (void)vibe_wifi::request_receiver_scan();
-    self->receiver_scan_revision_ = UINT32_MAX;
-    self->renderReceiverScan();
-}
-
-void VibeCoding::wifiScanOpenCallback(lv_event_t *event)
-{
-    auto *self = static_cast<VibeCoding *>(lv_event_get_user_data(event));
-    if (self) self->showWifiScan(true);
-}
-
-void VibeCoding::wifiScanBackCallback(lv_event_t *event)
-{
-    auto *self = static_cast<VibeCoding *>(lv_event_get_user_data(event));
-    if (self) self->showWifiScan(false);
-}
-
-void VibeCoding::wifiScanRefreshCallback(lv_event_t *event)
-{
-    auto *self = static_cast<VibeCoding *>(lv_event_get_user_data(event));
-    if (!self) return;
-    self->startWifiScan();
-    self->renderWifiNetworks();
-}
-
-void VibeCoding::wifiNetworkCallback(lv_event_t *event)
-{
-    auto *self = static_cast<VibeCoding *>(lv_event_get_user_data(event));
-    if (!self) return;
-    // 按钮在列表中的位置即 1 起始的网络序号（列表为空时只有提示行，无按钮）。
-    const uintptr_t index = (uintptr_t)lv_obj_get_index(lv_event_get_target(event)) + 1;
-    ESP_LOGI("vibe_ui", "wifi row clicked: index=%u known=%u", (unsigned)index,
-             (unsigned)self->wifi_scan_snapshot_.networks.size());
-    if (index == 0) return;
-    std::string ssid;
-    bool open = false;
-    {
-        const auto &networks = self->wifi_scan_snapshot_.networks;
-        if (index > networks.size()) return;
-        ssid = networks[index - 1].ssid;
-        open = networks[index - 1].open;
-    }
-    ESP_LOGI("vibe_ui", "wifi selected: %s (open=%d)", ssid.c_str(), (int)open);
-    self->wifi_selected_ssid_ = ssid;
-    if (open) {
-        // 开放网络无需密码，直接保存并连接。
-        if (vibe_wifi::save_credentials(ssid.c_str(), "") == ESP_OK && self->wifi_scan_status_) {
-            self->wifi_join_ssid_ = ssid;
-            self->wifi_join_pending_ = true;
-            lv_label_set_text(self->wifi_scan_status_, (std::string(T("正在连接 ")) + ssid + T(" …")).c_str());
-        }
-        return;
-    }
-    // 加密网络：弹出编辑器输入密码，完成后由 closeAccessEditor 触发连接。
-    self->access_editor_target_ = self->wifi_password_input_;
-    lv_label_set_text(self->access_editor_title_,
-                      (std::string(T("Wi-Fi 密码：")) + ssid).c_str());
-    lv_textarea_set_password_mode(self->access_editor_input_, true);
-    lv_textarea_set_max_length(self->access_editor_input_, 63);
-    lv_textarea_set_accepted_chars(self->access_editor_input_, nullptr);
-    lv_textarea_set_text(self->access_editor_input_, "");
-    if (self->access_keyboard_) lv_obj_delete(self->access_keyboard_);
-    const int keyboard_y = made_page_y(157);
-    self->access_keyboard_ = vibe_touch_keyboard::create(self->access_editor_panel_,
-        self->access_editor_input_, made_page_x(36), keyboard_y, made_page_w(288),
-        made_screen_h() - keyboard_y - 8, false, true);
-    lv_obj_remove_flag(self->access_editor_panel_, LV_OBJ_FLAG_HIDDEN);
-    lv_obj_move_foreground(self->access_editor_panel_);
-}
-
-void VibeCoding::startWifiScan()
-{
-    // 扫描所有权在 vibe_wifi 内部：station_mutex 串行化、暂停重连、
-    // 断开未完成的关联后非阻塞扫描，SCAN_DONE 事件回填快照。
-    (void)vibe_wifi::request_station_scan();
-}
-
-void VibeCoding::renderWifiNetworks()
-{
-    if (!wifi_picker_ || lv_obj_has_flag(wifi_picker_, LV_OBJ_FLAG_HIDDEN)) return;
-    if (wifi_scan_status_ && wifi_join_pending_) {
-        if (!vibe_wifi::receiver_active() && vibe_wifi::is_connected()) {
-            wifi_ap_record_t ap = {};
-            if (esp_wifi_sta_get_ap_info(&ap) == ESP_OK) {
-                char ssid[33] = {};
-                std::memcpy(ssid, ap.ssid, sizeof(ap.ssid));
-                if (wifi_join_ssid_.empty() || wifi_join_ssid_ == ssid) {
-                    lv_label_set_text(wifi_scan_status_, (std::string(T("已连接 Wi-Fi")) + "：" + ssid).c_str());
-                    wifi_join_pending_ = false;
-                }
-            }
-        } else {
-            const int reason = vibe_wifi::disconnect_reason();
-            const bool auth_failed = reason == WIFI_REASON_AUTH_EXPIRE ||
-                reason == WIFI_REASON_MIC_FAILURE ||
-                reason == WIFI_REASON_4WAY_HANDSHAKE_TIMEOUT ||
-                reason == WIFI_REASON_AUTH_FAIL ||
-                reason == WIFI_REASON_ASSOC_FAIL ||
-                reason == WIFI_REASON_HANDSHAKE_TIMEOUT ||
-                reason == WIFI_REASON_CONNECTION_FAIL;
-            const bool missing = reason == WIFI_REASON_NO_AP_FOUND ||
-                reason == WIFI_REASON_NO_AP_FOUND_W_COMPATIBLE_SECURITY ||
-                reason == WIFI_REASON_NO_AP_FOUND_IN_AUTHMODE_THRESHOLD ||
-                reason == WIFI_REASON_NO_AP_FOUND_IN_RSSI_THRESHOLD;
-            if (auth_failed) {
-                lv_label_set_text(wifi_scan_status_, T("连接失败，请核对密码"));
-                wifi_join_pending_ = false;
-            } else if (missing) {
-                lv_label_set_text(wifi_scan_status_, T("找不到这个网络"));
-                wifi_join_pending_ = false;
-            }
-        }
-    }
-    wifi_scan_snapshot_ = vibe_wifi::station_scan_snapshot();
-    const uint32_t revision = wifi_scan_snapshot_.generation;
-    const bool scanning = wifi_scan_snapshot_.state == vibe_wifi::ReceiverScanState::Scanning;
-    // 扫描期间每帧都要重绘（提示行显示"正在扫描…"），完成后按 generation 去重。
-    if (!scanning && revision == wifi_scan_list_revision_) return;
-    wifi_scan_list_revision_ = revision;
-    const auto &networks = wifi_scan_snapshot_.networks;
-    lv_obj_clean(wifi_network_list_);
-    lv_obj_scroll_to_y(wifi_network_list_, 0, LV_ANIM_OFF);
-    if (networks.empty()) {
-        char hint[96];
-        const int scan_error = (int)wifi_scan_snapshot_.error;
-        if (scanning) {
-            std::snprintf(hint, sizeof(hint), "%s", T("正在扫描…"));
-        } else if (scan_error != 0) {
-            std::snprintf(hint, sizeof(hint), "%s 0x%x)", T("扫描失败，点刷新重试 ("), (unsigned)scan_error);
-        } else {
-            std::snprintf(hint, sizeof(hint), "%s", T("未发现网络，点刷新重试"));
-        }
-        lv_obj_t *hint_label = settingsLabel(wifi_network_list_, hint, 8, 10, 254, VT(text_secondary), false);
-        lv_obj_set_style_text_font(hint_label, text_font, 0);
-        return;
-    }
-    // 与接收端选择器完全相同的成熟模式：touchButton + 手动 y 定位 + 两行文字。
-    // lv_list_add_button 的行在此触摸屏上收不到事件（按下有高亮、无回调）。
-    int row = 0;
-    for (const auto &network : networks) {
-        const int y = 4 + row * 56;
-        const int strength = network.rssi <= -100 ? 0 : network.rssi >= -50 ? 100 : 2 * (network.rssi + 100);
-        char sub[48];
-        std::snprintf(sub, sizeof(sub), "%d%%  %s", strength, network.open ? T("开放") : T("已加密"));
-        lv_obj_t *button = touchButton(wifi_network_list_, 8, y, 254, 48,
-                                       nullptr, wifiNetworkCallback, this, VT(bg_row));
-        lv_obj_t *name = settingsLabel(button, network.ssid.c_str(), 10, 4, 234, VT(text_primary), false);
-        lv_obj_set_style_text_font(name, text_font, 0);
-        lv_label_set_long_mode(name, LV_LABEL_LONG_DOT);
-        lv_obj_remove_flag(name, LV_OBJ_FLAG_CLICKABLE);
-        lv_obj_t *sub_label = settingsLabel(button, sub, 10, 26, 234, VT(text_secondary), false);
-        lv_obj_set_style_text_font(sub_label, text_font, 0);
-        lv_obj_remove_flag(sub_label, LV_OBJ_FLAG_CLICKABLE);
-        ++row;
-    }
-}
-
-void VibeCoding::showWifiScan(bool visible)
-{
-    if (!wifi_picker_) return;
-    if (!visible) {
-        const bool was_open = !lv_obj_has_flag(wifi_picker_, LV_OBJ_FLAG_HIDDEN);
-        lv_obj_add_flag(wifi_picker_, LV_OBJ_FLAG_HIDDEN);
-        if (was_open && settings_home_) lv_obj_remove_flag(settings_home_, LV_OBJ_FLAG_HIDDEN);
-        return;
-    }
-    if (settings_home_) lv_obj_add_flag(settings_home_, LV_OBJ_FLAG_HIDDEN);
-    if (access_panel_) lv_obj_add_flag(access_panel_, LV_OBJ_FLAG_HIDDEN);
-    lv_obj_remove_flag(wifi_picker_, LV_OBJ_FLAG_HIDDEN);
-    lv_obj_move_foreground(wifi_picker_);
-    if (wifi_scan_status_) {
-        if (!vibe_wifi::receiver_active() && vibe_wifi::is_connected()) {
-            wifi_ap_record_t ap = {};
-            std::string status = T("已连接 Wi-Fi");
-            if (esp_wifi_sta_get_ap_info(&ap) == ESP_OK) {
-                char ssid[33] = {};
-                std::memcpy(ssid, ap.ssid, sizeof(ap.ssid));
-                status += std::string("：") + ssid;
-            }
-            lv_label_set_text(wifi_scan_status_, status.c_str());
-        } else {
-            lv_label_set_text(wifi_scan_status_, T("选择要加入的网络"));
-        }
-    }
-    wifi_scan_list_revision_ = UINT32_MAX;
-    startWifiScan();
-    renderWifiNetworks();
-}
-
-void VibeCoding::connectSelectedWifi()
-{
-    if (wifi_selected_ssid_.empty()) return;
-    const std::string password = wifi_password_input_ ? lv_textarea_get_text(wifi_password_input_) : "";
-    if (vibe_wifi::save_credentials(wifi_selected_ssid_.c_str(), password.c_str()) != ESP_OK) {
-        if (wifi_scan_status_) lv_label_set_text(wifi_scan_status_, T("保存 Wi-Fi 失败，请重试"));
-        return;
-    }
-    if (wifi_scan_status_)
-        lv_label_set_text(wifi_scan_status_, (std::string(T("正在连接 ")) + wifi_selected_ssid_ + T(" …")).c_str());
-    wifi_join_ssid_ = wifi_selected_ssid_;
-    wifi_join_pending_ = true;
-    wifi_selected_ssid_.clear();
-}
-
-void VibeCoding::showReceiverScan(bool visible)
-{
-    if (!visible) vibe_wifi::cancel_receiver_scan();
-    if (!receiver_picker_) return;
-    receiver_pressed_button_ = nullptr;
-    if (!visible) {
-        lv_obj_add_flag(receiver_picker_, LV_OBJ_FLAG_HIDDEN);
-        return;
-    }
-    lv_obj_remove_flag(receiver_picker_, LV_OBJ_FLAG_HIDDEN);
-    lv_obj_move_foreground(receiver_picker_);
-    receiver_scan_revision_ = UINT32_MAX;
-    (void)vibe_wifi::request_receiver_scan();
-    renderReceiverScan();
-}
-
-void VibeCoding::renderReceiverScan()
-{
-    if (!receiver_picker_ || lv_obj_has_flag(receiver_picker_, LV_OBJ_FLAG_HIDDEN)) return;
-    const auto scan = vibe_wifi::receiver_scan_snapshot();
-    if (receiver_scan_revision_ == scan.generation) return;
-    receiver_scan_revision_ = scan.generation;
-    const bool scanning = scan.state == vibe_wifi::ReceiverScanState::Scanning;
-    if (scanning) lv_obj_add_state(receiver_refresh_button_, LV_STATE_DISABLED);
-    else lv_obj_remove_state(receiver_refresh_button_, LV_STATE_DISABLED);
-    receiver_pressed_button_ = nullptr;
-    lv_obj_clean(receiver_list_);
-    receiver_rows_.clear();
-    lv_obj_scroll_to_y(receiver_list_, 0, LV_ANIM_OFF);
-    for (const auto &network : scan.networks) {
-        const int y = 4 + static_cast<int>(receiver_rows_.size()) * 64;
-        lv_obj_t *button = touchButton(receiver_list_, 8, y, 254, 54,
-            nullptr, receiverSelectCallback, this);
-        lv_obj_add_event_cb(button, receiverSelectCallback, LV_EVENT_PRESSED, this);
-        lv_obj_add_event_cb(button, receiverSelectCallback, LV_EVENT_PRESSING, this);
-        lv_obj_t *name = settingsLabel(button, network.ssid.c_str(), 10, 7, 234, VT(text_primary), false);
-        lv_obj_set_style_text_font(name, &lv_font_montserrat_16, 0);
-        lv_obj_set_height(name, made_s(20));
-        lv_label_set_long_mode(name, LV_LABEL_LONG_DOT);
-        lv_obj_remove_flag(name, LV_OBJ_FLAG_CLICKABLE);
-        const std::string strength = std::to_string(network.rssi) + " dBm";
-        lv_obj_t *signal = settingsLabel(button, strength.c_str(), 10, 31, 234, VT(text_secondary), false);
-        lv_obj_set_style_text_font(signal, &lv_font_montserrat_14, 0);
-        lv_obj_remove_flag(signal, LV_OBJ_FLAG_CLICKABLE);
-        if (scanning) lv_obj_add_state(button, LV_STATE_DISABLED);
-        receiver_rows_.push_back({button, network.ssid});
-    }
-    lv_label_set_text(receiver_hint_, scanning ? T("正在扫描接收端…") :
-        scan.state == vibe_wifi::ReceiverScanState::Failed ? T("扫描失败，请点刷新") :
-        scan.networks.empty() ? T("未找到，请接通接收端电源") : T("点选后输入电脑显示的密码"));
-}
-
-void VibeCoding::receiverSelectCallback(lv_event_t *event)
-{
-    auto *self = static_cast<VibeCoding *>(lv_event_get_user_data(event));
-    if (!self) return;
-    auto *target = static_cast<lv_obj_t *>(lv_event_get_target(event));
-    const lv_event_code_t code = lv_event_get_code(event);
-    lv_indev_t *input = lv_indev_get_act();
-    if (code == LV_EVENT_PRESSED) {
-        self->receiver_pressed_button_ = target;
-        self->receiver_press_moved_ = false;
-        if (input) lv_indev_get_point(input, &self->receiver_press_point_);
-        return;
-    }
-    if (self->receiver_pressed_button_ != target) return;
-    if (input) {
-        lv_point_t point{};
-        lv_indev_get_point(input, &point);
-        if (std::abs(point.x - self->receiver_press_point_.x) > 12 ||
-            std::abs(point.y - self->receiver_press_point_.y) > 12)
-            self->receiver_press_moved_ = true;
-    }
-    if (code != LV_EVENT_CLICKED) return;
-    self->receiver_pressed_button_ = nullptr;
-    if (self->receiver_press_moved_ ||
-        (input && lv_indev_get_gesture_dir(input) != LV_DIR_NONE)) return;
-    for (const auto &row : self->receiver_rows_) {
-        if (row.button != target) continue;
-        const std::string ssid = row.ssid;
-        if (ssid != lv_textarea_get_text(self->access_host_input_))
-            lv_textarea_set_text(self->access_password_input_, "");
-        lv_textarea_set_text(self->access_host_input_, ssid.c_str());
-        self->showReceiverScan(false);
-        // Keep remembered credentials: a previously paired receiver needs no
-        // password re-entry. The field stays editable if its password changed.
-        char saved_ssid[33] = {};
-        const bool known = vibe_wifi::receiver_ssid(saved_ssid, sizeof(saved_ssid)) && ssid == saved_ssid;
-        if (!known) lv_obj_send_event(self->access_password_input_, LV_EVENT_CLICKED, nullptr);
-        return;
-    }
-}
-
-void VibeCoding::accessHttpsCallback(lv_event_t *event)
-{
-    auto *self = static_cast<VibeCoding *>(lv_event_get_user_data(event));
-    if (!self) return;
-    const std::string old_port = lv_textarea_get_text(self->access_port_input_);
-    self->access_https_selected_ = !self->access_https_selected_;
-    if (self->access_https_selected_ && old_port == "8788")
-        lv_textarea_set_text(self->access_port_input_, "443");
-    else if (!self->access_https_selected_ && old_port == "443")
-        lv_textarea_set_text(self->access_port_input_, "8788");
-    self->updateAccessModeButtons();
-}
-
-void VibeCoding::accessSaveCallback(lv_event_t *event)
-{
-    auto *self = static_cast<VibeCoding *>(lv_event_get_user_data(event));
-    if (!self || self->access_picker_open_) return;
-    bool saved = false;
-    std::string error;
-    if (self->access_usb_selected_) {
-        if (vibe_usb::initialize() != ESP_OK) error = T("USB 初始化失败，请重启后重试");
-        else {
-            saved = vibe_pairing::use_usb_direct();
-            if (!saved) error = T("保存 USB 直连设置失败");
-        }
-    } else if (self->access_receiver_selected_) {
-        const std::string ssid = lv_textarea_get_text(self->access_host_input_);
-        const std::string password = lv_textarea_get_text(self->access_password_input_);
-        char existing_ssid[33] = {};
-        const bool existing = vibe_wifi::receiver_ssid(existing_ssid, sizeof(existing_ssid));
-        if (ssid.empty() || ssid.size() > 32) {
-            error = T("热点名称须为 1 到 32 字节");
-        } else if (password.empty() && (!existing || ssid != existing_ssid)) {
-            error = T("请输入电脑管理页显示的热点密码");
-        } else if (!password.empty() && (password.size() < 8 || password.size() > 63)) {
-            error = T("热点密码须为 8 到 63 字节");
-        } else if (!password.empty() &&
-                   vibe_wifi::save_receiver_credentials(ssid.c_str(), password.c_str()) != ESP_OK) {
-            error = T("保存接收端热点信息失败");
-        } else if (!vibe_pairing::use_receiver()) {
-            error = T("保存接收端模式失败");
-        } else if (vibe_wifi::connect_receiver() != ESP_OK) {
-            error = T("连接接收端热点失败，请核对信息");
-        } else {
-            saved = true;
-        }
-    } else if (!self->access_manual_selected_) {
-        if (vibe_wifi::receiver_active() || !vibe_wifi::is_connected()) {
-            error = T("请先在网络设置连接 Wi-Fi");
-        } else {
-            saved = vibe_pairing::use_automatic_discovery();
-            if (!saved) error = T("保存自动发现设置失败");
-        }
-    } else {
-        std::string host = lv_textarea_get_text(self->access_host_input_);
-        bool https = self->access_https_selected_;
-        if (host.rfind("https://", 0) == 0) {
-            host.erase(0, 8);
-            https = true;
-        } else if (host.rfind("http://", 0) == 0) {
-            host.erase(0, 7);
-            https = false;
-        }
-        while (!host.empty() && host.back() == '/') host.pop_back();
-        std::string port_text = lv_textarea_get_text(self->access_port_input_);
-        const size_t embedded_port = host.rfind(':');
-        if (embedded_port != std::string::npos) {
-            port_text = host.substr(embedded_port + 1);
-            host.resize(embedded_port);
-        }
-        char *end = nullptr;
-        const unsigned long port = std::strtoul(port_text.c_str(), &end, 10);
-        if (port_text.empty() || !end || *end != '\0' || port == 0 || port > 65535) {
-            error = T("端口必须是 1 到 65535");
-        } else {
-            saved = vibe_pairing::set_manual_endpoint(host, static_cast<uint16_t>(port), https, error);
-        }
-    }
-    if (saved && !self->access_receiver_selected_ && vibe_wifi::receiver_active() &&
-        vibe_wifi::restore_station() != ESP_OK) {
-        if (!self->access_usb_selected_) {
-            saved = false;
-            error = T("恢复原 Wi-Fi 失败，请重试");
-        }
-    }
-    if (!saved) {
-        lv_label_set_text(self->access_status_label_, vibe_i18n::message(error).c_str());
-        return;
-    }
-    vibe_voice::cancel();
-    vibe_usb::set_active(self->access_usb_selected_ && self->canOperate());
-    self->invalidateCatalog(true);
-    {
-        std::lock_guard<std::mutex> lock(self->model_mutex_);
-        self->model_.sessions.clear();
-        self->model_.tasks.clear();
-        self->model_.connection_error = self->access_usb_selected_ ? T("正在通过 USB 连接电脑") : self->access_receiver_selected_ ?
-            T("正在连接 USB 接收端") : T("正在连接电脑");
-        for (auto &provider : self->providers_) provider.selected_session_id.clear();
-        ++self->model_.revision;
-    }
-    self->showSettings(false);
-    self->drawn_revision_ = UINT32_MAX;
-}
 
 void VibeCoding::requestNewSession()
 {
@@ -4095,6 +2614,9 @@ void VibeCoding::render()
         for (auto &slot : sides_)
             if (slot.stage)
                 made_sprite::update(slot.stage, lv_tick_get() - sprite_started_ms_, mood);
+        // 素材页顶部状态图标与精灵同一状态源（voice phase + 最前任务），
+        // 随帧刷新；抽屉/设置打开时内部自隐藏。
+        updateStatusIcon(static_cast<int>(voice.phase), task_status, !connection_error.empty());
     }
     ui_stage_.store(3);
     const auto pairing = vibe_pairing::snapshot();
@@ -4463,6 +2985,90 @@ void VibeCoding::renderStatusBadge(const std::string &status)
     lv_obj_set_style_text_color(status_badge_label_, lv_color_hex(text), 0);
 }
 
+// —— 素材页顶部状态图标：单一位置，状态变了换图标 ——
+// 状态优先级：录音 > 识别 > 提交等待建任务 > 等待确认 > 处理中 > 空闲。
+// 位图由 tools/gen_status_icons.py 生成（16×16 白色+alpha），颜色走主题
+// token recolor；抽屉/设置打开时隐藏（抽屉右上已有文字徽章）。
+static void status_icon_spin_cb(void *var, int32_t v)
+{
+    lv_image_set_rotation(static_cast<lv_obj_t *>(var), v);
+}
+
+static void status_icon_pulse_cb(void *var, int32_t v)
+{
+    lv_obj_set_style_opa(static_cast<lv_obj_t *>(var), static_cast<lv_opa_t>(v), 0);
+}
+
+void VibeCoding::updateStatusIcon(int voice_phase, const std::string &task_status, bool offline)
+{
+    (void)offline;   // 离线暂与空闲同图标；素材有 offline 情绪，图标不细分
+    if (!status_icon_pill_ || !status_icon_img_) return;
+    if (drawer_open_.load() || settings_open_.load()) {
+        lv_obj_add_flag(status_icon_pill_, LV_OBJ_FLAG_HIDDEN);
+        status_icon_state_ = -1;
+        return;
+    }
+    int state = 0;
+    if (voice_phase == static_cast<int>(vibe_voice::Phase::Recording)) state = 1;
+    else if (voice_phase == static_cast<int>(vibe_voice::Phase::Uploading)) state = 2;
+    else if (voice_phase == static_cast<int>(vibe_voice::Phase::Submitted)) state = 4;
+    else if (task_status == "waiting_confirmation") state = 3;
+    else if (task_status == "running" || task_status == "queued") state = 4;
+
+    // 声波两帧交替（tick 驱动 160ms/帧），不占 anim 通道。
+    if (state == 2 && status_icon_state_ == 2) {
+        const uint32_t now = lv_tick_get();
+        if (now - status_icon_wave_ms_ >= 160) {
+            status_icon_wave_ms_ = now;
+            status_icon_wave_alt_ = !status_icon_wave_alt_;
+            lv_image_set_src(status_icon_img_,
+                status_icon_wave_alt_ ? &kStatusIconWave2 : &kStatusIconWave1);
+        }
+    }
+
+    if (state == status_icon_state_) return;
+    status_icon_state_ = state;
+    lv_anim_delete(status_icon_img_, nullptr);
+
+    const lv_image_dsc_t *src = &kStatusIconIdle;
+    uint32_t tint = VT(text_hint);
+    switch (state) {
+    case 1: src = &kStatusIconMic; tint = VT(danger); status_icon_wave_alt_ = false; break;
+    case 2: src = &kStatusIconWave1; tint = VT(text_accent); status_icon_wave_alt_ = false; break;
+    case 3: src = &kStatusIconAsk; tint = VT(warning); break;
+    case 4: src = &kStatusIconRun; tint = VT(accent); break;
+    default: break;
+    }
+    lv_image_set_src(status_icon_img_, src);
+    lv_image_set_rotation(status_icon_img_, 0);
+    lv_obj_set_style_opa(status_icon_img_, LV_OPA_COVER, 0);
+    lv_obj_set_style_img_recolor(status_icon_img_, lv_color_hex(tint), 0);
+    lv_obj_set_style_img_recolor_opa(status_icon_img_, LV_OPA_COVER, 0);
+    lv_obj_remove_flag(status_icon_pill_, LV_OBJ_FLAG_HIDDEN);
+    if (state == 1) {
+        // 录音中：呼吸脉冲（透明度 255↔140，800ms 往复）。
+        lv_anim_t a;
+        lv_anim_init(&a);
+        lv_anim_set_var(&a, status_icon_img_);
+        lv_anim_set_exec_cb(&a, status_icon_pulse_cb);
+        lv_anim_set_values(&a, 255, 140);
+        lv_anim_set_time(&a, 800);
+        lv_anim_set_playback_time(&a, 800);
+        lv_anim_set_repeat_count(&a, LV_ANIM_REPEAT_INFINITE);
+        lv_anim_start(&a);
+    } else if (state == 4) {
+        // 处理中：缺口弧旋转（1s/圈，不确定式进度，不做假百分比）。
+        lv_anim_t a;
+        lv_anim_init(&a);
+        lv_anim_set_var(&a, status_icon_img_);
+        lv_anim_set_exec_cb(&a, status_icon_spin_cb);
+        lv_anim_set_values(&a, 0, 3600);
+        lv_anim_set_time(&a, 1000);
+        lv_anim_set_repeat_count(&a, LV_ANIM_REPEAT_INFINITE);
+        lv_anim_start(&a);
+    }
+}
+
 void VibeCoding::setActivityRunning(bool running)
 {
     if (!activity_bar_ || !activity_fill_) return;
@@ -4562,25 +3168,45 @@ bool VibeCoding::request(const std::string &path, bool post, std::string &respon
 {
     if (!post && receiverVoiceUploading()) return false;
     const auto pairing = vibe_pairing::snapshot();
+#if VIBE_SMOKE_TEST
+    // 冒烟测试：设备侧配对记录可能为空，伪造凭据（USB direct 通道桥接器
+    // 侧物理信任，token 不参与校验）。
+    std::string base = pairing.url.empty() ? "http://burnin.local" : pairing.url;
+    const std::string token = pairing.token.empty() ? "baeeabde0ae90cbff6e590641c6d91827c537228d7e56f862fc5244cc7596f05" : pairing.token;
+#else
     std::string base = pairing.url;
     const std::string token = pairing.token;
-    if (base.empty() || token.empty() || !vibe_pairing::authorized_for_foreground()) return false;
+#endif
+    if (base.empty() || token.empty() || !vibe_pairing::authorized_for_foreground()) {
+#if VIBE_SMOKE_TEST
+        ESP_LOGW("vibe_req", "[req-gate] base=%d token=%d auth=%d", !base.empty(), !token.empty(),
+                 vibe_pairing::authorized_for_foreground());
+#endif
+        return false;
+    }
+#if !VIBE_SMOKE_TEST
     if (base.rfind("https://", 0) == 0 && !vibe_pairing::tls_time_ready()) {
         setConnectionError(vibe_pairing::tls_time_failed() ?
             T("设备时间同步失败，无法校验 HTTPS 证书") : T("正在同步设备时间，以校验 HTTPS 证书"));
         return false;
     }
+#endif
     while (!base.empty() && base.back() == '/') base.pop_back();
     const std::string wire_path = vibe_i18n::request_path(path);
     const std::string url = base + wire_path;
     const std::string authorization = "Bearer " + token;
     esp_err_t error = ESP_FAIL;
-    if (pairing.access_mode == vibe_pairing::AccessMode::UsbDirect) {
+    if (VIBE_SMOKE_TEST ||
+        pairing.access_mode == vibe_pairing::AccessMode::UsbDirect) {
         error = vibe_usb::request(wire_path, post, authorization,
                                   json_body.empty() ? "" : "application/json",
                                   json_body.empty() ? nullptr : reinterpret_cast<const uint8_t *>(json_body.data()),
                                   json_body.size(),
                                   response, status, response_limit, timeout_ms);
+#if VIBE_SMOKE_TEST
+        if (error != ESP_OK)
+            ESP_LOGW("vibe_req", "[req-usb] %s err=%d", wire_path.c_str(), error);
+#endif
     } else if (pairing.access_mode == vibe_pairing::AccessMode::Receiver) {
         error = vibe_usb::receiver_request(wire_path, post, authorization,
                                             json_body.empty() ? "" : "application/json",
@@ -4612,708 +3238,22 @@ bool VibeCoding::request(const std::string &path, bool post, std::string &respon
         esp_http_client_cleanup(client);
     }
     const auto latest = vibe_pairing::snapshot();
+#if VIBE_SMOKE_TEST
+    // 压测伪造 token 与真实配对快照（token 为空）必然不等，上面的检查会把
+    // 每一个成功响应都当「旧通道残 reply」丢弃——这正是 config 无限重拉、
+    // providers 永不填充的根因。USB direct 物理信任，压测期直接放行。
+#else
     if (!vibe_pairing::authorized_for_foreground() || latest.url != pairing.url ||
         latest.token != token) {
         status = 0;
         return false; // Discard a reply from the previous access mode.
     }
+#endif
     if (error != ESP_OK) {
         invalidateCatalog(); // Re-read the catalog as soon as the bridge reconnects.
         vibe_pairing::reconnect();
     }
     return error == ESP_OK;
-}
-
-void VibeCoding::invalidateCatalog(bool clear)
-{
-    std::lock_guard<std::mutex> lock(model_mutex_);
-    catalog_epoch_.fetch_add(1);
-    config_loaded_.store(false);
-    voice_available_.store(false);
-    visible_task_id_.clear();
-    if (clear) {
-        providers_.clear();
-        selected_provider_.store(0);
-        catalog_identity_.clear();
-        model_.sessions.clear();
-        model_.tasks.clear();
-        model_.feedback.clear();
-        model_.feedback_task_id.clear();
-        model_.session_notice.clear();
-        voice_session_id_.clear();
-        pending_action_ = {};
-        model_.action_in_flight = false;
-        pending_create_session_ = false;
-        pending_create_provider_id_.clear();
-        pending_create_project_id_.clear();
-    }
-    board_events_.clear();
-    pending_board_event_.clear();
-    board_catalog_sent_ = false;
-    ++model_.revision;
-}
-
-// 形象素材下载（worker 线程）。目标与最近一次尝试一致且成功过就不再动网络。
-// 曾经在待确认任务在屏时整体跳过素材下载（怕分片拖慢确认链路），但 USB
-// 是请求/响应串行协议，分片不会吞掉命令应答，最多慢一两拍；而待确认可能
-// 无限期驻留（用户不点 BOOT），门禁会把素材永久卡死（2026-10-18 实锤：
-// 假 OTA 任务常驻 waiting_confirmation 期间素材一直加载不出）——已删除。
-void VibeCoding::syncArtwork()
-{
-    std::string provider;
-    vibe_provider::SpriteInfo sprite;
-    size_t provider_count = 0;
-    {
-        std::lock_guard<std::mutex> lock(model_mutex_);
-        const auto &selected = selectedProviderLocked();
-        provider = selected.id;
-        sprite = selected.sprite;
-        provider_count = providers_.size();
-    }
-    {
-        std::lock_guard<std::mutex> lock(artwork_mutex_);
-        if (artwork_attempted_ && artwork_target_ == provider &&
-            artwork_target_version_ == (sprite.valid() ? sprite.version : 0) &&
-            !artworkRetryDue()) {
-            ESP_LOGI(BUTTON_TAG, "[sprite] skip=already_attempted provider=%s version=%u",
-                provider.c_str(), static_cast<unsigned>(artwork_target_version_));
-            return;
-        }
-        if (artwork_target_ != provider ||
-            artwork_target_version_ != (sprite.valid() ? sprite.version : 0)) {
-            artwork_retry_count_ = 0;  // 换了目标/版本，重试预算重新计
-        }
-        artwork_target_ = provider;
-        artwork_target_version_ = sprite.valid() ? sprite.version : 0;
-        artwork_attempted_ = true;
-    }
-    if (!sprite.valid()) {
-        ESP_LOGI(BUTTON_TAG, "[sprite] skip=no_sprite provider=%s providers=%u",
-            provider.c_str(), static_cast<unsigned>(provider_count));
-        std::lock_guard<std::mutex> lock(artwork_mutex_);
-        artwork_ready_provider_.clear();
-        artwork_dirty_.store(true);
-        return;
-    }
-    ESP_LOGI(BUTTON_TAG, "[sprite] fetch provider=%s version=%u files=%u",
-        provider.c_str(), static_cast<unsigned>(sprite.version), static_cast<unsigned>(sprite.files.size()));
-    const auto fetch = [this](const std::string &path, std::string &out, int &status) {
-        return request(path, false, out, status, "", 200 * 1024, 30000);
-    };
-    const bool ok = made_sprite_cache::ensure(provider, sprite, fetch);
-    ESP_LOGI(BUTTON_TAG, "[sprite] provider=%s version=%u ok=%d", provider.c_str(), sprite.version, ok);
-    std::lock_guard<std::mutex> lock(artwork_mutex_);
-    if (ok) {
-        artwork_retry_at_ms_ = 0;
-        artwork_retry_count_ = 0;
-    } else if (++artwork_retry_count_ <= 5) {
-        // 失败 15s 后重试，最多 5 次；配置或选中助手变化会重置预算。
-        artwork_retry_at_ms_ = static_cast<uint32_t>(esp_timer_get_time() / 1000) + 15000;
-        ESP_LOGI(BUTTON_TAG, "[sprite] retry_scheduled provider=%s attempt=%u",
-            provider.c_str(), static_cast<unsigned>(artwork_retry_count_));
-    } else {
-        artwork_retry_at_ms_ = 0;  // 预算用尽：等下一次 provider/版本变化再试
-        ESP_LOGI(BUTTON_TAG, "[sprite] retry_exhausted provider=%s", provider.c_str());
-    }
-    artwork_ready_provider_ = ok ? provider : std::string();
-    artwork_dirty_.store(true);
-}
-
-bool VibeCoding::artworkRetryDue() const
-{
-    const uint32_t at = artwork_retry_at_ms_;
-    return at != 0 && static_cast<uint32_t>(esp_timer_get_time() / 1000) >= at;
-}
-
-// 开机预加载（worker 线程）：目录就绪后把所有带素材的助手排队，后台逐个
-// 把素材缓存拉齐——滑动切换走 tryApplyCachedArtwork 只看本地 manifest，
-// 缓存齐了就是秒换，不用现等下载。约束：每轮循环只处理一个（下载最坏
-// 30s，不能把 worker 循环堵住 delaying 命令下发）；已缓存（manifest 版本
-// 一致）直接跳过，不做哈希复核。曾经待确认在屏时整体放弃（怕抢链路），
-// 理由同 syncArtwork：USB 串行协议分片不吞命令应答，而待确认可能无限期
-// 驻留，门禁只会把预载永久卡死——已删除（2026-10-18）。
-void VibeCoding::preloadArtworkCache()
-{
-    const uint64_t epoch = catalog_epoch_.load();
-    {
-        std::lock_guard<std::mutex> lock(model_mutex_);
-        if (!config_loaded_.load() || providers_.empty()) return;
-        if (artwork_preload_epoch_ != epoch) {
-            artwork_preload_epoch_ = epoch;
-            artwork_preload_queue_.clear();
-            for (const auto &entry : providers_)
-                if (entry.sprite.valid())
-                    artwork_preload_queue_.push_back({entry.id, entry.sprite.version, 0});
-        }
-        if (artwork_preload_queue_.empty()) return;
-    }
-    for (;;) {
-        std::string provider;
-        uint32_t version = 0;
-        uint8_t attempts = 0;
-        {
-            std::lock_guard<std::mutex> lock(model_mutex_);
-            if (artwork_preload_queue_.empty()) return;
-            provider = artwork_preload_queue_.front().provider;
-            version = artwork_preload_queue_.front().version;
-            attempts = artwork_preload_queue_.front().attempts;
-        }
-        // 目录刷新后助手可能消失或版本已变：消失/失效的丢掉；版本变了说明
-        // 桥接器侧发了新素材——用新版本重新入队（否则快照过期条目被丢弃后，
-        // 要等到下次桥接器重连才会再试，期间新素材永远下载不到）。
-        vibe_provider::SpriteInfo sprite;
-        bool valid = false;
-        bool requeue = false;
-        uint32_t fresh_version = 0;
-        {
-            std::lock_guard<std::mutex> lock(model_mutex_);
-            const auto *entry = findProviderLocked(provider);
-            valid = entry && entry->sprite.valid() && entry->sprite.version == version;
-            requeue = !valid && entry && entry->sprite.valid();
-            if (valid) sprite = entry->sprite;
-            if (requeue) fresh_version = entry->sprite.version;
-        }
-        bool done = true;
-        if (!valid) {
-            if (requeue) {
-                std::lock_guard<std::mutex> lock(model_mutex_);
-                for (auto it = artwork_preload_queue_.begin();
-                     it != artwork_preload_queue_.end(); ++it) {
-                    if (it->provider == provider && it->version == version) {
-                        it->version = fresh_version;
-                        it->attempts = 0;
-                        break;
-                    }
-                }
-            }
-            // 丢掉（或已换新版本），继续看下一个（本轮内循环，队列很快清空）。
-        } else {
-            uint32_t cached = 0;
-            if (made_sprite_cache::cachedVersion(provider, cached) && cached == version) {
-                // 已就绪，无需网络。若正是当前选中助手，syncArtwork 在管它。
-            } else if (attempts >= 2) {
-                ESP_LOGW(BUTTON_TAG, "[sprite] preload_exhausted provider=%s", provider.c_str());
-            } else {
-                ESP_LOGI(BUTTON_TAG, "[sprite] preload provider=%s version=%u attempt=%u",
-                    provider.c_str(), static_cast<unsigned>(version),
-                    static_cast<unsigned>(attempts + 1));
-                const auto fetch = [this](const std::string &path, std::string &out, int &status) {
-                    return request(path, false, out, status, "", 200 * 1024, 30000);
-                };
-                done = made_sprite_cache::ensure(provider, sprite, fetch);
-                if (!done) {
-                    // 失败挪到队尾重试（同版本预算 2 次），本轮到此为止。
-                    std::lock_guard<std::mutex> lock(model_mutex_);
-                    for (auto it = artwork_preload_queue_.begin();
-                         it != artwork_preload_queue_.end(); ++it) {
-                        if (it->provider == provider && it->version == version) {
-                            ArtworkPreloadEntry retry{*it};
-                            retry.attempts = static_cast<uint8_t>(attempts + 1);
-                            artwork_preload_queue_.erase(it);
-                            artwork_preload_queue_.push_back(std::move(retry));
-                            break;
-                        }
-                    }
-                    return;
-                }
-            }
-        }
-        std::lock_guard<std::mutex> lock(model_mutex_);
-        for (auto it = artwork_preload_queue_.begin(); it != artwork_preload_queue_.end(); ++it) {
-            if (it->provider == provider && it->version == version) {
-                artwork_preload_queue_.erase(it);
-                break;
-            }
-        }
-        return;  // 一轮只处理一个助手，保持 worker 循环响应
-    }
-}
-
-// 侧台应挂的助手 id 与版本（当前选中助手的相邻邻居；单助手、邻居无素材
-// 时 target 为空，表示这一侧不该挂任何东西）。
-bool VibeCoding::sideTarget(int index, std::string &target, uint32_t &version)
-{
-    target.clear();
-    version = 0;
-    if (index < 0 || index > 1) return false;
-    const SideSlot &slot = sides_[index];
-    if (!slot.stage) return false;
-    std::lock_guard<std::mutex> lock(model_mutex_);
-    if (!config_loaded_.load() || providers_.empty()) return false;
-    const int count = static_cast<int>(providers_.size());
-    const int selected = selected_provider_.load();
-    const int neighbor = (selected + slot.side + count) % count;
-    const auto &entry = providers_[static_cast<size_t>(neighbor)];
-    if (count > 1 && neighbor != selected && entry.sprite.valid()) {
-        target = entry.id;
-        version = entry.sprite.version;
-    }
-    return true;
-}
-
-// LVGL 线程。确保 sides_[index] 挂着当前选中助手的相邻助手（版本一致）。
-// 内容已对（三舞台轮换的常态）就什么都不做——这就是「任何方向随时可翻」；
-// 不对且解码空闲就起飞后台解码补齐（单飞，1s 失败退避）。两个侧台都缺
-// 内容时每帧按 0→1 顺序排队补，拖动方向由 maybeStartPrefetch 优先插队。
-void VibeCoding::ensureSide(int index)
-{
-    if (!sprite_stage_ || index < 0 || index > 1) return;
-    SideSlot &slot = sides_[index];
-    if (!slot.stage) return;
-    std::string target;
-    uint32_t version = 0;
-    sideTarget(index, target, version);
-    // 临时诊断：侧台不预载时这条日志直接指认是哪个静默分支拦的（5s 限频）。
-    {
-        static uint32_t diag_ms[2] = {0, 0};
-        const uint32_t now_diag = lv_tick_get();
-        if (now_diag - diag_ms[index] > 5000) {
-            diag_ms[index] = now_diag;
-            ESP_LOGI(BUTTON_TAG,
-                "[sprite][diag] side%+d stage=%d main=%d target='%s' ver=%u have='%s/%u' "
-                "defer_ms=%u drag=%d pf(prov='%s' inflight=%d ready=%d) free=%uKB",
-                slot.side, slot.stage ? 1 : 0, sprite_stage_ ? 1 : 0,
-                target.c_str(), (unsigned)version, slot.provider.c_str(),
-                (unsigned)slot.version,
-                (unsigned)(slot.defer_until > now_diag ? slot.defer_until - now_diag : 0),
-                drag_side_, prefetch_provider_.c_str(),
-                made_sprite::prefetchInFlight() ? 1 : 0,
-                made_sprite::prefetchReady() ? 1 : 0,
-                (unsigned)(heap_caps_get_free_size(MALLOC_CAP_SPIRAM) / 1024));
-        }
-    }
-    // 常驻的就三套（左中右）。邻居没有素材、或只有一个助手（左右邻居
-    // 都是 自己，不值得解码第二份）时，这一侧不该挂着任何东西——
-    // 超出范围的旧素材就地回收，PSRAM 让出去。
-    if (target.empty()) {
-        if (!slot.provider.empty()) {
-            made_sprite::clearArtwork(slot.stage);
-            slot.provider.clear();
-            slot.version = 0;
-            ESP_LOGI(BUTTON_TAG, "[sprite] neighbor_recycled slot=%+d", slot.side);
-        }
-        return;
-    }
-    // 过期内容必须立刻撤下：>3 个助手时每次切换后远侧台都挂着上一次的
-    // 邻居（轮换无法自洽，靠后台解码补齐）。补齐需要一两秒，期间若用户
-    // 拖动，滑入视野的会是错误形象——用户会把上一个助手的邻居当成目标
-    // 助手。宁可滑入空白（解码完自动补上），也不能滑入错的。
-    if (!slot.provider.empty() && slot.provider != target) {
-        made_sprite::clearArtwork(slot.stage);
-        ESP_LOGI(BUTTON_TAG, "[sprite] neighbor_stale_cleared slot=%+d had=%s want=%s",
-            slot.side, slot.provider.c_str(), target.c_str());
-        slot.provider.clear();
-        slot.version = 0;
-    }
-    if (slot.provider == target && slot.version == version) return;   // 已就绪（常态）
-    // 被回收让位的侧台暂缓补齐：它刚把空间让给方向侧，立刻重试只会把
-    // 空间又抢回去（掐掉方向侧的在飞解码），来回振荡。暂缓到期后自然
-    // 恢复；拖动方向转到这一侧时由 maybeStartPrefetch 立即解除暂缓。
-    if (lv_tick_get() < slot.defer_until && index != drag_side_) return;
-    if (!prefetch_provider_.empty() || made_sprite::prefetchInFlight() ||
-        made_sprite::prefetchReady())
-        return;  // 解码在飞/待提交：本帧等它，下帧轮到这里再排
-    // PSRAM 预算回收：助手 >3 个时第 4 套解码像素常驻放不下（实测 4 套
-    // 并存后 free 常 <1.5MB，prefetchBegin 拒绝 → 每秒退避空转 → 同向
-    // 第三屏永不预载）。方向侧起飞前余量不足就回收背向侧台（用户背对
-    // 它，暂时用不到），腾出空间；被回收侧暂缓补齐防振荡。只允许方向
-    // 侧回收背向侧——反向宁可等（背向侧不急，1s 退避无害），否则方向
-    // 侧会被背向侧的补齐挤掉，来回拆台。
-    const size_t kDecodeBudget = 1560 * 1024;  // 略高于 prefetchBegin 的 1.5MB guard
-    if (heap_caps_get_free_size(MALLOC_CAP_SPIRAM) < kDecodeBudget &&
-        index == drag_side_) {
-        SideSlot &other = sides_[1 - index];
-        if (other.stage && !other.provider.empty() && other.provider != target) {
-            made_sprite::clearArtwork(other.stage);
-            ESP_LOGI(BUTTON_TAG,
-                "[sprite] neighbor_recycled_for_budget slot=%+d had=%s for_slot=%+d want=%s",
-                other.side, other.provider.c_str(), slot.side, target.c_str());
-            other.provider.clear();
-            other.version = 0;
-            other.defer_until = lv_tick_get() + 5000;
-        }
-    }
-    // 失败退避：起飞失败/解码失败后 1s 内不白试；重试前必须清 failed/done
-    // 残留——prefetchBegin 见这些状态会直接拒绝，不清就是永久卡死。
-    const uint32_t now = lv_tick_get();
-    if (now < prefetch_retry_ms_) return;
-    made_sprite::prefetchCancel();
-    std::string manifest;
-    if (made_sprite_cache::loadManifest(target, manifest) &&
-        made_sprite::prefetchBegin(manifest, made_sprite_cache::baseDir(target))) {
-        prefetch_provider_ = target;
-        prefetch_version_ = version;
-        prefetch_slot_ = index;
-        ESP_LOGI(BUTTON_TAG, "[sprite] prefetch_start slot=%+d provider=%s version=%u",
-            slot.side, target.c_str(), static_cast<unsigned>(version));
-    } else {
-        prefetch_retry_ms_ = now + 1000;
-    }
-}
-
-// 录音前兜底（LVGL 线程，vibe_voice::start 之前调用）。录音缓冲一次要
-// ~940KB PSRAM，而空闲常在 0.8~2.1MB 间波动——贴着悬崖边抽签，波动到
-// 谷底那一刻按下说话就报「录音内存不足」。空间不足时把**非显示中**的
-// 素材资源临时让位：两侧台各一套解码像素 + 在飞/就绪的预取暂存。
-// 主舞台（正显示的助手）不动。录音期间手势全部禁用，不存在边录边补齐
-// 的竞争；defer 30s 覆盖最长录音，结束后 prefetchTick 解除暂缓自动补齐。
-void VibeCoding::reclaimSpriteMemoryForVoice()
-{
-    const size_t kVoiceNeed = 1150 * 1024;  // 录音缓冲 ~940KB + 余量
-    const size_t free_psram = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
-    if (free_psram >= kVoiceNeed) return;
-
-    const uint32_t now = lv_tick_get();
-    if (made_sprite::prefetchInFlight() || made_sprite::prefetchReady() ||
-        !prefetch_provider_.empty()) {
-        made_sprite::prefetchCancel();
-        prefetch_provider_.clear();
-        prefetch_version_ = 0;
-        prefetch_slot_ = -1;
-        ESP_LOGI(BUTTON_TAG, "[voice] prefetch dropped for recording (free=%uKB)",
-                 (unsigned)(free_psram / 1024));
-    }
-    for (SideSlot &slot : sides_) {
-        if (slot.stage && !slot.provider.empty()) {
-            made_sprite::clearArtwork(slot.stage);
-            slot.provider.clear();
-            slot.version = 0;
-            slot.defer_until = now + 30000;  // 录音最长 30s，期间别来抢内存
-        }
-    }
-    drag_side_ = -1;  // 让 ensureSide 的 defer 条件对两侧同时生效
-    sprite_held_for_voice_ = true;
-    // 附件大图和侧台抢的是同一块 PSRAM。录音时放大浮层不该还占着解码缓冲。
-    if (!zoom_overlay_) freeDecodedImages();
-    ESP_LOGW(BUTTON_TAG,
-             "[voice] sprite reclaim for recording: free=%uKB -> %uKB",
-             (unsigned)(free_psram / 1024),
-             (unsigned)(heap_caps_get_free_size(MALLOC_CAP_SPIRAM) / 1024));
-}
-
-// LVGL 线程。拖动方向已明确：优先补齐该方向的侧台。三舞台轮换的常态下
-// 侧台内容早已就绪，这里什么都不用做（零解码零等待）。
-void VibeCoding::maybeStartPrefetch(int direction)
-{
-    if (direction == 0) return;
-    const int index = direction < 0 ? 0 : 1;
-    drag_side_ = index;
-    // 方向转到这一侧：解除它的回收暂缓——用户正盯着这看，若空间仍紧，
-    // ensureSide 会照规则回收对侧（此刻的背向侧）腾地方。
-    sides_[index].defer_until = 0;
-    // 拖动方向侧内容不对、而单飞解码在飞的是另一侧时：掐掉它改飞本侧。
-    // 用户正盯着这个方向看，另一侧的解码晚点重跑没有任何代价；反过来
-    // 让方向侧等一整套解码，过期/空白素材就会跟着手滑进视野。
-    SideSlot &slot = sides_[index];
-    std::string target;
-    {
-        std::lock_guard<std::mutex> lock(model_mutex_);
-        if (!config_loaded_.load() || providers_.empty()) return;
-        const int count = static_cast<int>(providers_.size());
-        const int selected = selected_provider_.load();
-        const int neighbor = (selected + slot.side + count) % count;
-        if (count > 1 && neighbor != selected &&
-            providers_[static_cast<size_t>(neighbor)].sprite.valid())
-            target = providers_[static_cast<size_t>(neighbor)].id;
-    }
-    const bool wrong = slot.provider != target ||
-        (prefetch_slot_ == index && prefetch_provider_ != target);
-    if (!wrong) { ensureSide(index); return; }
-    if (made_sprite::prefetchInFlight() && prefetch_slot_ != index) {
-        made_sprite::prefetchCancel();
-        prefetch_provider_.clear();
-        prefetch_version_ = 0;
-        prefetch_slot_ = -1;
-    }
-    ensureSide(index);
-}
-
-// 每帧（maybeApplyArtwork）：在飞解码完成后挂上归属侧台，然后把两侧台
-// 内容对齐当前选中助手的左右邻居（轮换后的远侧台、目录版本刷新都会在这
-// 里自动补齐）。素材随即随拖动滑入视野——真翻页，不用等翻页提交。
-void VibeCoding::prefetchTick()
-{
-    // 空闲 PSRAM 掉到 1MB 以下时，先丢掉两侧未显示的解码帧，主舞台不动。
-    if (!home_dragging_ && heap_caps_get_free_size(MALLOC_CAP_SPIRAM) < 1024 * 1024) {
-        const uint32_t tight_now = lv_tick_get();
-        for (SideSlot &slot : sides_) {
-            if (!slot.stage || slot.provider.empty()) continue;
-            made_sprite::clearArtwork(slot.stage);
-            slot.provider.clear();
-            slot.version = 0;
-            slot.defer_until = tight_now + 8000;
-        }
-    }
-    // 录音让位回收过的侧台：录音（含上传）一结束就解除暂缓，别让用户
-    // 盯着空白侧台等满 30s。start 失败时同样在这里下一帧就恢复。
-    if (sprite_held_for_voice_) {
-        const auto vp = vibe_voice::status().phase;
-        if (vp != vibe_voice::Phase::Recording && vp != vibe_voice::Phase::Uploading) {
-            sprite_held_for_voice_ = false;
-            for (SideSlot &slot : sides_) slot.defer_until = 0;
-            ESP_LOGI(BUTTON_TAG, "[voice] sprite defer released after voice end");
-        }
-    }
-    if (!prefetch_provider_.empty()) {
-        if (made_sprite::prefetchReady()) {
-            SideSlot &slot = sides_[prefetch_slot_ >= 0 ? prefetch_slot_ : 0];
-            bool stale = false;
-            {
-                std::lock_guard<std::mutex> lock(model_mutex_);
-                const auto *entry = findProviderLocked(prefetch_provider_);
-                stale = !entry || !entry->sprite.valid() ||
-                    entry->sprite.version != prefetch_version_;
-            }
-            if (stale) {
-                // 目录刷新后素材版本变了：暂存帧过期，作废等重登记。
-                made_sprite::prefetchCancel();
-            } else if (made_sprite::commitPrefetched(slot.stage)) {
-                slot.provider = prefetch_provider_;
-                slot.version = prefetch_version_;
-                ESP_LOGI(BUTTON_TAG, "[sprite] neighbor_staged slot=%+d provider=%s",
-                    slot.side, slot.provider.c_str());
-            }
-            prefetch_provider_.clear();
-            prefetch_version_ = 0;
-            prefetch_slot_ = -1;
-        } else if (!made_sprite::prefetchInFlight()) {
-            // 解码失败：清登记走退避，稍后重试。
-            made_sprite::prefetchCancel();
-            prefetch_provider_.clear();
-            prefetch_version_ = 0;
-            prefetch_slot_ = -1;
-        }
-    }
-    // 两侧都要补时按最近的拖动方向排优先级：方向侧先飞，另一侧靠后。
-    if (drag_side_ == 1) { ensureSide(1); ensureSide(0); }
-    else { ensureSide(0); ensureSide(1); }
-}
-
-// LVGL 线程。切换裁决出目标且目标侧台已挂好正确素材：三舞台指针轮换——
-// 目标侧台升主位，旧主舞台转对侧台（内容正好是新主的对侧邻居），远侧台
-// 转目标侧原位（内容由随后的 reconcile 校对补齐；恰好 3 个助手时它也
-// 正确——永不重新解码）。没就绪返回 false 交回缓存直换/worker 老路。
-bool VibeCoding::tryPromotePrefetch(const std::string &provider)
-{
-    if (!sprite_stage_ || artwork_applied_ == provider) return false;
-    int slot_idx = -1;
-    for (int i = 0; i < 2; ++i)
-        if (sides_[i].provider == provider) { slot_idx = i; break; }
-    if (slot_idx < 0) return false;
-    SideSlot &src = sides_[slot_idx];
-    {
-        std::lock_guard<std::mutex> lock(model_mutex_);
-        const auto *entry = findProviderLocked(provider);
-        if (!entry || !entry->sprite.valid() || entry->sprite.version != src.version) {
-            // 目录刷新后素材版本变了：这台挂的是旧版本，作废走老路。
-            made_sprite::clearArtwork(src.stage);
-            src.provider.clear();
-            src.version = 0;
-            return false;
-        }
-    }
-    const uint32_t promoted_version = src.version;
-    SideSlot &dst = sides_[1 - slot_idx];
-    // 三方轮换：src→主位，主→dst 位，dst 原舞台→src 位。素材全跟舞台走。
-    lv_obj_t *old_main = sprite_stage_;
-    const std::string old_provider = artwork_applied_;
-    const uint32_t old_version = artwork_applied_version_;
-    const std::string dst_provider = dst.provider;
-    const uint32_t dst_version = dst.version;
-    sprite_stage_ = src.stage;
-    src.stage = dst.stage;
-    dst.stage = old_main;
-    src.provider = dst_provider;
-    src.version = dst_version;
-    dst.provider = old_provider;
-    dst.version = old_version;
-    lv_obj_set_x(sprite_stage_, 0);
-    lv_obj_set_x(src.stage, src.side < 0 ? -made_screen_w() : made_screen_w());
-    lv_obj_set_x(dst.stage, dst.side < 0 ? -made_screen_w() : made_screen_w());
-    artwork_applied_ = provider;
-    artwork_applied_version_ = promoted_version;
-    ESP_LOGI(BUTTON_TAG, "[sprite] neighbor_promoted provider=%s", provider.c_str());
-    return true;
-}
-
-// 素材应用与清理（LVGL 线程）。provider 切走时立刻撤下旧素材；
-// 下载完成的素材在下一帧淡入（这里是直接换，圆屏上视觉上就是一次闪切）。
-// 目录里某助手素材的版本号（找不到/无效返回 0）。轮换记录对侧台内容版本用。
-uint32_t VibeCoding::spriteVersionOf(const std::string &provider)
-{
-    std::lock_guard<std::mutex> lock(model_mutex_);
-    const auto *entry = findProviderLocked(provider);
-    return (entry && entry->sprite.valid()) ? entry->sprite.version : 0;
-}
-
-void VibeCoding::maybeApplyArtwork(const std::string &selected_provider)
-{
-    if (!sprite_stage_) return;
-    // 每帧：在飞解码挂上归属侧台 + 两侧台内容对齐相邻助手（三舞台轮换后
-    // 远侧台、目录版本刷新都在这里自动补齐）。
-    prefetchTick();
-    // 行动系统：舞台内容每帧都可能变（换装/晋升/清空），在此对齐可用动作
-    // 名单——变化即置脏，worker 线程负责上报。
-    syncAvailableActions();
-    if (tryPromotePrefetch(selected_provider)) return;
-    bool dirty = false;
-    std::string ready;
-    {
-        std::lock_guard<std::mutex> lock(artwork_mutex_);
-        dirty = artwork_dirty_.exchange(false);
-        ready = artwork_ready_provider_;
-        if (dirty) {
-            // worker 刚提交了新缓存（下载完成或校验通过）：清掉直换的
-            // 「同版本只试一次」记忆。否则首次加载失败记下的 memo 会永久
-            // 屏蔽直换，之后每次切回都退回慢路闪空白。
-            cached_apply_provider_.clear();
-            cached_apply_version_ = 0;
-        }
-    }
-    if (artwork_applied_ != selected_provider) {
-        if (made_sprite::prefetchInFlight()) {
-            // 后台预取正在解码（单飞，通常就是本目标的侧台素材）：等一拍再
-            // 试，绝不在 LVGL 线程并行再解一套——两套解码像素叠加正是 PSRAM
-            // 峰值坑。worker 发布后下一帧 prefetchTick 挂侧台、晋升零解码；
-            // worker 失败则落到下面的老路。
-            return;
-        }
-        // 缓存直换：本地 manifest 版本与目录一致就直接整体换装（commitArt
-        // 原子换容器，旧素材仍在显示时不闪空白），不再等 worker 的 ensure()
-        // 逐文件 SPIFFS 读 + SHA-256 复核——那要好几秒，实机表现为「切到
-        // 旺财先显示空白，过几秒才换装」。缓存的完整性不变量是 manifest
-        // 最后写、写前每个文件都已验过哈希，版本一致即可信。
-        if (tryApplyCachedArtwork(selected_provider)) {
-            artwork_applied_ = selected_provider;
-            artwork_applied_version_ = spriteVersionOf(selected_provider);
-            return;
-        }
-        if (dirty || made_sprite::artworkActive(sprite_stage_)) {
-            made_sprite::clearArtwork(sprite_stage_);
-            artwork_applied_.clear();
-        }
-    }
-    if (!dirty || ready.empty() || ready != selected_provider || artwork_applied_ == ready) return;
-    std::string manifest;
-    if (made_sprite_cache::loadManifest(selected_provider, manifest) &&
-        made_sprite::applyArtwork(sprite_stage_, manifest, made_sprite_cache::baseDir(selected_provider))) {
-        artwork_applied_ = selected_provider;
-        artwork_applied_version_ = spriteVersionOf(selected_provider);
-        ESP_LOGI(BUTTON_TAG, "[sprite] applied provider=%s", selected_provider.c_str());
-    } else {
-        made_sprite::clearArtwork(sprite_stage_);
-        artwork_applied_.clear();
-        ESP_LOGI(BUTTON_TAG, "[sprite] apply_failed provider=%s", selected_provider.c_str());
-    }
-}
-
-// LVGL 线程。同一条流水线的快速通道：读缓存 manifest 的 version，与目录
-// 下发的一致就立即解码应用。同一 (provider, version) 只试一次（记忆在
-// cached_apply_*），失败或没缓存就回退 worker 校验下载的老路，
-// PNG 损坏等落盘级损坏会在 applyArtwork 解码失败时暴露出来走回退。
-bool VibeCoding::tryApplyCachedArtwork(const std::string &provider)
-{
-    uint32_t version = 0;
-    {
-        std::lock_guard<std::mutex> lock(model_mutex_);
-        const vibe_provider::Provider *entry = findProviderLocked(provider);
-        if (!entry || !entry->sprite.valid()) return false;
-        version = entry->sprite.version;
-    }
-    {
-        std::lock_guard<std::mutex> lock(artwork_mutex_);
-        const uint32_t now = static_cast<uint32_t>(esp_timer_get_time() / 1000);
-        if (cached_apply_provider_ == provider && cached_apply_version_ == version) {
-            if (cached_apply_attempts_ >= 2) {
-                // 同版本连败 2 次：缓存大概率损坏（预加载只比对 manifest
-                // 版本号，文件本身坏了发现不了）。请 worker 整套删除重下；
-                // LVGL 侧停止反复解码——否则每 300ms 一次的全量 SPIFFS 读
-                // + PNG 解码会把 LVGL 线程打满，截图/命令全部饿死。
-                if (!artwork_purge_pending_.load()) {
-                    artwork_purge_provider_ = provider;
-                    artwork_purge_pending_.store(true);
-                    ESP_LOGW(BUTTON_TAG,
-                        "[sprite] cached_apply_dead provider=%s version=%u -> purge+redownload",
-                        provider.c_str(), static_cast<unsigned>(version));
-                }
-                return false;
-            }
-            if (static_cast<int32_t>(now - cached_retry_at_ms_) < 300) return false;
-        } else {
-            cached_apply_attempts_ = 0;
-        }
-        cached_retry_at_ms_ = now;
-    }
-    uint32_t cached = 0;
-    std::string manifest;
-    if (!made_sprite_cache::cachedVersion(provider, cached) || cached != version ||
-        !made_sprite_cache::loadManifest(provider, manifest)) {
-        // 缓存未就绪不是错误：worker 正在下载/校验，300ms 后会自动再试，
-        // worker 提交（dirty）时也会立即清 memo 解锁。
-        std::lock_guard<std::mutex> lock(artwork_mutex_);
-        cached_apply_provider_ = provider;
-        cached_apply_version_ = version;
-        return false;
-    }
-    if (!made_sprite::applyArtwork(sprite_stage_, manifest, made_sprite_cache::baseDir(provider))) {
-        ESP_LOGW(BUTTON_TAG, "[sprite] cached_apply_failed provider=%s version=%u psram_free=%u",
-            provider.c_str(), static_cast<unsigned>(version),
-            static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_SPIRAM)));
-        std::lock_guard<std::mutex> lock(artwork_mutex_);
-        cached_apply_provider_ = provider;
-        cached_apply_version_ = version;
-        ++cached_apply_attempts_;
-        return false;
-    }
-    {
-        std::lock_guard<std::mutex> lock(artwork_mutex_);
-        cached_apply_provider_.clear();  // 成功即清：切走再切回仍可秒换
-        cached_apply_version_ = 0;
-        cached_apply_attempts_ = 0;
-    }
-    ESP_LOGI(BUTTON_TAG, "[sprite] cached_applied provider=%s version=%u",
-        provider.c_str(), static_cast<unsigned>(version));
-    deferSidesForDecodePeak();
-    return true;
-}
-
-// 换装错峰（LVGL 线程）：主舞台刚解码完整套素材（峰值已过但分配器还没
-// 归还干净），立刻补两侧台就是三套解码 + 烘焙同窗叠加，开机时序最挤的
-// 几秒会把 PSRAM 打到低谷（2026-10-18 排查：psram_free 曾跌到 658KB）。
-// 侧台推迟 2.5s 再补，用户无感（侧台不在视野内）；拖动方向侧不受
-// defer 限制（ensureSide 的 defer 条件对 drag_side_ 例外），不影响翻页。
-void VibeCoding::deferSidesForDecodePeak()
-{
-    const uint32_t until = lv_tick_get() + 2500;
-    for (auto &slot : sides_) slot.defer_until = until;
-}
-
-std::string savedFirmwareMark(const char *key)
-{
-    nvs_handle_t handle;
-    if (nvs_open("vibe_fw", NVS_READONLY, &handle) != ESP_OK) return {};
-    size_t length = 0;
-    if (nvs_get_str(handle, key, nullptr, &length) != ESP_OK || length == 0 || length > 200) {
-        nvs_close(handle);
-        return {};
-    }
-    std::string value(length, '\0');
-    if (nvs_get_str(handle, key, value.data(), &length) != ESP_OK) {
-        nvs_close(handle);
-        return {};
-    }
-    nvs_close(handle);
-    if (!value.empty() && value.back() == '\0') value.pop_back();
-    return value;
-}
-
-void rememberFirmwareMark(const char *key, const std::string &value)
-{
-    nvs_handle_t handle;
-    if (nvs_open("vibe_fw", NVS_READWRITE, &handle) != ESP_OK) return;
-    nvs_set_str(handle, key, value.c_str());
-    nvs_commit(handle);
-    nvs_close(handle);
 }
 
 void VibeCoding::refreshConfig()
@@ -5322,7 +3262,12 @@ void VibeCoding::refreshConfig()
     const auto origin = vibe_pairing::snapshot();
     std::string response;
     int status = 0;
-    if (!request("/device/config", false, response, status)) return;
+    // config 响应含完整 provider/素材目录（实测 ~9KB），默认 8192 会被
+    // receive_response 截断导致 parse 永远失败、config 无限重拉。
+    if (!request("/device/config", false, response, status, "", 256 * 1024)) return;
+#if VIBE_SMOKE_TEST
+    ESP_LOGW("vibe_cfg", "[cfg] status=%d bytes=%u", status, static_cast<unsigned>(response.size()));
+#endif
     if (receiverVoiceUploading()) return;
     if (status == 401) {
         vibe_pairing::forget();
@@ -5584,6 +3529,7 @@ void VibeCoding::announceBoardCatalog()
         "{\"name\":\"task.confirm\"},"
         "{\"name\":\"task.cancel\"},"
         "{\"name\":\"debug.screenshot\"},"
+        "{\"name\":\"debug.heap\"},"
         "{\"name\":\"ui.swipe\"},"
         "{\"name\":\"ui.tap\"},"
         "{\"name\":\"ui.back\"}";
@@ -5616,36 +3562,48 @@ void VibeCoding::announceBoardCatalog()
 
 void VibeCoding::flushBoardEvent()
 {
-    std::string name;
-    std::vector<std::pair<std::string, std::string>> fields;
+    std::string body;
     {
         std::lock_guard<std::mutex> lock(model_mutex_);
-        if (pending_board_event_.empty()) return;
-        if (std::find(board_events_.begin(), board_events_.end(), pending_board_event_) == board_events_.end()) {
-            pending_board_event_.clear();
-            pending_board_event_fields_.clear();
-            return;
+        // burn-in 观察通道优先：绕过订阅门禁直发（桥接器打日志后拒收未订阅
+        // 事件，无副作用）。观察期没有别的插件事件源，挤占无害。
+        if (!burnin_event_body_.empty()) {
+            body = std::move(burnin_event_body_);
+            burnin_event_body_.clear();
         }
-        name = std::move(pending_board_event_);
-        pending_board_event_.clear();
-        fields = std::move(pending_board_event_fields_);
-        pending_board_event_fields_.clear();
     }
-    std::string body = std::string("{\"name\":\"") + name + "\"";
-    if (!fields.empty()) {
-        body += ",\"fields\":{";
-        for (size_t i = 0; i < fields.size(); ++i) {
-            if (i) body += ',';
-            body += '"'; body += fields[i].first; body += "\":\"";
-            for (const char c : fields[i].second) {   // JSON 字符串转义（保守）
-                if (c == '"' || c == '\\') body += '\\';
-                body += c;
+    if (body.empty()) {
+        std::string name;
+        std::vector<std::pair<std::string, std::string>> fields;
+        {
+            std::lock_guard<std::mutex> lock(model_mutex_);
+            if (pending_board_event_.empty()) return;
+            if (std::find(board_events_.begin(), board_events_.end(), pending_board_event_) == board_events_.end()) {
+                pending_board_event_.clear();
+                pending_board_event_fields_.clear();
+                return;
             }
-            body += '"';
+            name = std::move(pending_board_event_);
+            pending_board_event_.clear();
+            fields = std::move(pending_board_event_fields_);
+            pending_board_event_fields_.clear();
+        }
+        body = std::string("{\"name\":\"") + name + "\"";
+        if (!fields.empty()) {
+            body += ",\"fields\":{";
+            for (size_t i = 0; i < fields.size(); ++i) {
+                if (i) body += ',';
+                body += '"'; body += fields[i].first; body += "\":\"";
+                for (const char c : fields[i].second) {   // JSON 字符串转义（保守）
+                    if (c == '"' || c == '\\') body += '\\';
+                    body += c;
+                }
+                body += '"';
+            }
+            body += '}';
         }
         body += '}';
     }
-    body += '}';
     std::string response;
     int status = 0;
     (void)request("/device/events", true, response, status, body);
@@ -5916,6 +3874,7 @@ void VibeCoding::startScreenshotUpload()
 // ui.swipe：语义化手势，动作与真实手势一致（left/right 切助手，up 开抽屉，down 收抽屉）。
 void VibeCoding::handleUiSwipe(const std::string &direction)
 {
+    swipe_calls_.fetch_add(1);
     if (!canOperate() || settings_open_.load()) return;
     if (direction == "left") {
         // 抽屉（任务结果页）里横向切当前助手的不同任务，主屏切助手。
@@ -5954,6 +3913,7 @@ void VibeCoding::applyRemoteCommands()
         std::lock_guard<std::mutex> lock(model_mutex_);
         batch.swap(inbound_commands_);
     }
+    cmd_calls_.fetch_add(batch.size());
     for (auto &command : batch) {
         if (command.name == "caption.show") {
             std::string caption = trimNotice(command.text);
@@ -5998,6 +3958,8 @@ void VibeCoding::applyRemoteCommands()
             }
         } else if (command.name == "debug.screenshot") {
             startScreenshotUpload();
+        } else if (command.name == "debug.heap") {
+            logHeapDiagnostics();
         } else if (command.name == "action.play" || command.name.rfind("action.", 0) == 0) {
             // 行动系统：动作即命令（action.<名>，或兼容旧 action.play+fields.action）。
             // 两级绑定模型：命令名通常是抽象命令号（action.A1…），playAction
@@ -6103,865 +4065,6 @@ void VibeCoding::pullBoardCommands()
     }
     if (!postAck(ack_ids)) ack_retry_ = std::move(ack_ids);
     else ack_retry_.clear();
-}
-
-void VibeCoding::runFirmwareUpdate()
-{
-    auto note = [this](const std::string &text) {
-        std::lock_guard<std::mutex> lock(model_mutex_);
-        firmware_status_ = text;
-        ++model_.revision;
-    };
-    struct BusyGuard {
-        std::atomic<bool> &flag;
-        bool release = true;
-        ~BusyGuard() { if (release) flag.store(false); }
-    } busy{firmware_busy_};
-    firmware_busy_.store(true);
-    note(T("正在从配置的地址下载固件…"));
-    const std::string version = firmware_version_;
-    const std::string sha = firmware_sha_;
-    const std::string url = firmware_url_;
-    const int size = firmware_size_;
-    firmware_trace_stage_ = "pull";
-    firmware_trace_size_ = size;
-    firmware_trace_written_ = 0;
-    firmware_trace_http_ = 0;
-    if (url.empty()) {
-        firmware_trace_stage_ = "fail";
-        firmware_trace_result_ = "empty";
-        ESP_LOGW("vibe_fw", "[fw] abort empty-url tasks=%d task=%s", firmware_trace_tasks_, firmware_trace_task_.c_str());
-        note(T("电脑上还没有配置固件地址"));
-        return;
-    }
-    std::string bridge_path;
-    const std::string base = vibe_pairing::snapshot().url;
-    std::string origin = base;
-    while (!origin.empty() && origin.back() == '/') origin.pop_back();
-    if (url.rfind("/device/firmware/current", 0) == 0) {
-        bridge_path = "/device/firmware/current";
-    } else if (!origin.empty() && url.rfind(origin, 0) == 0) {
-        std::string rest = url.substr(origin.size());
-        const auto query = rest.find('?');
-        if (query != std::string::npos) rest.resize(query);
-        if (rest == "/device/firmware/current") bridge_path = rest;
-    }
-    const esp_partition_t *part = esp_ota_get_next_update_partition(nullptr);
-    if (!part) {
-        firmware_trace_stage_ = "fail";
-        firmware_trace_result_ = "partition";
-        ESP_LOGW("vibe_fw", "[fw] abort no-partition why=%s", firmware_trace_why_.c_str());
-        note(T("没有可用的更新分区"));
-        return;
-    }
-    esp_ota_handle_t handle = 0;
-    if (esp_ota_begin(part, size > 0 ? static_cast<size_t>(size) : OTA_SIZE_UNKNOWN, &handle) != ESP_OK) {
-        firmware_trace_stage_ = "fail";
-        firmware_trace_result_ = "begin";
-        ESP_LOGW("vibe_fw", "[fw] abort begin size=%d", size);
-        note(T("无法开始写入固件"));
-        return;
-    }
-    ESP_LOGW("vibe_fw", "[fw] pull why=%s tasks=%d task=%s size=%d bridge=%d url=%.160s",
-        firmware_trace_why_.c_str(), firmware_trace_tasks_, firmware_trace_task_.c_str(), size,
-        bridge_path.empty() ? 0 : 1, url.c_str());
-    mbedtls_md_context_t md;
-    mbedtls_md_init(&md);
-    const mbedtls_md_info_t *info = mbedtls_md_info_from_type(MBEDTLS_MD_SHA256);
-    bool hash_ok = info && mbedtls_md_setup(&md, info, 0) == 0 && mbedtls_md_starts(&md) == 0;
-    auto fail = [&](const char *text) {
-        mbedtls_md_free(&md);
-        if (handle) esp_ota_abort(handle);
-        handle = 0;
-        note(T(text));
-    };
-    size_t written = 0;
-    bool io_ok = false;
-    int last_http = 0;
-    auto pullChunks = [&]() {
-        if (bridge_path.empty()) return false;
-        constexpr size_t kChunk = 128 * 1024;
-        while (true) {
-            const std::string path = bridge_path + "?offset=" + std::to_string(written) + "&length=" + std::to_string(kChunk);
-            std::string chunk;
-            int chunk_status = 0;
-            const bool got = request(path, false, chunk, chunk_status, "", kChunk + 1024, 20000);
-            last_http = chunk_status;
-            firmware_trace_http_ = chunk_status;
-            firmware_trace_written_ = static_cast<int>(written);
-            if (!got || chunk_status != 200) {
-                ESP_LOGW("vibe_fw", "[fw] chunk off=%u http=%d got=%d bytes=%u",
-                    static_cast<unsigned>(written), chunk_status, got ? 1 : 0, static_cast<unsigned>(chunk.size()));
-                return false;
-            }
-            if (chunk.empty()) return written >= 16;
-            if (esp_ota_write(handle, chunk.data(), chunk.size()) != ESP_OK) {
-                ESP_LOGW("vibe_fw", "[fw] write off=%u bytes=%u", static_cast<unsigned>(written), static_cast<unsigned>(chunk.size()));
-                return false;
-            }
-            if (hash_ok) mbedtls_md_update(&md, reinterpret_cast<const unsigned char *>(chunk.data()), chunk.size());
-            written += chunk.size();
-            firmware_trace_written_ = static_cast<int>(written);
-            ESP_LOGI("vibe_fw", "[fw] chunk off=%u bytes=%u total=%u",
-                static_cast<unsigned>(written - chunk.size()), static_cast<unsigned>(chunk.size()), static_cast<unsigned>(written));
-            if (written > 8 * 1024 * 1024) return false;
-            if (chunk.size() < kChunk) return true;
-            if (size > 0 && written >= static_cast<size_t>(size)) return true;
-        }
-    };
-    if (!bridge_path.empty()) {
-        io_ok = pullChunks();
-    } else if (url.rfind("http://", 0) == 0 || url.rfind("https://", 0) == 0) {
-        if (url.rfind("https://", 0) == 0 && !vibe_pairing::tls_time_ready()) {
-            firmware_trace_stage_ = "fail";
-            firmware_trace_result_ = "tls";
-            ESP_LOGW("vibe_fw", "[fw] abort tls");
-            fail("正在同步设备时间，以校验 HTTPS 证书");
-            return;
-        }
-        esp_http_client_config_t config = {};
-        config.url = url.c_str();
-        config.timeout_ms = 20000;
-        config.buffer_size = 4096;
-        if (url.rfind("https://", 0) == 0) config.crt_bundle_attach = esp_crt_bundle_attach;
-        auto *client = esp_http_client_init(&config);
-        if (client && esp_http_client_open(client, 0) == ESP_OK &&
-            esp_http_client_fetch_headers(client) >= 0 &&
-            esp_http_client_get_status_code(client) == 200) {
-            last_http = 200;
-            io_ok = true;
-            char buf[1024];
-            int n = 0;
-            while ((n = esp_http_client_read(client, buf, sizeof(buf))) > 0) {
-                if (esp_ota_write(handle, buf, n) != ESP_OK) { io_ok = false; break; }
-                if (hash_ok) mbedtls_md_update(&md, reinterpret_cast<const unsigned char *>(buf), n);
-                written += static_cast<size_t>(n);
-                if (written > 8 * 1024 * 1024) { io_ok = false; break; }
-            }
-            if (n < 0) io_ok = false;
-        } else if (client) {
-            last_http = esp_http_client_get_status_code(client);
-        }
-        firmware_trace_http_ = last_http;
-        firmware_trace_written_ = static_cast<int>(written);
-        ESP_LOGW("vibe_fw", "[fw] direct http=%d written=%u io=%d", last_http, static_cast<unsigned>(written), io_ok ? 1 : 0);
-        if (client) esp_http_client_cleanup(client);
-    } else {
-        firmware_trace_stage_ = "fail";
-        firmware_trace_result_ = "badaddr";
-        ESP_LOGW("vibe_fw", "[fw] abort bad-url %.160s", url.c_str());
-        fail("固件地址无效");
-        return;
-    }
-    if (!io_ok || written < 16 || (size > 0 && written != static_cast<size_t>(size))) {
-        firmware_trace_stage_ = "fail";
-        firmware_trace_result_ = "incomplete";
-        firmware_trace_written_ = static_cast<int>(written);
-        firmware_trace_http_ = last_http;
-        ESP_LOGW("vibe_fw", "[fw] incomplete io=%d written=%u size=%d http=%d tasks=%d task=%s",
-            io_ok ? 1 : 0, static_cast<unsigned>(written), size, last_http,
-            firmware_trace_tasks_, firmware_trace_task_.c_str());
-        fail("固件下载不完整");
-        return;
-    }
-    unsigned char digest[32] = {};
-    if (!hash_ok || mbedtls_md_finish(&md, digest) != 0) {
-        firmware_trace_stage_ = "fail";
-        firmware_trace_result_ = "hash";
-        ESP_LOGW("vibe_fw", "[fw] hash-setup written=%u", static_cast<unsigned>(written));
-        fail("固件校验失败");
-        return;
-    }
-    mbedtls_md_free(&md);
-    char hex[65] = {};
-    for (int i = 0; i < 32; ++i) snprintf(hex + i * 2, 3, "%02x", digest[i]);
-    if (sha.size() == 64 && sha != hex) {
-        firmware_trace_stage_ = "fail";
-        firmware_trace_result_ = "mismatch";
-        ESP_LOGW("vibe_fw", "[fw] sha mismatch written=%u", static_cast<unsigned>(written));
-        esp_ota_abort(handle);
-        note(T("固件校验不一致"));
-        return;
-    }
-    if (esp_ota_end(handle) != ESP_OK || esp_ota_set_boot_partition(part) != ESP_OK) {
-        firmware_trace_stage_ = "fail";
-        firmware_trace_result_ = "boot";
-        ESP_LOGW("vibe_fw", "[fw] boot-partition written=%u", static_cast<unsigned>(written));
-        note(T("固件写入失败"));
-        return;
-    }
-    if (sha.size() == 64) rememberFirmwareMark("sha", sha);
-    rememberFirmwareMark("url", url);
-    firmware_trace_stage_ = "done";
-    firmware_trace_result_ = "ok";
-    firmware_trace_written_ = static_cast<int>(written);
-    ESP_LOGW("vibe_fw", "[fw] done written=%u size=%d", static_cast<unsigned>(written), size);
-    note(version.empty() ? T("固件已更新，正在重启") : T("固件已更新，正在重启"));
-    sendHeartbeat();
-    vTaskDelay(pdMS_TO_TICKS(400));
-    esp_restart();
-}
-
-void VibeCoding::sendHeartbeat()
-{
-    std::string response;
-    int status = 0;
-    const uint32_t now_ms = static_cast<uint32_t>(esp_timer_get_time() / 1000);
-    // 截屏看门狗：上传任务若被中断（桥接器被杀 / USB 断开导致请求任务未走到复位分支）
-    // 会把 screenshot_busy_ 永久卡在 true，使后续 debug.screenshot 全部静默 early-return。
-    // 超过阈值（正常上传 ≤20s 超时）强制复位，自愈卡死。
-    if (screenshot_busy_.load()) {
-        const uint32_t age = now_ms - screenshot_busy_since_ms_.load();
-        if (age > 25000) {
-            ESP_LOGW("vibe_shot", "[screenshot] 看门狗复位卡死标志（已卡 %ums）", age);
-            screenshot_busy_.store(false);
-            screenshot_busy_since_ms_.store(0);
-        }
-    }
-    const std::string path = "/device/heartbeat?uiStage=" + std::to_string(ui_stage_.load()) +
-        "&uiAge=" + std::to_string(now_ms - ui_tick_ms_.load()) +
-        "&bootAge=" + std::to_string(now_ms - boot_tick_ms_.load()) +
-        "&exit=" + std::to_string(exit_requested_.load()) +
-        "&displayStage=" + std::to_string(display_stage_.load()) +
-        "&displayCount=" + std::to_string(display_count_.load()) +
-        "&provider=" + std::to_string(selected_provider_.load()) +
-        "&wifiReason=" + std::to_string(vibe_wifi::disconnect_reason()) +
-        "&wifiDrops=" + std::to_string(vibe_wifi::disconnect_count()) +
-        "&wifiSelf=" + std::to_string(vibe_wifi::voluntary_disconnects()) +
-        "&wifiHist=" + vibe_wifi::disconnect_history() +
-        "&heap=" + std::to_string(esp_get_free_heap_size()) +
-        "&minHeap=" + std::to_string(esp_get_minimum_free_heap_size()) +
-        "&psram=" + std::to_string(heap_caps_get_free_size(MALLOC_CAP_SPIRAM)) +
-        "&psramMin=" + std::to_string(heap_caps_get_minimum_free_size(MALLOC_CAP_SPIRAM)) +
-        "&upMs=" + std::to_string(now_ms) +
-        "&fwStage=" + firmware_trace_stage_ +
-        "&fwWhy=" + firmware_trace_why_ +
-        "&fwResult=" + firmware_trace_result_ +
-        "&fwWritten=" + std::to_string(firmware_trace_written_) +
-        "&fwSize=" + std::to_string(firmware_trace_size_) +
-        "&fwHttp=" + std::to_string(firmware_trace_http_) +
-        "&fwTasks=" + std::to_string(firmware_trace_tasks_) +
-        "&fwTask=" + firmware_trace_task_;
-    const bool sent = request(path, false, response, status);
-    if (receiverVoiceUploading()) return;
-    if (!sent) {
-        setConnectionError("Computer bridge offline");
-        return;
-    }
-    if (status == 401) {
-        vibe_pairing::forget();
-        invalidateCatalog();
-        setConnectionError("Computer unpaired this device");
-        return;
-    }
-    if (status != 200) {
-        setConnectionError("Bridge heartbeat HTTP " + std::to_string(status));
-        return;
-    }
-    std::lock_guard<std::mutex> lock(model_mutex_);
-    if (model_.connection_error == "Computer bridge offline" ||
-        model_.connection_error.rfind("Bridge heartbeat HTTP ", 0) == 0) {
-        model_.connection_error.clear();
-        ++model_.revision;
-    }
-}
-
-void VibeCoding::refreshSessions()
-{
-    std::string provider_id;
-    {
-        std::lock_guard<std::mutex> lock(model_mutex_);
-        provider_id = selectedProviderLocked().id;
-    }
-    if (!vibe_provider::validId(provider_id)) return;
-    std::string response;
-    int status = 0;
-    const bool sent = request(std::string("/device/sessions?provider=") + provider_id,
-                              false, response, status);
-    if (receiverVoiceUploading()) return;
-    if (!sent) {
-        setConnectionError("Bridge unreachable");
-        return;
-    }
-    if (status == 401) {
-        vibe_pairing::forget();
-        invalidateCatalog();
-        setConnectionError("Computer unpaired this device");
-        return;
-    }
-    if (status != 200) {
-        setConnectionError("Bridge sessions HTTP " + std::to_string(status));
-        return;
-    }
-    cJSON *root = cJSON_Parse(response.c_str());
-    const cJSON *items = root ? cJSON_GetObjectItemCaseSensitive(root, "sessions") : nullptr;
-    if (!cJSON_IsArray(items)) {
-        if (root) cJSON_Delete(root);
-        setConnectionError("Invalid session list");
-        return;
-    }
-    std::vector<Session> sessions;
-    const int count = std::min(cJSON_GetArraySize(items), 32);
-    sessions.reserve(count);
-    for (int i = 0; i < count; ++i) {
-        const cJSON *item = cJSON_GetArrayItem(items, i);
-        if (!cJSON_IsObject(item)) continue;
-        Session session = {
-            jsonString(item, "id"),
-            jsonString(item, "title"),
-            jsonString(item, "provider"),
-            jsonString(item, "projectId"),
-        };
-        if (validSessionId(session.id) && session.provider == provider_id &&
-            validProjectId(session.project_id)) {
-            sessions.push_back(std::move(session));
-        }
-    }
-    cJSON_Delete(root);
-    {
-        std::lock_guard<std::mutex> lock(model_mutex_);
-        if (selectedProviderLocked().id != provider_id) return;
-        auto *provider = findProviderLocked(provider_id);
-        if (!provider) return;
-        auto &selected_id = provider->selected_session_id;
-        const bool selected_exists = std::any_of(sessions.begin(), sessions.end(),
-            [&selected_id](const Session &session) { return session.id == selected_id; });
-        const std::string next_id = selected_exists ? selected_id :
-            (sessions.empty() ? "" : sessions.front().id);
-        if (selected_id != next_id) {
-            selected_id = next_id;
-            model_.tasks.clear();
-            model_.feedback.clear();
-            model_.feedback_task_id.clear();
-            visible_task_id_.clear();
-        }
-        model_.sessions = std::move(sessions);
-        model_.connection_error.clear();
-        ++model_.revision;
-    }
-}
-
-void VibeCoding::createSession(const std::string &provider_id, const std::string &project_id)
-{
-    if (!vibe_provider::validId(provider_id) || !validProjectId(project_id)) {
-        std::lock_guard<std::mutex> lock(model_mutex_);
-        create_session_in_flight_ = false;
-        model_.session_notice = T("新建任务参数无效");
-        ++model_.revision;
-        return;
-    }
-    {
-        std::lock_guard<std::mutex> lock(model_mutex_);
-        const auto *provider = findProviderLocked(provider_id);
-        if (!provider || !provider->available) {
-            create_session_in_flight_ = false;
-            model_.session_notice = T("此助手已移除或不可用");
-            ++model_.revision;
-            return;
-        }
-    }
-    std::string response;
-    int status = 0;
-    const std::string path = std::string("/device/sessions?provider=") +
-        provider_id + "&projectId=" + project_id;
-    const bool sent = request(path, true, response, status);
-    std::string notice;
-    Session created;
-    if (sent && (status == 200 || status == 201)) {
-        cJSON *root = cJSON_Parse(response.c_str());
-        if (root) {
-            created = {jsonString(root, "id"), jsonString(root, "title"),
-                       jsonString(root, "provider"), jsonString(root, "projectId")};
-            cJSON_Delete(root);
-        }
-        if (!validSessionId(created.id) || created.provider != provider_id ||
-            created.project_id != project_id) {
-            created = {};
-            notice = T("新建任务响应无效");
-        }
-    } else if (status == 401) {
-        vibe_pairing::forget();
-        invalidateCatalog();
-        notice = T("电脑已解除配对");
-    } else {
-        notice = sent ? T("新建任务失败 (HTTP ") + std::to_string(status) + ")" : T("电脑连接失败");
-    }
-    {
-        std::lock_guard<std::mutex> lock(model_mutex_);
-        create_session_in_flight_ = false;
-        auto *provider = findProviderLocked(provider_id);
-        if (!created.id.empty() && provider) {
-            provider->selected_session_id = created.id;
-            if (selectedProviderLocked().id == provider_id) {
-                model_.sessions.insert(model_.sessions.begin(), std::move(created));
-                model_.tasks.clear();
-                model_.feedback.clear();
-                model_.feedback_task_id.clear();
-                visible_task_id_.clear();
-                model_.session_notice = provider->external_unscoped ?
-                    T("此助手任务上下文可能共享，请在电脑端核对") :
-                    T("任务已创建，按住 BOOT 说话");
-            }
-        } else if (selectedProviderLocked().id == provider_id) {
-            model_.session_notice = std::move(notice);
-        }
-        ++model_.revision;
-    }
-}
-
-void VibeCoding::deleteSession(const std::string &provider_id, const std::string &session_id)
-{
-    std::string response;
-    int status = 0;
-    const bool sent = validSessionId(session_id) && vibe_provider::validId(provider_id) &&
-        request(std::string("/device/sessions/") + session_id + "/delete", true, response, status);
-    bool deleted = false;
-    std::string notice;
-    cJSON *root = sent ? cJSON_Parse(response.c_str()) : nullptr;
-    if (sent && status == 200 && root && jsonString(root, "id") == session_id &&
-        cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(root, "deleted"))) {
-        deleted = true;
-        notice = T("任务已删除");
-    } else if (status == 401) {
-        vibe_pairing::forget();
-        invalidateCatalog();
-        notice = T("电脑已解除配对");
-    } else if (!sent) {
-        notice = T("电脑连接失败");
-    } else if (root && !jsonString(root, "error").empty()) {
-        notice = jsonString(root, "error");
-    } else {
-        notice = T("删除任务失败 (HTTP ") + std::to_string(status) + ")";
-    }
-    if (root) cJSON_Delete(root);
-    {
-        std::lock_guard<std::mutex> lock(model_mutex_);
-        delete_session_in_flight_ = false;
-        auto *provider = findProviderLocked(provider_id);
-        if (deleted && provider && provider->selected_session_id == session_id)
-            provider->selected_session_id.clear();
-        if (selectedProviderLocked().id == provider_id) {
-            if (deleted) {
-                model_.sessions.erase(std::remove_if(model_.sessions.begin(), model_.sessions.end(),
-                    [&session_id](const Session &item) { return item.id == session_id; }), model_.sessions.end());
-                model_.tasks.clear();
-                model_.feedback.clear();
-                model_.feedback_task_id.clear();
-                visible_task_id_.clear();
-                voice_session_id_.clear();
-            }
-            model_.session_notice = std::move(notice);
-            ++model_.revision;
-        }
-    }
-}
-
-void VibeCoding::refreshTasks()
-{
-    std::string provider_id;
-    std::string session_id;
-    {
-        std::lock_guard<std::mutex> lock(model_mutex_);
-        const auto &provider = selectedProviderLocked();
-        provider_id = provider.id;
-        session_id = provider.selected_session_id;
-    }
-    if (!validSessionId(session_id)) return;
-    std::string response;
-    int status = 0;
-    const bool sent = request(std::string("/device/tasks?provider=") + provider_id +
-                              "&sessionId=" + session_id, false, response, status);
-    if (receiverVoiceUploading()) return;
-    if (!sent) {
-        setConnectionError("Bridge unreachable");
-        return;
-    }
-    if (status == 401) {
-        vibe_pairing::forget();
-        invalidateCatalog();
-        setConnectionError("Computer unpaired this device");
-        return;
-    }
-    if (status != 200) {
-        setConnectionError("Bridge HTTP " + std::to_string(status));
-        return;
-    }
-    cJSON *root = cJSON_Parse(response.c_str());
-    if (!root) {
-        setConnectionError("Invalid bridge response");
-        return;
-    }
-    const cJSON *jobs = cJSON_GetObjectItemCaseSensitive(root, "jobs");
-    if (!cJSON_IsArray(jobs)) {
-        cJSON_Delete(root);
-        setConnectionError("Invalid task list");
-        return;
-    }
-    std::vector<Task> tasks;
-    const int count = std::min(cJSON_GetArraySize(jobs), 8);
-    tasks.reserve(1);
-    for (int i = 0; i < count; ++i) {
-        const cJSON *job = cJSON_GetArrayItem(jobs, i);
-        if (!cJSON_IsObject(job)) continue;
-        Task task = {
-            jsonString(job, "id"),
-            jsonString(job, "instruction"),
-            jsonString(job, "provider"),
-            jsonString(job, "projectId"),
-            jsonString(job, "status"),
-            jsonString(job, "result"),
-            jsonString(job, "progress"),
-            jsonString(job, "error"),
-            jsonString(job, "vibeSessionId"),
-            cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(job, "resultTruncated")) != 0,
-            cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(job, "instructionTruncated")) != 0,
-            parseAttachments(job),
-        };
-        if (validTaskId(task.id) && task.provider == provider_id &&
-            task.session_id == session_id) {
-            tasks.push_back(std::move(task));
-            break; // The current task shows its newest exchange only.
-        }
-    }
-    cJSON_Delete(root);
-    {
-        std::lock_guard<std::mutex> lock(model_mutex_);
-        if (selectedProviderLocked().id != provider_id ||
-            selectedProviderLocked().selected_session_id != session_id) return;
-        model_.tasks = std::move(tasks);
-        model_.connection_error.clear();
-        model_.feedback_external = false;
-        if (model_.feedback == "Confirmed" || model_.feedback == "Cancelled" ||
-            std::none_of(model_.tasks.begin(), model_.tasks.end(), [this](const Task &task) {
-                return task.id == model_.feedback_task_id &&
-                    (task.status == "waiting_confirmation" || task.status == "queued" || task.status == "running");
-            })) {
-            model_.feedback.clear();
-            model_.feedback_task_id.clear();
-        }
-        ++model_.revision;
-    }
-}
-
-void VibeCoding::sendAction(PendingAction action)
-{
-    std::string response;
-    int status = 0;
-    const bool sent = request("/device/tasks/" + action.id + "/" + action.verb, true, response, status);
-    std::string feedback;
-    bool external_feedback = false;
-    if (!sent) {
-        feedback = "Action could not reach bridge";
-    } else if (status == 200) {
-        feedback = action.verb == "confirm" ? "Confirmed" : "Cancelled";
-    } else {
-        cJSON *root = cJSON_Parse(response.c_str());
-        feedback = root ? jsonString(root, "error") : "";
-        external_feedback = !feedback.empty();
-        if (root) cJSON_Delete(root);
-        if (feedback.empty()) feedback = "Action rejected (HTTP " + std::to_string(status) + ")";
-    }
-    {
-        std::lock_guard<std::mutex> lock(model_mutex_);
-        model_.feedback_external = external_feedback;
-        model_.feedback = std::move(feedback);
-        model_.feedback_task_id = action.id;
-        model_.action_in_flight = false;
-        ++model_.revision;
-    }
-}
-
-void VibeCoding::workerEntry(void *arg)
-{
-    static_cast<VibeCoding *>(arg)->workerLoop();
-}
-
-void VibeCoding::ensureWorkerStarted()
-{
-    // 摇晃感知（vibe_motion）：设备有 IMU 就启动，检测到「摇一摇」回调进
-    // notifyMotionShake（内部带幂等，无 IMU 静默不启动）。
-    vibe_motion::start([](void *ctx) { static_cast<VibeCoding *>(ctx)->notifyMotionShake(); }, this);
-    bool expected = false;
-    if (worker_started_.compare_exchange_strong(expected, true) &&
-        xTaskCreate(workerEntry, "vibe_bridge", 12288, this, 3, nullptr) != pdPASS) {
-        worker_started_ = false;
-        setConnectionError("Cannot start network task");
-    }
-}
-
-void VibeCoding::workerLoop()
-{
-    uint32_t active_cycles = 0;
-    uint64_t last_heartbeat_ms = 0;
-    uint32_t seen_app_epoch = button_epoch_.load();
-    bool phone_setup_started = false;
-    uint32_t phone_epoch = 0;
-    while (true) {
-        const uint32_t app_epoch = button_epoch_.load();
-        if (app_epoch != seen_app_epoch) {
-            seen_app_epoch = app_epoch;
-            last_heartbeat_ms = 0;
-        }
-        bool has_pending_action = false;
-        {
-            std::lock_guard<std::mutex> lock(model_mutex_);
-            has_pending_action = !pending_action_.verb.empty();
-        }
-        const bool foreground = canOperate();
-        const uint32_t requested_phone_epoch = phone_setup_epoch_.load();
-        const bool want_phone = foreground && !exit_requested_.load() && phone_setup_requested_.load();
-        // The portal must run before the Wi-Fi readiness gates, including when
-        // the device has never joined a network. All blocking cleanup stays here.
-        if ((phone_setup_started || vibe_wifi::setup_ap_active()) && (!want_phone || requested_phone_epoch != phone_epoch)) {
-            vibe_phone_setup::stop();
-            phone_setup_started = false;
-            if (vibe_wifi::setup_ap_active()) {
-                vTaskDelay(pdMS_TO_TICKS(100));
-                continue;
-            }
-        }
-        if (restore_station_pending_.load() && !active_.load() &&
-            (!vibe_wifi::receiver_active() || vibe_wifi::restore_station() == ESP_OK))
-            restore_station_pending_.store(false);
-        if (want_phone) {
-            auto fail_phone = [this, requested_phone_epoch](const std::string &message) {
-                if (requested_phone_epoch != phone_setup_epoch_.load() ||
-                    !phone_setup_requested_.load() || !active_.load()) return;
-                { std::lock_guard<std::mutex> lock(model_mutex_); phone_setup_error_ = message; }
-                phone_setup_requested_.store(false);
-                phone_setup_result_.store(-1);
-            };
-            if (!phone_setup_started) {
-                phone_epoch = requested_phone_epoch;
-                vibe_phone_setup::InitialConfig initial;
-                const auto pairing = vibe_pairing::snapshot();
-                initial.mode = pairing.access_mode == vibe_pairing::AccessMode::Manual ? "manual" :
-                               pairing.access_mode == vibe_pairing::AccessMode::Receiver ? "receiver" : "automatic";
-                char receiver_ssid[33] = {};
-                if (vibe_wifi::receiver_ssid(receiver_ssid, sizeof(receiver_ssid))) initial.receiver_ssid = receiver_ssid;
-                initial.https = pairing.manual_url.empty() || pairing.manual_url.rfind("https://", 0) == 0;
-                initial.port = initial.https ? 443 : 8788;
-                if (!pairing.manual_url.empty()) {
-                    const size_t scheme = pairing.manual_url.find("://");
-                    const std::string authority = scheme == std::string::npos ? pairing.manual_url : pairing.manual_url.substr(scheme + 3);
-                    const size_t colon = authority.rfind(':');
-                    initial.host = colon == std::string::npos ? authority : authority.substr(0, colon);
-                    if (colon != std::string::npos) initial.port = static_cast<uint16_t>(std::strtoul(authority.substr(colon + 1).c_str(), nullptr, 10));
-                }
-                const esp_err_t result = vibe_phone_setup::start(vibe_i18n::locale() == vibe_i18n::Locale::English, initial);
-                phone_setup_started = true; // Also clean up a partially started portal.
-                phone_setup_ready_epoch_.store(phone_epoch);
-                if (result != ESP_OK) fail_phone(T("手机配置开启失败，请返回重试"));
-            }
-            // Back / long BOOT / app close may have happened during startup.
-            if (!active_.load() || exit_requested_.load() || !phone_setup_requested_.load() ||
-                phone_epoch != phone_setup_epoch_.load()) {
-                vibe_phone_setup::stop();
-                phone_setup_started = false;
-                if (!active_.load() && vibe_wifi::receiver_active()) (void)vibe_wifi::restore_station();
-                continue;
-            }
-            vibe_phone_setup::tick();
-            const auto status = vibe_phone_setup::snapshot();
-            if (status.phase == vibe_phone_setup::Phase::Expired || status.phase == vibe_phone_setup::Phase::Error) {
-                vibe_phone_setup::stop();
-                phone_setup_started = false;
-                fail_phone(status.phase == vibe_phone_setup::Phase::Expired ? T("手机配置已超时，请重新开启") : T("手机配置开启失败，请返回重试"));
-                continue;
-            }
-            vibe_phone_setup::Submission submission;
-            if (vibe_phone_setup::take_submission(submission)) {
-                vibe_phone_setup::stop();
-                phone_setup_started = false;
-                if (active_.load() && !exit_requested_.load() && phone_setup_requested_.load() &&
-                    phone_epoch == phone_setup_epoch_.load()) {
-                    std::string error;
-                    bool saved = false;
-                    if (vibe_wifi::setup_ap_active()) error = T("手机配置关闭失败，请返回重试");
-                    else saved = applyPhoneSetup(submission, error);
-                    if (saved) {
-                        if (phone_epoch == phone_setup_epoch_.load() && phone_setup_requested_.load()) {
-                            phone_setup_requested_.store(false);
-                            phone_setup_result_.store(1);
-                        }
-                    } else fail_phone(error.empty() ? T("手机配置保存失败，请重试") : vibe_i18n::message(error));
-                }
-                std::fill(submission.wifi_password.begin(), submission.wifi_password.end(), '\0');
-                std::fill(submission.receiver_password.begin(), submission.receiver_password.end(), '\0');
-                last_heartbeat_ms = 0;
-            }
-            vTaskDelay(pdMS_TO_TICKS(100));
-            continue;
-        }
-        if (!foreground && !has_pending_action) {
-            last_heartbeat_ms = 0; // Re-entering Vibe sends the first heartbeat immediately.
-            vTaskDelay(pdMS_TO_TICKS(500));
-            continue;
-        }
-        // Apply saved mode changes even when the previous Wi-Fi is offline.
-        if (foreground) vibe_pairing::apply_pending_access();
-        // Entry/exit station switching shares this worker with phone setup.
-        // A rapid reopen cannot race an old exit into the wrong Wi-Fi mode.
-        if (canOperate() && foreground_network_pending_.exchange(false)) {
-            // A network chosen in 网络设置 stays up. Receiver mode reconnects
-            // only when that choice is still the active station.
-            if (vibe_pairing::snapshot().access_mode == vibe_pairing::AccessMode::Receiver &&
-                !vibe_wifi::station_held() && !vibe_wifi::receiver_active() &&
-                vibe_wifi::connect_receiver() != ESP_OK)
-                setConnectionError(T("请在接入设置填写接收端热点信息"));
-        }
-        const bool usb_direct_active = canOperate() &&
-            vibe_pairing::snapshot().access_mode == vibe_pairing::AccessMode::UsbDirect;
-        if (vibe_usb::active() != usb_direct_active) vibe_usb::set_active(usb_direct_active);
-        if (!canOperate()) vibe_usb::set_active(false);
-        // Both USB transports handle one request exchange at a time.
-        // Transcription can take minutes; let the voice task own the link.
-        if (foreground && receiverVoiceUploading()) {
-            vTaskDelay(pdMS_TO_TICKS(250));
-            continue;
-        }
-        auto failPendingAction = [this](const char *reason) {
-            std::lock_guard<std::mutex> lock(model_mutex_);
-            if (!pending_action_.verb.empty()) {
-                pending_action_ = {};
-                model_.action_in_flight = false;
-                model_.feedback_external = false;
-                model_.feedback = reason;
-                ++model_.revision;
-            }
-            if (pending_create_session_) {
-                pending_create_session_ = false;
-                pending_create_provider_id_.clear();
-                pending_create_project_id_.clear();
-                model_.session_notice = reason;
-                ++model_.revision;
-            }
-        };
-        const bool usb_direct = vibe_pairing::snapshot().access_mode == vibe_pairing::AccessMode::UsbDirect;
-        wifi_ap_record_t ap = {};
-        if (!usb_direct && (!vibe_wifi::is_connected() || esp_wifi_sta_get_ap_info(&ap) != ESP_OK)) {
-            const bool receiver = vibe_pairing::snapshot().access_mode == vibe_pairing::AccessMode::Receiver ||
-                vibe_wifi::receiver_active();
-            if (receiver && vibe_pairing::snapshot().phase == vibe_pairing::Phase::Paired)
-                vibe_pairing::begin_foreground_connection();
-            invalidateCatalog();
-            setConnectionError(receiver ? "Connect receiver hotspot first" : "Connect Wi-Fi first");
-            failPendingAction(receiver ? "Action not sent: receiver offline" :
-                              "Action not sent: Wi-Fi offline");
-            vTaskDelay(pdMS_TO_TICKS(foreground ? POLL_INTERVAL_MS : 500));
-            continue;
-        }
-        if (foreground) vibe_pairing::tick();
-        const auto access = vibe_pairing::snapshot();
-        if (access.phase == vibe_pairing::Phase::Paired &&
-            access.url.rfind("https://", 0) == 0 && !vibe_pairing::tls_time_ready()) {
-            setConnectionError(vibe_pairing::tls_time_failed() ?
-                T("设备时间同步失败，无法校验 HTTPS 证书") : T("正在同步设备时间，以校验 HTTPS 证书"));
-            vTaskDelay(pdMS_TO_TICKS(POLL_INTERVAL_MS));
-            continue;
-        }
-        const uint64_t now_ms = static_cast<uint64_t>(esp_timer_get_time() / 1000);
-        if (canOperate() && vibe_pairing::authorized_for_foreground() &&
-            vibe_pairing::snapshot().phase == vibe_pairing::Phase::Paired &&
-            (last_heartbeat_ms == 0 || now_ms - last_heartbeat_ms >= HEARTBEAT_INTERVAL_MS)) {
-            last_heartbeat_ms = now_ms;
-            sendHeartbeat();
-        }
-        const auto pairing = vibe_pairing::snapshot();
-        if (pairing.phase != vibe_pairing::Phase::Paired ||
-            !vibe_pairing::authorized_for_foreground()) {
-            setConnectionError(pairing.message);
-            failPendingAction("Action not sent: computer not paired");
-            vTaskDelay(pdMS_TO_TICKS(POLL_INTERVAL_MS));
-            continue;
-        }
-        if (!active_.load()) {
-            // Finish an already requested confirmation/cancellation, then go idle.
-            PendingAction action;
-            {
-                std::lock_guard<std::mutex> lock(model_mutex_);
-                action = std::move(pending_action_);
-                pending_action_ = {};
-            }
-            if (!action.verb.empty()) sendAction(std::move(action));
-            vTaskDelay(pdMS_TO_TICKS(500));
-            continue;
-        }
-        if (canOperate() &&
-            (language_refresh_pending_.exchange(false) || (active_cycles++ % 14) == 0 || !config_loaded_.load() || !voice_available_.load())) {
-            refreshConfig();
-        }
-        if (canOperate() &&
-            (artwork_request_.exchange(false) || artworkRetryDue())) syncArtwork();
-        if (artwork_purge_pending_.exchange(false)) {
-            // LVGL 判定缓存损坏（解码连败）：整套删掉，标记 dirty 让
-            // syncArtwork/preload 走 ensure() 完整重下（ensure 逐文件验哈希）。
-            std::string purge_provider;
-            {
-                std::lock_guard<std::mutex> lock(artwork_mutex_);
-                purge_provider = std::move(artwork_purge_provider_);
-                artwork_purge_provider_.clear();
-            }
-            if (!purge_provider.empty()) {
-                made_sprite_cache::purge(purge_provider);
-                artwork_dirty_.store(true);
-                artwork_request_.store(true);
-            }
-        }
-        if (firmware_update_requested_.exchange(false)) runFirmwareUpdate();
-        preloadArtworkCache();
-        PendingAction action;
-        {
-            std::lock_guard<std::mutex> lock(model_mutex_);
-            action = std::move(pending_action_);
-            pending_action_ = {};
-        }
-        if (!action.verb.empty()) sendAction(std::move(action));
-        std::string create_provider;
-        std::string create_project;
-        {
-            std::lock_guard<std::mutex> lock(model_mutex_);
-            if (pending_create_session_ && !create_session_in_flight_) {
-                create_provider = std::move(pending_create_provider_id_);
-                create_project = std::move(pending_create_project_id_);
-                pending_create_session_ = false;
-                pending_create_provider_id_.clear();
-                create_session_in_flight_ = true;
-            }
-        }
-        if (!create_provider.empty()) createSession(create_provider, create_project);
-        std::string delete_provider;
-        std::string delete_session_id;
-        {
-            std::lock_guard<std::mutex> lock(model_mutex_);
-            if (pending_delete_session_ && !delete_session_in_flight_) {
-                delete_provider = std::move(pending_delete_provider_id_);
-                delete_session_id = std::move(pending_delete_session_id_);
-                pending_delete_session_ = false;
-                pending_delete_provider_id_.clear();
-                pending_delete_session_id_.clear();
-                delete_session_in_flight_ = true;
-            }
-        }
-        if (!delete_session_id.empty()) deleteSession(delete_provider, delete_session_id);
-        if (canOperate() && config_loaded_.load()) {
-            if (!board_catalog_sent_) announceBoardCatalog();
-            else {
-                // 动作名单变了（素材切换等）：整张清单带新 action 条目重报。
-                std::vector<std::string> current;
-                {
-                    std::lock_guard<std::mutex> lock(model_mutex_);
-                    current = available_actions_;
-                }
-                if (current != announced_actions_) announceBoardCatalog();
-            }
-            flushBoardEvent();
-            pullBoardCommands();
-            refreshSessions();
-            refreshTasks();
-        }
-        vTaskDelay(pdMS_TO_TICKS(POLL_INTERVAL_MS));
-    }
 }
 
 } // namespace esp_brookesia::apps

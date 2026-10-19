@@ -164,9 +164,6 @@ struct LayerSpec {
     int x = 0;
     int y = 0;
     int scale_mul = 1;           // 素材基准像素相对设计像素的倍数（内置豆 = 3）
-    int source_w = made_design;  // manifest 画布宽：帧像素所在的坐标系，解码帧
-                                 // 要放大 made_design/source_w 倍才落在设计画布
-                                 // （240 素材 ×1.5、360 素材 ×1，360 时代隐含 1:1）
     bool blink = false;
     bool talk = false;
     bool alert = false;
@@ -735,13 +732,12 @@ bool commitArt(Parts *parts, const MotionSpec &motion, std::vector<LayerSpec> &&
         passive(object);
         lv_image_set_src(object, &spec.frames.front().dsc);
         lv_obj_set_pos(object, made_x(spec.x), made_home_y(spec.y));
-        // 帧像素在 manifest 画布坐标系里，先放大到 360 设计画布（240 素材
-        // ×1.5），再走 made_lv_scale 的设计→屏幕缩放。360 素材时与旧公式
-        // scale_mul*made_lv_scale() 等价。缩放支点必须显式设为左上角：
-        // lv_image 的 pivot 默认是图片中心，不设的话每层绕各自中心放大，
-        // 层间相对位置全部漂移（实机右下角的「绿色色块」就是被甩出去的
-        // 嘴层/豆脚）。
-        const int base_scale = spec.scale_mul * (256 * made_fit() / spec.source_w);
+        // 帧按 manifest 原生像素 1:1 落设计画布（不做画布→设计画布的放大：
+        // 用户明确要「素材降档后那个小尺寸」，只要居中不要回大）。缩放支点
+        // 必须显式设为左上角：lv_image 的 pivot 默认是图片中心，不设的话
+        // 每层绕各自中心放大，层间相对位置全部漂移（实机右下角的
+        // 「绿色色块」就是被甩出去的嘴层/豆脚）。
+        const int base_scale = spec.scale_mul * made_lv_scale();
         lv_image_set_scale(object, base_scale);
         lv_image_set_pivot(object, 0, 0);
         lv_image_set_antialias(object, true);
@@ -885,7 +881,11 @@ void artUpdate(Parts *parts, uint32_t elapsed_ms, int mood) {
     }
     const int sway = wave(elapsed_ms, sway_period, sway_amp);
     const int bounce = (wave(elapsed_ms, sway_period / 2, bounce_amp, 270) + bounce_amp) / 2;
-    lv_obj_set_pos(art.container, made_x(sway), made_home_y(-bounce));
+    // 容器只承载摆动/弹跳的增量：层坐标（made_x/made_home_y）已含设计带
+    // 原点偏移，容器再走 made_x/made_home_y 会把原点偏移加第二次——矩形
+    // 屏上整个精灵被压下 home_oy（40px）不居中（实机方板实锤）。用 made_s
+    // 纯增量，方屏行为与旧代码一致（ox/home_oy=0）。
+    lv_obj_set_pos(art.container, made_s(sway), made_s(-bounce));
 
     // —— 行动系统：播放中的动作覆盖被引用层的帧选择 ——
     // 时间轴用 lv_tick_get()（playAction 也在 LVGL 线程记录起点，同源无漂移）。
@@ -1145,9 +1145,8 @@ static bool buildSpecsFromManifest(const std::string &manifest_json, const std::
         return false;
     }
 
-    // 画布已整体映射到 360 设计画布（层坐标/缩放都在 buildSpecs 里换算），
-    // 呼吸/摆动支点取构图中心 = 设计画布中心。 MotionSpec.canvas_* 唯一
-    // 消费点就是 pivot，直接存设计值。
+    // 画布居中落进设计画布，呼吸/摆动支点 = 设计画布中心（构图中心）。
+    // MotionSpec.canvas_* 唯一消费点就是 pivot，直接存设计值。
     motion.canvas_w = made_design;
     motion.canvas_h = made_design;
     const cJSON *motion_json = cJSON_GetObjectItemCaseSensitive(manifest, "motion");
@@ -1233,12 +1232,52 @@ static bool buildSpecsFromManifest(const std::string &manifest_json, const std::
             spec.frames.push_back(frame);
         }
         if (spec.frames.empty() || !cJSON_IsNumber(x) || !cJSON_IsNumber(y)) goto fail;
-        // manifest 层坐标是画布像素，统一换算到 360 设计画布（2026-10-19 素材
-        // 降档 360→240 后不再隐含 1:1；manifest 契约不变，固件负责映射）。
-        spec.source_w = canvas_w->valueint;
-        spec.x = x->valueint * made_design / canvas_w->valueint;
-        spec.y = y->valueint * made_design / canvas_h->valueint;
+        // manifest 层坐标是画布像素：画布整体居中落进 360 设计画布，层坐标
+        // 加画布左上角的设计偏移（素材降档 240 后画布不再占满设计画布，
+        // 固件负责居中；层间相对位置保持 manifest 原样）。
+        spec.x = x->valueint + (made_design - canvas_w->valueint) / 2;
+        spec.y = y->valueint + (made_design - canvas_h->valueint) / 2;
         specs.push_back(std::move(spec));
+    }
+
+    // 内容双轴居中：画布居中≠内容居中（角色在画布里常画得偏下，实测
+    // 绿豆在屏上偏下 38px）。按各层首帧不透明像素的并集 bbox 把「角色
+    // 内容的中心」对到设计画布中心（设计带在矩形屏上垂直居中、画布居中
+    // ⇒ 内容中心即屏幕中心）。逐像素扫一遍首帧，apply 时一次性开销。
+    {
+        bool have_bbox = false;
+        int bx0 = 0, by0 = 0, bx1 = -1, by1 = -1;   // 设计像素坐标系
+        for (const auto &spec : specs) {
+            const Frame &f = spec.frames.front();
+            const auto *pixels = reinterpret_cast<const uint32_t *>(f.dsc.data);
+            const int fw = static_cast<int>(f.dsc.header.w);
+            const int fh = static_cast<int>(f.dsc.header.h);
+            for (int py = 0; py < fh; ++py) {
+                for (int px = 0; px < fw; ++px) {
+                    if ((pixels[static_cast<size_t>(py) * fw + px] >> 24) <= 8) continue;
+                    const int dx = spec.x + px;
+                    const int dy = spec.y + py;
+                    if (!have_bbox) {
+                        have_bbox = true;
+                        bx0 = bx1 = dx;
+                        by0 = by1 = dy;
+                    } else {
+                        if (dx < bx0) bx0 = dx;
+                        if (dy < by0) by0 = dy;
+                        if (dx > bx1) bx1 = dx;
+                        if (dy > by1) by1 = dy;
+                    }
+                }
+            }
+        }
+        if (have_bbox) {
+            const int shift_x = made_design / 2 - (bx0 + bx1) / 2;
+            const int shift_y = made_design / 2 - (by0 + by1) / 2;
+            for (auto &spec : specs) {
+                spec.x += shift_x;
+                spec.y += shift_y;
+            }
+        }
     }
 
     // —— 情绪表（可选）——

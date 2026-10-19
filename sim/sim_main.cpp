@@ -15,6 +15,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -63,6 +64,21 @@ int run_sprite_test()
         SDL_Delay(30);
         elapsed += 33;
         made_sprite::update(stage, elapsed, made_sprite::Mood::kIdle);
+    }
+
+    // 调试：转储舞台对象树最终坐标（居中问题排查用）。
+    {
+        std::function<void(const lv_obj_t *, int)> dump =
+            [&](const lv_obj_t *obj, int depth) {
+                printf("[sim-tree] d=%d obj=%p pos=(%d,%d) size=(%dx%d) scale=%d\n",
+                    depth, (const void *)obj, lv_obj_get_x(obj), lv_obj_get_y(obj),
+                    lv_obj_get_width(obj), lv_obj_get_height(obj),
+                    lv_image_get_scale((lv_obj_t *)obj));
+                for (uint32_t i = 0; i < lv_obj_get_child_count(obj); ++i)
+                    dump(lv_obj_get_child(obj, i), depth + 1);
+            };
+        printf("[sim-tree] === stage tree ===\n");
+        dump(stage, 0);
     }
 
     // MADE_SIM_MOODS="idle,running,..."：逐个情绪渲染 ~3s 后截图
