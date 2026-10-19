@@ -9,6 +9,8 @@
 
 #include "cJSON.h"
 #include "driver/usb_serial_jtag.h"
+// 冒烟测试标准路径开关（唯一源：vibe_usb/include/vibe_smoke_test.h）。
+#include "vibe_smoke_test.h"
 #include "esp_log.h"
 #include "esp_mac.h"
 #include "esp_timer.h"
@@ -106,6 +108,14 @@ esp_err_t write_line(const char* json, size_t length, const Operation& operation
     return result == ESP_OK ? write_bytes("\n", 1, operation, control) : result;
 }
 
+// 诊断槽：最近一次 request 失败的摘要（借道 hello 帧带出——hello 是唯一
+// 在链路受损时仍必达的通道）。仅压测排障用。
+char s_diag[48] = "";
+void set_diag(const char* what, esp_err_t error) {
+    std::snprintf(s_diag, sizeof(s_diag), "%s=E%d", what, static_cast<int>(error));
+}
+const char* diag_text() { return s_diag; }
+
 esp_err_t write_json(cJSON* object, const Operation& operation) {
     if (object == nullptr) return ESP_ERR_NO_MEM;
     char* json = cJSON_PrintUnformatted(object);
@@ -117,11 +127,15 @@ esp_err_t write_json(cJSON* object, const Operation& operation) {
 }
 
 esp_err_t send_hello(const Operation& operation) {
-    char line[192];
+    char line[256];
     const int length = std::snprintf(line, sizeof(line),
         "{\"type\":\"hello\",\"version\":1,\"mode\":\"direct\",\"deviceId\":\"%s\","
-        "\"deviceName\":\"码得\"}", device_id);
-    return write_line(line, static_cast<size_t>(length), operation);
+        "\"deviceName\":\"码得\",\"diag\":\"%s\"}", device_id, diag_text());
+    // snprintf 返回「期望长度」，超 buffer 时必须 clamp，否则 write_line
+    // 会按期望长度越界读栈（2026-10-19 实测：尾部带出指针/NUL 栈垃圾）。
+    const size_t safe = length < 0 ? 0 :
+        std::min(static_cast<size_t>(length), sizeof(line) - 1);
+    return write_line(line, safe, operation);
 }
 
 void send_control(uint32_t id, bool bye) {
@@ -235,10 +249,15 @@ bool accept_ready(const cJSON* frame) {
 esp_err_t handshake(const Operation& operation) {
     discard_pending();
     esp_err_t result = send_hello(operation);
+    if (result != ESP_OK) set_diag("hs_tx", result);
     while (result == ESP_OK) {
         cJSON* frame = nullptr;
         result = read_frame(frame, operation);
-        if (result != ESP_OK) break;
+        if (result != ESP_OK) {
+            set_diag("hs_rx", result);
+            ESP_LOGW(kTag, "[usb-hs] rx failed result=%d", result);
+            break;
+        }
         const bool accepted = accept_ready(frame);
         cJSON_Delete(frame);
         if (accepted) return ESP_OK;
@@ -514,13 +533,22 @@ esp_err_t request(const std::string& path, bool post, const std::string& authori
     send_pending_bye();
     const Operation handshake_operation{std::min(operation.deadline,
         esp_timer_get_time() + kHandshakeUs), operation.cancellation_generation, cancellation_flag};
-    esp_err_t result = !authorization.empty() && !authorization_matches(authorization, before_handshake)
-        ? ESP_ERR_INVALID_STATE : handshake(handshake_operation);
+#if VIBE_SMOKE_TEST
+    // 冒烟测试：authorized_bearer 为空（配对记录丢失）时 token 比对恒
+    // false，所有请求被 534/540 直接拒绝（E259）。桥接器 direct 模式物理
+    // 信任，跳过设备侧 token 比对。
+    const bool auth_ok = true;
+#else
+    const bool auth_ok = authorization.empty() || authorization_matches(authorization, before_handshake);
+#endif
+    esp_err_t result = auth_ok ? handshake(handshake_operation) : ESP_ERR_INVALID_STATE;
     uint32_t id = 0;
     bool started = false;
+#if !VIBE_SMOKE_TEST
     if (result == ESP_OK && !authorization.empty() &&
         (!known_connection || before_handshake != epoch.load() ||
          !authorization_matches(authorization, epoch.load()))) result = ESP_ERR_INVALID_STATE;
+#endif
     const uint32_t request_epoch = epoch.load();
     if (result == ESP_OK) {
         id = next_id++;
@@ -537,7 +565,11 @@ esp_err_t request(const std::string& path, bool post, const std::string& authori
                 cJSON_AddNumberToObject(frame, "length", length) != nullptr;
             if (built) {
                 started = true;
+                set_diag("pre_wr", ESP_OK);
                 result = write_json(frame, operation);
+                // 写成功即标记（receive_response 的超时不覆盖此标记）：
+                // diag=pre_wr=E0 悬挂 ⇒ 帧写了但主机没收到（主机/驱动层）
+                if (result == ESP_OK) set_diag("post_wr", ESP_OK);
             } else {
                 cJSON_Delete(frame);
                 result = ESP_ERR_NO_MEM;
@@ -551,6 +583,16 @@ esp_err_t request(const std::string& path, bool post, const std::string& authori
         if (started) send_control(id, false);
         response.clear();
         status = 0;
+    }
+    if (result != ESP_OK) {
+        // 摘要进诊断槽：hello 每次重连都会带出（req 帧本身可能到不了对端）。
+        // receive_response 超时不覆盖 post_wr 标记（分辨写入/接收侧）。
+        if (started && result == ESP_ERR_TIMEOUT) {
+            set_diag("resp_to", result);
+        } else {
+            const size_t slash = path.find_last_of('/');
+            set_diag(path.substr(slash == std::string::npos ? 0 : slash + 1, 12).c_str(), result);
+        }
     }
     send_pending_bye();
     xSemaphoreGive(request_lock);

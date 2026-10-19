@@ -220,6 +220,9 @@ export class UsbReceiverProtocol {
 
   feed(chunk) {
     if (this.closed) return;
+    if (chunk.includes(0x22) && chunk.includes(0x3a) && chunk.length > 60 && !chunk.slice(0, 30).includes('hello')) {
+      console.log('[usb-raw]', chunk.length, JSON.stringify(chunk.subarray(0, 120).toString('utf8')));
+    }
     let start = 0;
     for (let index = 0; index < chunk.length; index += 1) {
       if (chunk[index] !== 10) continue;
@@ -264,13 +267,16 @@ export class UsbReceiverProtocol {
         console.error(`[usb-link] log: ${line.slice(0, 240)}`);
         return;
       }
-      console.error(`[usb-link] unparseable: ${line.slice(0, 240)}`);
+      console.error(`[usb-link] unparseable len=${line.length} tail=${JSON.stringify(line.slice(-40))}`);
       this.rejectCurrent(400, 'USB 帧格式无效');
       return;
     }
     if (!frame || typeof frame !== 'object' || Array.isArray(frame)) {
       this.rejectCurrent(400, 'USB 帧格式无效');
       return;
+    }
+    if (frame && typeof frame.type === 'string' && frame.type !== 'hello') {
+      console.log('[usb-frame]', frame.type, frame.id ?? '', String(frame.path || '').slice(0, 60));
     }
     if (frame.type === 'hello') {
       if (frame.version !== 1 || ![undefined, 'receiver', 'direct'].includes(frame.mode)) return;
@@ -285,7 +291,7 @@ export class UsbReceiverProtocol {
         ssid: direct ? '' : frame.ssid, password: direct ? '' : frame.password };
       if (this.peer && (this.peer.mode !== peer.mode || this.peer.deviceId !== peer.deviceId)) return;
       if (this.onHello(peer) === false) return;
-      console.error(`[usb-link] hello: mode=${peer.mode} ${new Date().toISOString()}`);
+      console.error(`[usb-link] hello: mode=${peer.mode} diag=${frame.diag || '-'} ${new Date().toISOString()}`);
       this.peer = peer;
       this.ackWindow = peer.mode === 'direct' ? ACK_WINDOW_DIRECT : ACK_WINDOW;
       this.helloReceived = true;
@@ -318,6 +324,7 @@ export class UsbReceiverProtocol {
       return;
     }
     if (frame.type === 'request') {
+      console.log('[usb-req]', frame.method, frame.path, 'id=' + frame.id);
       if (this.current || this.responding || !validId(frame.id)) {
         if (this.current) this.rejectCurrent(409, 'USB 请求重叠');
         return;
@@ -382,6 +389,7 @@ export class UsbReceiverProtocol {
       return;
     }
     if (frame.type === 'end') {
+      console.log('[usb-end] id=' + current.id + ' received=' + current.received + ' path=' + current.path.slice(0, 40));
       if (current.received !== current.length) {
         this.rejectCurrent(400, 'USB 请求长度不符');
         return;
@@ -392,6 +400,8 @@ export class UsbReceiverProtocol {
         try {
           if (this.closed || this.current !== current || current.controller.signal.aborted) return;
           const response = await this.forward(request, current.controller.signal);
+          console.log('[usb-resp]', response.status, request.method, request.path.slice(0, 40),
+            'body=' + (response.body ? response.body.length : -1));
           if (this.closed || this.current !== current) return;
           clearTimeout(current.timer);
           await this.writeResponse(current.id, response.status, response.contentType, response.body);

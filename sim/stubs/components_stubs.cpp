@@ -56,8 +56,7 @@ bool made_chime_play_wav(const uint8_t *data, size_t size) { (void)data; (void)s
 /* ---------------- made_sprite_cache（素材缓存：模拟器里一律未缓存） ---------------- */
 namespace made_sprite_cache {
 std::string baseDir(const std::string &provider) { (void)provider; return ""; }
-bool ensure(const std::string &provider, const vibe_provider::SpriteInfo &sprite, const Fetch &fetch)
-{ (void)provider; (void)sprite; (void)fetch; return false; }
+bool ensure(const std::string &provider, const vibe_provider::SpriteInfo &sprite, const Fetch &fetch, bool *manifest_changed) { (void)provider; (void)sprite; (void)fetch; (void)manifest_changed; return false; }
 bool loadManifest(const std::string &provider, std::string &json) { (void)provider; (void)json; return false; }
 bool cachedVersion(const std::string &provider, uint32_t &version) { (void)provider; (void)version; return false; }
 void purge(const std::string &provider) { (void)provider; }

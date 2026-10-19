@@ -53,6 +53,10 @@ CXXFLAGS := $(CFLAGS) -std=gnu++2b -fpermissive -include lv_compat.h
 LVGL_SRCS := $(patsubst $(ROOT)/%,%,$(shell find $(LVGL)/src -name '*.c'))
 APP_SRCS  := \
   made/components/brookesia_app_vibe/esp_brookesia_app_vibe.cpp \
+  made/components/brookesia_app_vibe/vibe_ui_shared.cpp \
+  made/components/brookesia_app_vibe/vibe_settings_pages.cpp \
+  made/components/brookesia_app_vibe/vibe_artwork.cpp \
+  made/components/brookesia_app_vibe/vibe_backend.cpp \
   made/components/brookesia_app_vibe/made_sprite.cpp \
   made/components/brookesia_app_vibe/made_gif.cpp \
   made/components/brookesia_app_vibe/assets/img_app_vibe.c \

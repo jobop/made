@@ -366,7 +366,15 @@ bool AnimPlayer::loadAnimationConfig(const AnimPlayerAnimPath *anim_path, int nu
         ESP_UTILS_CHECK_FALSE_RETURN(file.is_open(), false, "Failed to open file: %s", anim_path[i].path);
 
         ESP_UTILS_LOGD("Load animation %d: %s, fps(%d)", i, anim_path[i].path, anim_path[i].fps);
-        _animation_data.emplace_back(std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>());
+        try {
+            _animation_data.emplace_back(std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>());
+        } catch (...) {
+            // 整文件装载分配失败（内存紧张）降级为配置失败，异常逃出线程会 terminate。
+            _animation_data.clear();
+            _animation_configs.clear();
+            ESP_UTILS_LOGE("Failed to allocate animation data: %s", anim_path[i].path);
+            return false;
+        }
         _animation_configs.emplace_back(AnimPlayerAnimAddress{
             .data_address = _animation_data.back().data(),
             .data_length = _animation_data.back().size(),

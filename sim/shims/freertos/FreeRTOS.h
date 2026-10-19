@@ -36,6 +36,7 @@ BaseType_t xTaskCreatePinnedToCore(TaskFunction_t fn, const char *name, uint32_t
 void vTaskDelay(TickType_t ticks);
 void vTaskDelete(TaskHandle_t handle);
 TickType_t xTaskGetTickCount(void);
+const char *pcTaskGetName(TaskHandle_t handle);
 
 #ifdef __cplusplus
 }

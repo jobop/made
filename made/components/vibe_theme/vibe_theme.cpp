@@ -32,6 +32,7 @@ constexpr const char *kNvsNamespace = "vibe_theme";
 constexpr const char *kSoundPath = "/spiffs/theme_chime.wav";
 constexpr size_t kMaxSoundBytes = 256 * 1024;  // USB 帧转发单响应上限
 constexpr size_t kUsbResponseLimit = 256 * 1024;  // 与 vibe_usb kMaxResponse 对齐
+constexpr size_t kFetchMaxBytes = 2 * 1024 * 1024; // HTTP 下载上限（主题音效 ~224KB，余量充足）；防失控增长耗尽 PSRAM
 
 // 内置默认主题：莫兰迪灰调（暖燕麦底 + 灰绿点缀，整体低饱和不刺眼）。
 // 对比度按 puhui 16px 点阵小字核算：正文 ≥7:1，提示 ≥3.5:1。
@@ -284,9 +285,24 @@ bool fetchPath(const std::string &base_url, const std::string &path, std::string
         int read = 0;
         size_t received = 0;
         int last_bucket = -1;
+        bool aborted = false; // 分配失败/超限：直接判败，不走下面的截断检测
         while ((read = esp_http_client_read(client, buffer, sizeof(buffer))) > 0) {
-            out.append(buffer, read);
+            try {
+                out.append(buffer, read);
+            } catch (...) {
+                // 内存紧张降级：失败重试比 abort 重启好（异常逃出线程会 terminate）。
+                ESP_LOGE(kTag, "[fetch] alloc_failed path=%s received=%zu", path.c_str(), received);
+                aborted = true;
+                break;
+            }
             received += static_cast<size_t>(read);
+            if (received > kFetchMaxBytes) {
+                ESP_LOGE(kTag, "[fetch] too_large path=%s received=%zu limit=%zu",
+                         path.c_str(), received, kFetchMaxBytes);
+                out.clear();
+                aborted = true;
+                break;
+            }
             if (progress_label != nullptr && total > 0) {
                 const int bucket = static_cast<int>(received * 100 / static_cast<size_t>(total)) / 10;
                 if (bucket != last_bucket) {
@@ -299,13 +315,17 @@ bool fetchPath(const std::string &base_url, const std::string &path, std::string
         }
         http_status = esp_http_client_get_status_code(client);
         esp_http_client_close(client);
-        // 截断检测：中继链断流时连接提前关闭，收不满 Content-Length。
-        if (total > 0 && received != static_cast<size_t>(total)) {
-            ESP_LOGW(kTag, "[fetch] HTTP truncated path=%s got=%zu want=%lld",
-                     path.c_str(), received, (long long)total);
+        if (aborted) {
             ok = false;
         } else {
-            ok = true;
+            // 截断检测：中继链断流时连接提前关闭，收不满 Content-Length。
+            if (total > 0 && received != static_cast<size_t>(total)) {
+                ESP_LOGW(kTag, "[fetch] HTTP truncated path=%s got=%zu want=%lld",
+                         path.c_str(), received, (long long)total);
+                ok = false;
+            } else {
+                ok = true;
+            }
         }
     } else {
         ESP_LOGE(kTag, "[fetch] HTTP open 失败 url=%s", url.c_str());

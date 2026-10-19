@@ -248,6 +248,9 @@ export function createBoardLink() {
       if (!payload || typeof payload !== 'object' || Array.isArray(payload)) throw fail('事件无效');
       if (typeof payload.name !== 'string' || !CAPABILITY_NAME.test(payload.name)) throw fail('事件无效');
       const fields = parseFields(payload.fields);
+      // 设备事件一律落日志（含未订阅被拒的）：调试/烧机观察通道依赖它，
+      // 例如 burn-in 压测的水位事件 burnin.mem 就没有任何插件订阅。
+      console.log('[board-event]', deviceId.slice(-6), payload.name, JSON.stringify(fields));
       const catalog = catalogs.get(deviceId);
       if (!catalog || !catalog.events.some((item) => item.name === payload.name)) throw fail('事件不在板侧清单');
       const subscribed = this.subscription(deviceId, runtime, config);

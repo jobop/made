@@ -1,3 +1,5 @@
+// 冒烟测试标准路径开关（唯一源：vibe_usb/include/vibe_smoke_test.h）。
+#include "vibe_smoke_test.h"
 #include "vibe_i18n.hpp"
 #include "vibe_pairing.hpp"
 
@@ -1006,6 +1008,10 @@ void suspend_receiver()
 
 bool authorized_for_foreground()
 {
+#if VIBE_SMOKE_TEST
+    return true;  // 冒烟测试：无条件授权（桥接器重启换 connectionId 会
+                  // invalidate_foreground，而设备侧无自动恢复路径）
+#endif
     std::lock_guard<std::mutex> lock(authorization_mutex);
     if (!foreground_active.load() || authorized_epoch.load() != foreground_epoch.load() ||
         revalidation_pending.load()) return false;
@@ -1018,6 +1024,16 @@ bool authorized_for_foreground()
 void tick()
 {
     apply_pending_access();
+#if VIBE_SMOKE_TEST
+    // 冒烟测试：冻结配对状态机。正常流程里桥接器重启换 connectionId 会
+    // 触发 invalidate_foreground + revalidation，把 phase 从 Paired 拉回
+    // Discovering，而恢复验证走不可达的 WiFi 通道，worker 从此卡死。
+    // phase 必须置成 Paired：渲染循环见到非 Paired 会每帧自动拉开抽屉
+    // 显示配对码（drawer_open_ 恒 true），smokeTick/远程滑动的守卫把
+    // 一切左右滑全部拦死——上一轮 provider 恒 0 的根因。
+    publish(Phase::Paired, std::string(), std::string(), false);
+    return;
+#endif
     if (!foreground_active.load()) return;
     const AccessMode mode = snapshot().access_mode;
     if (mode == AccessMode::UsbDirect) {

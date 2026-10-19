@@ -145,6 +145,7 @@ BaseType_t xTaskCreatePinnedToCore(TaskFunction_t fn, const char *name, uint32_t
 void vTaskDelay(TickType_t ticks) { usleep((useconds_t)ticks * 1000); }
 void vTaskDelete(TaskHandle_t handle) { (void)handle; }
 TickType_t xTaskGetTickCount(void) { return (TickType_t)(esp_timer_get_time() / 1000LL); }
+const char *pcTaskGetName(TaskHandle_t handle) { (void)handle; return "sim"; }
 
 /* ---------------- NVS（内存键值） ---------------- */
 esp_err_t nvs_open(const char *ns, nvs_open_mode_t mode, nvs_handle_t *out)
