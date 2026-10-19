@@ -4,13 +4,14 @@
 #include <algorithm>
 #include <cerrno>
 #include <cstring>
+#include <stdexcept>
 #include <dirent.h>
+#include <sys/stat.h>
 #include <stdio.h>
 #include <unistd.h>
 
 #include <cJSON.h>
 #include <esp_log.h>
-#include <mbedtls/sha256.h>
 
 #include "vibe_wifi.hpp"
 
@@ -49,14 +50,11 @@ std::string pathFor(const std::string &prefix, const std::string &name)
     return std::string(kMount) + "/" + prefix + name;
 }
 
-std::string sha256Hex(const std::string &data)
-{
-    unsigned char digest[32];
-    mbedtls_sha256(reinterpret_cast<const unsigned char *>(data.data()), data.size(), digest, 0);
-    char hex[65];
-    for (int i = 0; i < 32; ++i) snprintf(hex + i * 2, 3, "%02x", digest[i]);
-    return std::string(hex, 64);
-}
+// 文件完整性策略（2026-10-19 简化）：不再做任何哈希（整文件/流式/分区都
+// 不要）。理由：①曾把 ~500KB PNG 整读进 std::string 算哈希，PSRAM 紧张时
+// 抛 bad_alloc 致 worker abort 重启循环；②PNG/GIF 格式自带逐块 CRC，坏
+// 文件在解码时必然暴露，走应用侧 cached_apply_dead → purge+redownload
+// 兜底。下载校验只核对文件大小，跳过已存在同大小文件。
 
 bool writeAtomic(const std::string &path, const std::string &data)
 {
@@ -106,7 +104,15 @@ bool readIfPresent(const std::string &path, std::string &out)
     out.clear();
     char buffer[4096];
     size_t read;
-    while ((read = fread(buffer, 1, sizeof(buffer), file)) > 0) out.append(buffer, read);
+    while ((read = fread(buffer, 1, sizeof(buffer), file)) > 0) {
+        try {
+            out.append(buffer, read);
+        } catch (...) {
+            // 内存紧张时的优雅降级：当作「文件不存在」处理，触发重下而不是崩线程。
+            fclose(file);
+            return false;
+        }
+    }
     fclose(file);
     return true;
 }
@@ -157,16 +163,41 @@ std::string baseDir(const std::string &provider)
     return std::string(kMount) + "/" + prefixFor(provider);
 }
 
-bool ensure(const std::string &provider, const vibe_provider::SpriteInfo &sprite,
-            const Fetch &fetch)
+bool ensureImpl(const std::string &provider, const vibe_provider::SpriteInfo &sprite,
+                const Fetch &fetch, bool *manifest_changed)
 {
     if (provider.empty() || !sprite.valid() || !fetch) return false;
     const std::string prefix = prefixFor(provider);
     const std::string manifest_path = pathFor(prefix, "manifest.json");
 
-    // 快路径：manifest 已提交且版本一致，逐个校验哈希即可，不动网络。
+    // manifest 重拉比对：manifest 是信任根但自身无哈希可验，且曾在崩溃时代
+    // 被截断过（头部 version/layers 完整、actions/commands 丢失，而版本号
+    // 一致导致残缺 manifest 被永久信任，动作名单恒空）。这里每次多花一个小
+    // 请求重拉与缓存比对，内容漂移就地重写；拉不到（网络抖动）则退回信任
+    // 缓存的旧行为。
     std::string cached;
-    if (readIfPresent(manifest_path, cached)) {
+    const bool have_cached = readIfPresent(manifest_path, cached);
+    {
+        std::string fresh;
+        int status = 0;
+        if (fetch(fileAsPath(provider, "manifest.json"), fresh, status) &&
+            status == 200 && !fresh.empty() && fresh.size() <= 20 * 1024) {
+            if (!have_cached || fresh != cached) {
+                if (writeAtomic(manifest_path, fresh)) {
+                    cached = fresh;
+                    if (manifest_changed) *manifest_changed = true;
+                    ESP_LOGI(kTag, "[sprite] manifest_refreshed provider=%s bytes=%u",
+                        provider.c_str(), static_cast<unsigned>(fresh.size()));
+                }
+            }
+        }
+    }
+
+    // 快路径：manifest 已提交且版本一致就直接信任。manifest 是整套文件
+    // 落盘前的最后一道闸：写它之前每个文件都验过流式哈希。这里不再逐文件
+    // 复检（省掉每次换装的全量 SPIFFS 读 + SHA 计算）；文件真坏了会走
+    // 应用侧 cached_apply_dead → purge+redownload 兜底。
+    if (have_cached) {
         bool same_version = false;
         if (cJSON *root = cJSON_Parse(cached.c_str())) {
             const auto *version = cJSON_GetObjectItemCaseSensitive(root, "version");
@@ -174,60 +205,75 @@ bool ensure(const std::string &provider, const vibe_provider::SpriteInfo &sprite
                 static_cast<uint32_t>(version->valueint) == sprite.version;
             cJSON_Delete(root);
         }
-        if (same_version) {
-            bool intact = true;
-            for (const auto &file : sprite.files) {
-                std::string data;
-                if (!readIfPresent(pathFor(prefix, file.file), data) ||
-                    data.size() != file.bytes || sha256Hex(data) != file.sha256) {
-                    intact = false;
-                    break;
-                }
-            }
-            if (intact) return true;
-        }
+        if (same_version) return true;
     }
 
-    // 慢路径：逐文件分片下载 → 哈希校验 → 原子落盘。
+    // 慢路径：逐文件分片下载 → 大小核对 → 原子落盘（不做哈希，见文件头注释）。
     // 下载窗口关 WiFi 省电：弱信号 + 300ms listen interval 曾致分片超时。
     vibe_wifi::WifiThroughput wifi_boost;
     std::vector<std::string> downloaded;
     for (const auto &file : sprite.files) {
         const std::string target = pathFor(prefix, file.file);
-        std::string existing;
-        if (readIfPresent(target, existing) && existing.size() == file.bytes &&
-            sha256Hex(existing) == file.sha256) {
+        struct stat st {};
+        if (stat(target.c_str(), &st) == 0 &&
+            static_cast<size_t>(st.st_size) == file.bytes) {
             downloaded.push_back(prefix + file.file);
             continue;
         }
-        std::string data;
+        // 流式落盘：分片边下边写临时文件，不再把整文件攒进内存。
+        const std::string relative = target.substr(std::strlen(kMount));
+        const std::string temporary = target + kTempSuffix;
+        if (relative.size() + 1 > kObjectNameLimit) {
+            ESP_LOGE(kTag, "[sprite] write_name_too_long object_len=%u limit=%u name='%s'",
+                static_cast<unsigned>(relative.size() + 1), static_cast<unsigned>(kObjectNameLimit),
+                relative.c_str());
+            return false;
+        }
+        FILE *sink = fopen(temporary.c_str(), "wb");
+        if (!sink) {
+            ESP_LOGE(kTag, "[sprite] write_open_failed errno=%d(%s) name='%s'",
+                errno, std::strerror(errno), temporary.c_str());
+            return false;
+        }
+        bool ok = true;
+        size_t received = 0;
         int status = 0;
-        while (data.size() < file.bytes) {
+        while (received < file.bytes) {
             std::string chunk;
             char query[64];
             snprintf(query, sizeof(query), "?offset=%u&len=%u",
-                     static_cast<unsigned>(data.size()), static_cast<unsigned>(kChunkBytes));
+                     static_cast<unsigned>(received), static_cast<unsigned>(kChunkBytes));
             if (!fetch(fileAsPath(provider, file.file) + query, chunk, status) || status != 200) {
                 ESP_LOGE(kTag, "[sprite] fetch_failed file=%s offset=%u status=%d",
-                    file.file.c_str(), static_cast<unsigned>(data.size()), status);
-                return false;
+                    file.file.c_str(), static_cast<unsigned>(received), status);
+                ok = false;
+                break;
             }
             if (chunk.empty()) break; // 服务端明确返回空：offset 已到文件尾
-            data += chunk;
+            if (fwrite(chunk.data(), 1, chunk.size(), sink) != chunk.size()) {
+                ok = false;
+                break;
+            }
+            received += chunk.size();
         }
-        if (data.size() != file.bytes || sha256Hex(data) != file.sha256) {
-            ESP_LOGE(kTag, "[sprite] verify_failed file=%s want=%u/%s got=%u/%s",
-                file.file.c_str(), static_cast<unsigned>(file.bytes), file.sha256.c_str(),
-                static_cast<unsigned>(data.size()), sha256Hex(data).c_str());
+        fclose(sink);
+        if (!ok || received != file.bytes) {
+            unlink(temporary.c_str());
+            ESP_LOGE(kTag, "[sprite] size_check_failed file=%s want=%u got=%u",
+                file.file.c_str(), static_cast<unsigned>(file.bytes),
+                static_cast<unsigned>(received));
             return false;
         }
-        if (!writeAtomic(target, data)) {
-            ESP_LOGE(kTag, "[sprite] write_failed file=%s bytes=%u path=%s",
-                file.file.c_str(), static_cast<unsigned>(data.size()), target.c_str());
+        errno = 0;
+        // SPIFFS 的 rename 不覆盖已存在的目标（否则 EIO），先摘掉旧文件再改名。
+        unlink(target.c_str());
+        if (rename(temporary.c_str(), target.c_str()) != 0) {
+            ESP_LOGE(kTag, "[sprite] write_rename_failed errno=%d(%s) from='%s' to='%s'",
+                errno, std::strerror(errno), temporary.c_str(), target.c_str());
             return false;
         }
         ESP_LOGI(kTag, "[sprite] stored file=%s bytes=%u", file.file.c_str(),
-            static_cast<unsigned>(data.size()));
+            static_cast<unsigned>(received));
         downloaded.push_back(prefix + file.file);
     }
 
@@ -255,6 +301,24 @@ bool ensure(const std::string &provider, const vibe_provider::SpriteInfo &sprite
     downloaded.push_back(prefix + "manifest.json");
     purgeExcept(prefix, downloaded);
     return true;
+}
+
+bool ensure(const std::string &provider, const vibe_provider::SpriteInfo &sprite,
+            const Fetch &fetch, bool *manifest_changed)
+{
+    if (provider.empty() || !sprite.valid() || !fetch) return false;
+    // 内存紧张的兜底：任何分配失败（bad_alloc 等）在这里降级为「ensure 失败」，
+    // 由上层重试。异常若逃出 worker 线程会 std::terminate → abort 反复重启。
+    try {
+        return ensureImpl(provider, sprite, fetch, manifest_changed);
+    } catch (const std::exception &e) {
+        ESP_LOGE(kTag, "[sprite] ensure_exception provider=%s what=%s",
+            provider.c_str(), e.what());
+        return false;
+    } catch (...) {
+        ESP_LOGE(kTag, "[sprite] ensure_exception provider=%s unknown", provider.c_str());
+        return false;
+    }
 }
 
 bool loadManifest(const std::string &provider, std::string &json)

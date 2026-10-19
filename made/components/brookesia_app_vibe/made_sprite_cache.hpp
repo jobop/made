@@ -22,8 +22,11 @@ std::string baseDir(const std::string &provider);
 
 // 确保缓存里是这个版本。已缓存则校验哈希后直接返回；缺哪个补哪个，全部
 // 就绪后重拉 manifest.json 提交。任何一步失败返回 false，保留现场下轮重试。
+// manifest_changed（可选出参）：本次调用重写了缓存 manifest（内容与缓存
+// 不一致）时置 true——manifest 是信任根但自身无哈希，曾被截断损坏过，
+// 调用方需据此触发素材重挂（否则残缺 manifest 会一直被信任）。
 bool ensure(const std::string &provider, const vibe_provider::SpriteInfo &sprite,
-            const Fetch &fetch);
+            const Fetch &fetch, bool *manifest_changed = nullptr);
 
 // 读取已提交的 manifest.json（返回原始 JSON 文本）。缓存未提交时返回 false。
 bool loadManifest(const std::string &provider, std::string &json);

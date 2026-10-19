@@ -38,6 +38,11 @@ void update(lv_obj_t *root, uint32_t elapsed_ms, int mood);
 // 舞台留空）。成功后动效由 update() 按素材层的 blink/talk/alert 驱动。
 bool applyArtwork(lv_obj_t *root, const std::string &manifest_json, const std::string &base_dir);
 
+// 最近一次 applyArtwork 失败的原因。alloc = PSRAM 不足/碎片化（缓存文件
+// 未必坏，调用方不应据此判死缓存 purge 重下）；decode/bad_input = 内容问题。
+enum class ApplyFail { none, bad_input, decode, alloc };
+ApplyFail lastApplyFail();
+
 // 撤下素材并释放位图（PSRAM）。舞台回到空白。
 void clearArtwork(lv_obj_t *root);
 

@@ -92,7 +92,6 @@ struct ActionSpec {
 
 struct Parts {
     lv_obj_t *root = nullptr;      // 舞台根对象
-    lv_obj_t *glow = nullptr;      // 待确认/运行时的光圈（accent 色，脉冲）
     bool builtin = false;          // 兼容保留：内置素材已删除，恒为 false
     bool bake_enabled = true;      // 侧舞台关烘焙：省 PSRAM 给预取解码
     int last_mood = -1;
@@ -191,18 +190,8 @@ void passive(lv_obj_t *object) {
     lv_obj_remove_flag(object, LV_OBJ_FLAG_EVENT_BUBBLE);
 }
 
-lv_obj_t *shape(lv_obj_t *parent, int x, int y, int width, int height,
-                uint32_t color, lv_opa_t opacity = LV_OPA_COVER) {
-    auto *object = lv_obj_create(parent);
-    lv_obj_remove_style_all(object);
-    passive(object);
-    lv_obj_set_pos(object, made_x(x), made_home_y(y));
-    lv_obj_set_size(object, made_s(width), made_s(height));
-    lv_obj_set_style_radius(object, LV_RADIUS_CIRCLE, 0);
-    lv_obj_set_style_bg_color(object, lv_color_hex(color), 0);
-    lv_obj_set_style_bg_opa(object, opacity, 0);
-    return object;
-}
+// shape() 已随任务状态光环（glow）一并移除：角色改小居中后满屏圆盘
+// 露在角色身后形似圆框，状态提示改由素材页顶部状态图标承担（2026-10-20）。
 
 int wave(uint32_t elapsed_ms, uint32_t period, int amplitude, int phase = 0) {
     const int angle = static_cast<int>((elapsed_ms % period) * 360 / period);
@@ -1036,13 +1025,8 @@ void artUpdate(Parts *parts, uint32_t elapsed_ms, int mood) {
             layer.alert && mood == Mood::kWaitingConfirm
                 ? static_cast<lv_opa_t>(140 + wave(elapsed_ms, 1400, 90)) : LV_OPA_COVER, 0);
     }
-    // 光圈语义：待确认 = accent 脉冲（提醒双击确认/三击取消）；运行中 = 微光常亮。
-    if (mood == Mood::kWaitingConfirm)
-        lv_obj_set_style_bg_opa(parts->glow, static_cast<lv_opa_t>(120 + wave(elapsed_ms, 1400, 80)), 0);
-    else if (mood == Mood::kRunning)
-        lv_obj_set_style_bg_opa(parts->glow, static_cast<lv_opa_t>(45), 0);
-    else
-        lv_obj_set_style_bg_opa(parts->glow, LV_OPA_TRANSP, 0);
+    // 任务状态光环（glow）已移除（2026-10-20）：角色改小居中后满屏圆盘
+    // 露在身后形似圆框；状态提示由素材页顶部状态图标承担。
 }
 
 } // namespace
@@ -1094,11 +1078,6 @@ lv_obj_t *create(lv_obj_t *parent) {
     lv_obj_set_user_data(root, parts);
     lv_obj_add_event_cb(root, destroy, LV_EVENT_DELETE, parts);
     parts->root = root;
-
-    const auto &palette = vibe_theme::palette();
-    // 光圈：平时隐形，待确认/运行中点亮（update() 里驱动脉冲）。
-    // 满屏精灵身后的一整圈光环。
-    parts->glow = shape(root, 18, 4, 324, 324, palette.accent, LV_OPA_TRANSP);
 
     return root;
 }
