@@ -900,6 +900,26 @@ export const messages = {
     "zh-CN": "创建失败",
     "en": "Creation failed"
   },
+  "app.226": {
+    "zh-CN": "历史记录",
+    "en": "History"
+  },
+  "app.227": {
+    "zh-CN": "这个任务的全部指令与回复，新的在上面。",
+    "en": "Every instruction and reply of this task, newest first."
+  },
+  "app.228": {
+    "zh-CN": "第 {v0} 轮",
+    "en": "Turn {v0}"
+  },
+  "app.229": {
+    "zh-CN": "这个任务还没有对话记录。",
+    "en": "No conversation history for this task yet."
+  },
+  "app.230": {
+    "zh-CN": "关闭",
+    "en": "Close"
+  },
   "tunnel.official.title": {
     "zh-CN": "官方入口",
     "en": "Official links"

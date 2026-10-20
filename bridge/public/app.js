@@ -6,7 +6,7 @@ import { t, m, getLocale, setLocale, supportedLocales, applyStaticTranslations, 
       const $ = (id) => document.getElementById(id);
       const taskPage = document.body.dataset.page === 'tasks';
       const assistantsPage = document.body.dataset.page === 'assistants';
-      const state = { jobs: [], sessions: [], providers: [], projects: [], connection: {}, voice: {}, models: {}, pairing: { open: false, pending: [], paired: [] }, tunnel: { status: 'off' }, receiver: { status: 'disabled' }, receiverPasswordVisible: false, token: null, lastSyncedAt: null, loaded: false, error: '', busy: new Set(), pairBusy: false, pairWindowBusy: false, tunnelBusy: false, dismissedPairing: new Set(), selectedSessionId: null, previewProvider: '', previewSessionId: null, sessionFormOpen: false, legacySessionsOpen: false, renamingSession: false, refreshing: false };
+      const state = { jobs: [], sessions: [], providers: [], projects: [], connection: {}, voice: {}, models: {}, pairing: { open: false, pending: [], paired: [] }, tunnel: { status: 'off' }, receiver: { status: 'disabled' }, receiverPasswordVisible: false, token: null, lastSyncedAt: null, loaded: false, error: '', busy: new Set(), pairBusy: false, pairWindowBusy: false, tunnelBusy: false, dismissedPairing: new Set(), selectedSessionId: null, previewProvider: '', previewSessionId: null, sessionFormOpen: false, legacySessionsOpen: false, renamingSession: false, refreshing: false, historyOpen: false };
       if (taskPage) {
         try { state.selectedSessionId = sessionStorage.getItem('vibe-selected-session'); } catch { /* Selection works without storage. */ }
         const params = new URLSearchParams(window.location.search);
@@ -64,6 +64,9 @@ import { t, m, getLocale, setLocale, supportedLocales, applyStaticTranslations, 
       const canConfirm = (job) => job.status === 'waiting_confirmation';
       const canCancel = (job) => ['waiting_confirmation', 'queued', 'running'].includes(job.status);
       const timeText = (value) => { const date = new Date(value); return Number.isNaN(date.getTime()) ? '' : new Intl.DateTimeFormat(getLocale(), { hour: '2-digit', minute: '2-digit' }).format(date); };
+      const turnAnswer = (job) => userFacingJobError(job) || (job.status === 'running' ? job.progress : '') || job.result ||
+        (job.status === 'waiting_confirmation' ? t('app.074') :
+          job.status === 'queued' ? t('app.075') : t('app.076'));
       const setFormMessage = (message, success = false) => { setUiMessage($('formMessage'), message); $('formMessage').classList.toggle('success', success); };
       let toastTimer;
       function showToast(message, error = false) { const toast = $('toast'); setUiMessage(toast, message); toast.classList.toggle('error', error); toast.classList.add('visible'); clearTimeout(toastTimer); toastTimer = setTimeout(() => toast.classList.remove('visible'), 4200); }
@@ -314,9 +317,7 @@ import { t, m, getLocale, setLocale, supportedLocales, applyStaticTranslations, 
         const top = text('div', 'job-top');
         top.append(text('div', 'job-meta', t('app.071', { v0: (timeText(job.createdAt) || t('app.047')) })), text('span', `job-status ${info.css}`, info.label));
         card.append(top, text('div', 'job-instruction', t('app.073', { v0: (job.instruction || t('app.072')) })));
-        const answer = userFacingJobError(job) || (job.status === 'running' ? job.progress : '') || job.result ||
-          (job.status === 'waiting_confirmation' ? t('app.074') :
-            job.status === 'queued' ? t('app.075') : t('app.076'));
+        const answer = turnAnswer(job);
         card.append(text('p', `job-summary turn-answer ${job.error && !job.retryPending ? 'error' : ''}`, t('app.077', { v0: (providerName(job.provider)), v1: (safeString(answer)) })));
         if (job.provider === 'codex' && job.retryPending) {
           card.append(text('p', 'job-retry-notice', t('app.078')));
@@ -327,6 +328,38 @@ import { t, m, getLocale, setLocale, supportedLocales, applyStaticTranslations, 
         if (canCancel(job)) actions.append(actionButton(job, 'cancel'));
         if (actions.children.length) { const bottom = text('div', 'job-bottom'); bottom.append(actions); card.append(bottom); }
         list.append(card);
+      }
+      /** 历史会话抽屉：当前任务的全部指令与回复，新的在上。数据来自 /api/state 的 jobs。 */
+      function renderHistory() {
+        const button = $('historyDrawerButton');
+        const overlay = $('historyDrawerOverlay');
+        if (!button || !overlay) return;
+        const session = selectedSession();
+        const jobs = session ? jobsForSession(session.id) : [];
+        button.hidden = !session || !!state.error;
+        button.setAttribute('aria-expanded', String(state.historyOpen));
+        overlay.hidden = !state.historyOpen;
+        if (!state.historyOpen) return;
+        $('historyDrawerMeta').textContent = session ? `${session.title || t('app.045')} — ${t('app.227')}` : t('app.227');
+        const list = $('historyList'); list.replaceChildren();
+        if (!jobs.length) {
+          list.append(text('p', 'history-empty', t('app.229')));
+          return;
+        }
+        [...jobs].reverse().forEach((job, index) => {
+          const info = jobStatus(job);
+          const turn = text('article', 'history-turn');
+          const top = text('div', 'history-turn-top');
+          top.append(
+            text('span', 'turn-number', t('app.228', { v0: jobs.length - index })),
+            text('span', 'history-turn-time', formatDateTime(job.createdAt)),
+            text('span', `job-status ${info.css}`, info.label),
+          );
+          turn.append(top, text('div', 'history-turn-instruction', job.instruction || t('app.072')));
+          const answer = turnAnswer(job);
+          if (answer) turn.append(text('p', `history-turn-answer ${job.error && !job.retryPending ? 'error' : ''}`, answer));
+          list.append(turn);
+        });
       }
       const boardEncoder = new TextEncoder();
       function boardCleanText(value) {
@@ -912,7 +945,7 @@ import { t, m, getLocale, setLocale, supportedLocales, applyStaticTranslations, 
           setUiMessage($('firmwareMessage'), error.message || '');
         } finally { firmwareBusy = false; }
       }
-      function render() { renderSelects(); renderSessions(); renderJobs(); renderBoard(); renderPairing(); renderTunnel(); renderReceiver(); renderFirmware(); renderConnection(); renderModelSettings(); renderVoiceSettings(); renderProviders(); }
+      function render() { renderSelects(); renderSessions(); renderJobs(); renderHistory(); renderBoard(); renderPairing(); renderTunnel(); renderReceiver(); renderFirmware(); renderConnection(); renderModelSettings(); renderVoiceSettings(); renderProviders(); }
       function applyLanguage(locale) {
         const changed = setLocale(locale);
         if (!changed && document.documentElement.lang === locale) {
@@ -991,6 +1024,25 @@ import { t, m, getLocale, setLocale, supportedLocales, applyStaticTranslations, 
       $('legacySessionToggle')?.addEventListener('click', () => {
         state.legacySessionsOpen = !state.legacySessionsOpen;
         renderSessions();
+      });
+      $('historyDrawerButton')?.addEventListener('click', () => {
+        state.historyOpen = !state.historyOpen;
+        renderHistory();
+      });
+      $('historyDrawerClose')?.addEventListener('click', () => {
+        state.historyOpen = false;
+        renderHistory();
+      });
+      $('historyDrawerOverlay')?.addEventListener('click', (event) => {
+        if (event.target !== event.currentTarget) return;
+        state.historyOpen = false;
+        renderHistory();
+      });
+      document.addEventListener('keydown', (event) => {
+        if (event.key === 'Escape' && state.historyOpen) {
+          state.historyOpen = false;
+          renderHistory();
+        }
       });
       $('sessionForm')?.addEventListener('submit', (event) => { event.preventDefault(); createSession(); });
       $('renameSessionButton')?.addEventListener('click', () => {

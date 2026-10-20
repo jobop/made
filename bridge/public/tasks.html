@@ -53,7 +53,7 @@
           </section>
 
           <section class="panel queue" aria-labelledby="queue-title">
-            <div class="panel-head"><div><h2 id="queue-title"><span data-i18n="static.132">最新进展</span></h2><p class="panel-intro"><span data-i18n="static.133">显示这个任务最新一次指令、执行状态和助手回复。</span></p></div></div>
+            <div class="panel-head"><div><h2 id="queue-title"><span data-i18n="static.132">最新进展</span></h2><p class="panel-intro"><span data-i18n="static.133">显示这个任务最新一次指令、执行状态和助手回复。</span></p></div><button id="historyDrawerButton" class="small-button" type="button" aria-expanded="false" aria-controls="historyDrawerOverlay" hidden data-i18n="app.226">历史记录</button></div>
             <div id="jobList" class="job-list" aria-live="polite"><div class="empty"><div class="empty-icon" aria-hidden="true">⌁</div><strong><span data-i18n="static.122">正在读取任务</span></strong><span><span data-i18n="static.134">正在连接本机桥接服务…</span></span></div></div>
           </section>
 
@@ -69,6 +69,15 @@
       </div>
     </main>
     <footer class="footer"><span><span data-i18n="static.082">码得 · 多助手桥接</span></span><span id="lastUpdated"><span data-i18n="static.083">等待首次同步</span></span></footer>
+  </div>
+  <div id="historyDrawerOverlay" class="history-overlay" hidden>
+    <aside class="history-drawer" role="dialog" aria-modal="true" aria-labelledby="historyDrawerTitle">
+      <div class="history-head">
+        <div><span class="section-kicker"><span data-i18n="static.125">当前任务</span></span><h2 id="historyDrawerTitle"><span data-i18n="app.226">历史记录</span></h2><p id="historyDrawerMeta" class="panel-intro"></p></div>
+        <button id="historyDrawerClose" class="icon-button" type="button" title="关闭" aria-label="关闭" data-i18n-title="app.230" data-i18n-aria-label="app.230">×</button>
+      </div>
+      <div id="historyList" class="history-list"></div>
+    </aside>
   </div>
   <div id="toast" class="toast" role="status" aria-live="polite"></div>
   <div id="pairingOverlay" class="pairing-overlay" hidden>

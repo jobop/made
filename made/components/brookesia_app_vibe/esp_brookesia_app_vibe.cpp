@@ -1313,18 +1313,22 @@ void VibeCoding::renderBridgeChoices(const vibe_pairing::Snapshot &pairing)
         pairing.bridges.empty() ? T("没有找到电脑\n点刷新或去设置填地址") : T("点击电脑后核对配对码"));
 }
 
-void VibeCoding::noteComputerReply(const Task &task)
+void VibeCoding::noteComputerReply(const Task &task, const std::string &scope)
 {
     const bool pending = task.status == "queued" || task.status == "running" ||
                          task.status == "waiting_confirmation";
     const bool arrived = (task.status == "completed" || task.status == "failed" ||
                           task.status == "handed_off") &&
                          (!task.result.empty() || !task.error.empty());
-    if (!reply_watch_ready_) {
-        reply_watch_ready_ = true;
+    if (scope != reply_watch_scope_) {
+        // 换轨（切助手/切会话，含首帧）：旧会话的「在等回复」状态作废，
+        // 只登记不响铃。否则上一任助手还没出结果的 pending 会撞上
+        // 这一任助手的旧完成任务，凑出一次张冠李戴的「新消息」提示音。
+        reply_watch_scope_ = scope;
         reply_watch_id_ = task.id;
         reply_saw_pending_ = pending;
         reply_wait_new_ = false;
+        reply_watch_ready_ = true;
         return;
     }
     if (task.id != reply_watch_id_) {
@@ -1653,13 +1657,16 @@ void VibeCoding::updateStatusIcon(int voice_phase, const std::string &task_statu
     // 优先级：用户正在说话 > 任务状态 > 语音提交残留。Submitted 在提交
     // 成功后不会自动复位（下次录音才覆盖），若让它压过任务状态，任务
     // 进入 waiting_confirmation 会显示处理中、完成后永远转圈（2026-10-20
-    // 实测）。所以任务状态可见时一律以任务为准，Submitted 只兜底「任务
-    // 还没出现在快照里」的窗口期。
+    // 实测）。所以任务状态可见时一律以任务为准；Submitted 只兜底「任务
+    // 还没出现在快照里」的窗口期，必须加 !submitted_task_seen_ 闸门——
+    // 该任务被看到后 Submitted 一直残留，切到无任务的助手（快照空）时
+    // 图标永远转圈（2026-10-20 晚实锤：心跳 fwTasks=0 fwTask=- 但图标在转）。
     if (voice_phase == static_cast<int>(vibe_voice::Phase::Recording)) state = 1;
     else if (voice_phase == static_cast<int>(vibe_voice::Phase::Uploading)) state = 2;
     else if (task_status == "waiting_confirmation") state = 3;
     else if (task_status == "running" || task_status == "queued") state = 4;
-    else if (voice_phase == static_cast<int>(vibe_voice::Phase::Submitted) && task_status.empty())
+    else if (voice_phase == static_cast<int>(vibe_voice::Phase::Submitted) &&
+             task_status.empty() && !submitted_task_seen_.load())
         state = 4;
 
     // 声波两帧交替（tick 驱动 160ms/帧），不占 anim 通道。

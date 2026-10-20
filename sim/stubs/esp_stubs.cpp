@@ -147,6 +147,38 @@ void vTaskDelete(TaskHandle_t handle) { (void)handle; }
 TickType_t xTaskGetTickCount(void) { return (TickType_t)(esp_timer_get_time() / 1000LL); }
 const char *pcTaskGetName(TaskHandle_t handle) { (void)handle; return "sim"; }
 
+/* 任务通知：sim 单槽实现（句柄不区分，只承担任务间唤醒）。
+ * 典型用户是提示音任务：xTaskNotifyWait(portMAX_DELAY) 阻塞等位。 */
+static std::mutex g_notify_mu;
+static std::condition_variable g_notify_cv;
+static uint32_t g_notify_pending = 0;
+
+BaseType_t xTaskNotify(TaskHandle_t task, uint32_t value, eNotifyAction action)
+{
+    (void)task;
+    if (action == eSetBits || action == eNoAction) {
+        std::lock_guard<std::mutex> lock(g_notify_mu);
+        g_notify_pending |= value;
+        g_notify_cv.notify_all();
+    }
+    return pdPASS;
+}
+
+BaseType_t xTaskNotifyWait(uint32_t clear_on_entry, uint32_t clear_on_exit, uint32_t *value, TickType_t wait)
+{
+    (void)clear_on_entry;
+    std::unique_lock<std::mutex> lock(g_notify_mu);
+    if (wait == portMAX_DELAY) {
+        g_notify_cv.wait(lock, [] { return g_notify_pending != 0; });
+    } else {
+        g_notify_cv.wait_for(lock, std::chrono::milliseconds(wait),
+                             [] { return g_notify_pending != 0; });
+    }
+    *value = g_notify_pending;
+    g_notify_pending &= ~clear_on_exit;
+    return *value != 0 ? pdTRUE : pdFALSE;
+}
+
 /* ---------------- NVS（内存键值） ---------------- */
 esp_err_t nvs_open(const char *ns, nvs_open_mode_t mode, nvs_handle_t *out)
 {

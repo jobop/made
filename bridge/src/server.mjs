@@ -1147,6 +1147,15 @@ if (isEntry) {
     process.once('SIGINT', shutdown);
     process.once('SIGTERM', shutdown);
     process.once('exit', () => { try { app.tunnel.process?.kill('SIGTERM'); } catch { /* Already exited. */ } });
+    // 无声退出兜底（2026-10-20）：桥接器在设备锁屏反复断链场景会无栈消失
+    // （一天三次，2min~25min 不等），未捕获异常/拒绝会静默杀进程。桥接器
+    // 是常驻服务——记录后继续跑，状态机脏了也强过整个掉线。
+    process.on('uncaughtException', (error) => {
+      console.error(`[fatal] uncaughtException（继续运行）：${error?.stack || error}`);
+    });
+    process.on('unhandledRejection', (reason) => {
+      console.error(`[fatal] unhandledRejection（继续运行）：${reason?.stack || reason}`);
+    });
     app.listen().catch((error) => {
       console.error(error.message);
       process.exitCode = 1;

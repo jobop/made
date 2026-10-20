@@ -555,18 +555,15 @@ void VibeCoding::buildStatusWidgets()
     lv_obj_set_style_text_font(provider_label_, &lv_font_montserrat_26, 0);
     made_text(provider_label_, 220, false);
 
-    // 素材页顶部状态图标（单一位置换图标，设计稿 2026-10-19）：药丸底
-    // bg_row + 48×48 recolor 位图（2026-10-20 放大 3 倍）。抽屉打开时隐藏
-    // （抽屉右上已有文字徽章）。
+    // 素材页顶部状态图标（单一位置换图标，设计稿 2026-10-19）：48×48
+    // recolor 位图，透明背景（2026-10-20 去掉药丸底，直接叠在页面上）。
+    // 抽屉打开时隐藏（抽屉右上已有文字徽章）。
     const int icon_pill_w = made_s(76);
     const int icon_pill_h = made_s(60);
     status_icon_pill_ = lv_obj_create(screen);
     lv_obj_remove_style_all(status_icon_pill_);
     lv_obj_set_size(status_icon_pill_, icon_pill_w, icon_pill_h);
     lv_obj_set_pos(status_icon_pill_, made_x(180) - icon_pill_w / 2, made_home_y(6));
-    lv_obj_set_style_radius(status_icon_pill_, icon_pill_h / 2, 0);
-    lv_obj_set_style_bg_color(status_icon_pill_, lv_color_hex(VT(bg_row)), 0);
-    lv_obj_set_style_bg_opa(status_icon_pill_, LV_OPA_COVER, 0);
     lv_obj_clear_flag(status_icon_pill_, LV_OBJ_FLAG_CLICKABLE);
     status_icon_img_ = lv_image_create(status_icon_pill_);
     lv_image_set_src(status_icon_img_, &kStatusIconIdle);

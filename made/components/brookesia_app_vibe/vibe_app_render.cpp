@@ -229,7 +229,9 @@ void VibeCoding::renderTaskView(const RenderViewCtx &ctx, const Session *selecte
         // The bridge returns newest first. Show only the latest exchange.
         const Task &task = ctx.snapshot.tasks.front();
         displayed_task_id_ = task.id;
-        noteComputerReply(task);
+        // 回复监听的会话轨标识：助手 id + 会话 id。切助手/切会话时
+        // 轨道变化，noteComputerReply 只登记不响铃（详见其注释）。
+        noteComputerReply(task, ctx.provider.id + "/" + ctx.selected_session_id);
         // 状态已由徽章承载，指令行不再重复拼接状态词。
         const std::string instruction = !ctx.snapshot.session_notice.empty() ? ctx.own_session_notice :
             !ctx.voice_notice.empty() ? ctx.voice_notice :

@@ -1,6 +1,7 @@
 // sim/stubs/components_stubs.cpp — 非 UI 组件的 host 替身。
 // 覆盖 vibe_wifi / vibe_pairing / vibe_phone_setup / vibe_usb /
-// vibe_voice / board_voice_audio / new_message_chime / made_sprite_cache。
+// vibe_voice / board_voice_audio。new_message_chime 与
+// made_sprite_cache 已由真实现直接参与 host 构建，不再打桩。
 // 环境变量：
 //   MADE_SIM_PAIRING=paired   模拟已配对（UI 显示任务页 + 连接错误态）
 //   MADE_SIM_PAIRING=discovering（默认）模拟未配对（配对抽屉布局）
@@ -11,8 +12,6 @@
 #include "vibe_usb.hpp"
 #include "vibe_voice_capture.hpp"
 #include "board_voice_audio.h"
-#include "new_message_chime.hpp"
-#include "made_sprite_cache.hpp"
 
 #include <cstdlib>
 #include <cstring>
@@ -47,20 +46,6 @@ esp_err_t bsp_extra_i2s_write(void *buffer, size_t length, size_t *bytes_written
 { (void)buffer; (void)length; (void)timeout_ms; *bytes_written = 0; return ESP_ERR_INVALID_STATE; }
 
 } // extern "C"
-
-/* ---------------- new_message_chime ---------------- */
-void made_chime_new_message() {}
-void made_chime_preview() {}
-bool made_chime_play_wav(const uint8_t *data, size_t size) { (void)data; (void)size; return false; }
-
-/* ---------------- made_sprite_cache（素材缓存：模拟器里一律未缓存） ---------------- */
-namespace made_sprite_cache {
-std::string baseDir(const std::string &provider) { (void)provider; return ""; }
-bool ensure(const std::string &provider, const vibe_provider::SpriteInfo &sprite, const Fetch &fetch, bool *manifest_changed) { (void)provider; (void)sprite; (void)fetch; (void)manifest_changed; return false; }
-bool loadManifest(const std::string &provider, std::string &json) { (void)provider; (void)json; return false; }
-bool cachedVersion(const std::string &provider, uint32_t &version) { (void)provider; (void)version; return false; }
-void purge(const std::string &provider) { (void)provider; }
-} // namespace made_sprite_cache
 
 /* ---------------- vibe_wifi ---------------- */
 namespace vibe_wifi {
@@ -111,6 +96,8 @@ esp_err_t start_setup_ap(SetupAccessPoint &out)
 esp_err_t stop_setup_ap() { return ESP_OK; }
 bool setup_ap_active() { return false; }
 bool is_connected() { return wifi_connected(); }
+void begin_high_throughput() {}
+void end_high_throughput() {}
 } // namespace vibe_wifi
 
 /* ---------------- vibe_pairing ---------------- */

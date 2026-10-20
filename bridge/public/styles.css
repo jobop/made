@@ -443,3 +443,27 @@
       .tunnel-service-guide { padding: 12px; }
       .tunnel-official-link { flex: 1 1 auto; }
     }
+
+    /* 历史会话抽屉：任务页「最新进展」旁的按钮拉开，展示当前任务的全部指令与回复 */
+    .history-overlay { position: fixed; inset: 0; z-index: 15; background: rgba(74, 62, 44, .38); backdrop-filter: blur(4px); }
+    .history-overlay[hidden] { display: none; }
+    .history-drawer { position: absolute; top: 0; right: 0; display: flex; flex-direction: column; width: min(560px, 100%); height: 100%; background: var(--bg); border-left: 1px solid var(--line); box-shadow: -18px 0 48px rgba(74, 62, 44, .22); animation: history-in .22s ease; }
+    @keyframes history-in { from { transform: translateX(28px); opacity: 0; } to { transform: none; opacity: 1; } }
+    .history-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; padding: 22px 22px 16px; border-bottom: 1px solid var(--line); background: var(--panel); }
+    .history-head h2 { margin-top: 6px; font-size: var(--font-heading); font-weight: 700; }
+    .history-head .panel-intro { margin-top: 6px; }
+    .history-head .icon-button { flex: 0 0 auto; }
+    .history-list { flex: 1; display: grid; gap: 10px; align-content: start; padding: 18px 22px 30px; overflow-y: auto; }
+    .history-empty { color: var(--dim); font-size: var(--font-small); padding: 13px; }
+    .history-turn { border: 1px solid var(--line); border-radius: 15px; background: var(--panel); padding: 14px 15px; }
+    .history-turn-top { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; color: var(--dim); font-size: var(--font-small); font-weight: 600; }
+    .history-turn-time { font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+    .history-turn-instruction { margin: 9px 0 0; font-size: var(--font-body); font-weight: 600; line-height: 1.55; white-space: pre-wrap; overflow-wrap: anywhere; }
+    .history-turn-answer { margin: 7px 0 0; color: var(--muted); font-size: var(--font-body); line-height: 1.6; white-space: pre-wrap; overflow-wrap: anywhere; }
+    .history-turn-answer.error { color: var(--red); }
+    @media (max-width: 650px) {
+      .history-head { padding: 18px 16px 13px; }
+      .history-list { padding: 14px 16px 24px; }
+      .history-turn { padding: 13px 14px; }
+      .history-turn-top { align-items: flex-start; }
+    }

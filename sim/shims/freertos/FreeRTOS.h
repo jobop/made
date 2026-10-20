@@ -29,6 +29,13 @@ typedef void *TaskHandle_t;
 typedef void (*TaskFunction_t)(void *);
 typedef void *SemaphoreHandle_t;
 
+typedef uint32_t eNotifyAction;
+#define eNoAction                 0u
+#define eSetBits                  1u
+#define eIncrement                2u
+#define eSetValueWithOverwrite    3u
+#define eSetValueWithoutOverwrite 4u
+
 BaseType_t xTaskCreate(TaskFunction_t fn, const char *name, uint32_t stack_depth,
                        void *arg, UBaseType_t priority, TaskHandle_t *handle);
 BaseType_t xTaskCreatePinnedToCore(TaskFunction_t fn, const char *name, uint32_t stack_depth,
@@ -37,6 +44,8 @@ void vTaskDelay(TickType_t ticks);
 void vTaskDelete(TaskHandle_t handle);
 TickType_t xTaskGetTickCount(void);
 const char *pcTaskGetName(TaskHandle_t handle);
+BaseType_t xTaskNotify(TaskHandle_t task, uint32_t value, eNotifyAction action);
+BaseType_t xTaskNotifyWait(uint32_t clear_on_entry, uint32_t clear_on_exit, uint32_t *value, TickType_t wait);
 
 #ifdef __cplusplus
 }

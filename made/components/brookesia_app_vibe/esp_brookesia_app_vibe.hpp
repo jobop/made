@@ -624,6 +624,10 @@ private:
     bool showing_pairing_layout_ = false;
     std::string displayed_task_id_;
     std::string reply_watch_id_;
+    // 回复监听按「助手/会话」分轨：换轨（切助手/切会话）时旧的
+    // 「在等回复」状态作废，防止上一任助手的 pending 撞上这一任
+    // 助手的旧完成任务而误响「新消息」提示音。
+    std::string reply_watch_scope_;
     bool reply_watch_ready_ = false;
     bool reply_saw_pending_ = false;
     bool reply_wait_new_ = false;
@@ -644,7 +648,7 @@ private:
     std::vector<lv_image_dsc_t *> decoded_dscs_; // 异步解码结果，freeDecodedImages 释放
     std::vector<lv_image_dsc_t *> attachment_dscs_; // 与 current_attachments_ 平行，按索引回查已解码图
     std::string attachment_sig_; // 附件集合指纹，避免每次 render 重拉图/闪屏
-    void noteComputerReply(const Task &task);
+    void noteComputerReply(const Task &task, const std::string &scope);
     void updateStatusIndicators(bool provider_ready);
     std::string rendered_session_id_;
     std::string last_voice_message_;

@@ -224,7 +224,9 @@ export class JobStore {
   projectFor(job) {
     const configured = this.projects.find((item) => item.id === job.projectId);
     const dir = this.workspacePath(job.vibeSessionId);
-    return dir ? { ...configured, path: dir } : configured;
+    // 每个会话跑在自己的沙箱目录里，但把选定项目的真实路径一并带给插件
+    // （originPath）：助手类插件可以只读地回看真正的代码，写入仍留在沙箱。
+    return dir ? { ...configured, path: dir, originPath: configured?.path || '' } : configured;
   }
 
   createSession(payload) {
