@@ -1,0 +1,49 @@
+{
+  "version": 18,
+  "canvas": {
+    "w": 240,
+    "h": 240
+  },
+  "layers": [
+    {
+      "id": "body",
+      "file": "body.png",
+      "x": 20,
+      "y": 0,
+      "z": 0
+    },
+    {
+      "id": "eyes",
+      "frames": [
+        "eyes-open.png",
+        "eyes-closed.png"
+      ],
+      "x": 61,
+      "y": 53,
+      "z": 1,
+      "blink": {
+        "period_ms": 4000,
+        "closed_ms": 120
+      }
+    },
+    {
+      "id": "mouth",
+      "frames": [
+        "mouth-closed.png",
+        "mouth-open.png"
+      ],
+      "x": 97,
+      "y": 69,
+      "z": 2,
+      "talk": true
+    }
+  ],
+  "motion": {
+    "breath": {
+      "scale_pct": 108,
+      "period_ms": 3000
+    },
+    "sway_deg": 3,
+    "sway_period_ms": 1800
+  }
+}

@@ -1,6 +1,6 @@
 // sim/stubs/components_stubs.cpp — 非 UI 组件的 host 替身。
 // 覆盖 vibe_wifi / vibe_pairing / vibe_phone_setup / vibe_usb /
-// vibe_voice / board_voice_audio。new_message_chime 与
+// vibe_voice / board_voice_audio / new_message_chime。
 // made_sprite_cache 已由真实现直接参与 host 构建，不再打桩。
 // 环境变量：
 //   MADE_SIM_PAIRING=paired   模拟已配对（UI 显示任务页 + 连接错误态）
@@ -12,6 +12,7 @@
 #include "vibe_usb.hpp"
 #include "vibe_voice_capture.hpp"
 #include "board_voice_audio.h"
+#include "new_message_chime.hpp"
 
 #include <cstdlib>
 #include <cstring>
@@ -199,3 +200,8 @@ Status status() { return Status{Phase::Idle, "", "", false}; }
 namespace vibe_motion {
 void start(ShakeCallback callback, void *ctx) { (void)callback; (void)ctx; }
 } // namespace vibe_motion
+
+/* ---------------- new_message_chime（host 无音频任务，提示音为空操作） ---------------- */
+void made_chime_new_message() {}
+void made_chime_preview() {}
+bool made_chime_play_wav(const uint8_t *data, size_t size) { (void)data; (void)size; return false; }

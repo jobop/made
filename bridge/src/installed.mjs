@@ -189,11 +189,12 @@ export async function setPluginEnabled(config, id, enabled) {
   if (!PLUGIN_ID.test(id || '')) throw fail('插件不存在');
   const installed = (await listInstalled(config)).plugins;
   if (!installed.some((plugin) => plugin.id === id)) throw fail('插件不存在');
-  // 默认编程助手不能停用：loadConfiguredPlugins 会守卫 defaultProvider，
-  // 但那里的报错不含操作指引，用户只会看到一句没头没尾的「未安装或已禁用」。
-  // 在动作入口给出可操作的前置报错。
-  if (!enabled && id === config.defaultProvider) {
-    throw fail('这是默认编程助手，不能停用；请先在设置里把默认编程助手切换为其他助手');
+  // 默认助手只是可选偏好，不再是"主力"：停用它时直接清掉默认指向，不拦人。
+  const previousDefault = config.defaultProvider || '';
+  let defaultCleared = false;
+  if (!enabled && id === previousDefault) {
+    config.defaultProvider = '';
+    defaultCleared = true;
   }
   const previous = [...(config.disabledPlugins || [])];
   const next = new Set(previous);
@@ -204,12 +205,17 @@ export async function setPluginEnabled(config, id, enabled) {
     await reload(config);
   } catch (error) {
     config.disabledPlugins = previous;
+    if (defaultCleared) config.defaultProvider = previousDefault;
     throw error;
   }
   try {
-    writeConfig(config, (raw) => { raw.disabledPlugins = config.disabledPlugins; });
+    writeConfig(config, (raw) => {
+      raw.disabledPlugins = config.disabledPlugins;
+      if (defaultCleared) raw.defaultProvider = '';
+    });
   } catch (error) {
     config.disabledPlugins = previous;
+    if (defaultCleared) config.defaultProvider = previousDefault;
     await reload(config);
     throw error;
   }
@@ -252,11 +258,10 @@ export async function removePlugin(config, { id = '', file = '' } = {}) {
   target = removalTarget(config, target);
   const described = await describeModule(target, config);
   const ids = described.map((plugin) => plugin.id).filter((item) => PLUGIN_ID.test(item));
-  // 同 setPluginEnabled：删默认助手会被 defaultProvider 守卫拦下但报错没有指引，
-  // 在动作入口就说清楚（2026-10-18 实锤：删除 codex 后桥接器重启都起不来）。
-  if (ids.includes(config.defaultProvider)) {
-    throw fail('这是默认编程助手，不能删除；请先在设置里把默认编程助手切换为其他助手');
-  }
+  // 默认助手只是可选偏好，不再是"主力"：删的就是默认助手时清掉指向，不拦人。
+  const previousDefault = config.defaultProvider || '';
+  const removesDefault = ids.includes(previousDefault);
+  if (removesDefault) config.defaultProvider = '';
   const previousDisabled = [...(config.disabledPlugins || [])];
   const previousPlugins = [...(config.plugins || [])];
   config.disabledPlugins = [...new Set([...previousDisabled, ...ids])];
@@ -266,10 +271,12 @@ export async function removePlugin(config, { id = '', file = '' } = {}) {
     writeConfig(config, (raw) => {
       raw.disabledPlugins = config.disabledPlugins;
       if (Array.isArray(raw.plugins)) raw.plugins = config.plugins;
+      if (removesDefault) raw.defaultProvider = '';
     });
   } catch (error) {
     config.disabledPlugins = previousDisabled;
     config.plugins = previousPlugins;
+    if (removesDefault) config.defaultProvider = previousDefault;
     await reload(config).catch(() => {});
     throw error;
   }

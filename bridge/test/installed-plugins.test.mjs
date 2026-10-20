@@ -69,3 +69,24 @@ test('移除插件会删除用户目录中的文件，删除主题会去掉用�
   assert.deepEqual(themes.map((theme) => theme.name).sort(), ['sunset']);
   assert.equal(fs.existsSync(path.join(config.madeHome, 'themes', 'bobo')), false);
 });
+
+test('删除或停用默认编程助手不再被拦：默认指向自动清空并持久化', async (t) => {
+  const config = fixture(t);
+  config.pluginsRuntime = await loadConfiguredPlugins(config);
+  assert.equal(config.defaultProvider, 'codex');
+  // 删掉默认助手：以前会报「这是默认编程助手，不能删除」，现在直接放行。
+  const removed = await removePlugin(config, { id: 'codex' });
+  assert.deepEqual(removed.plugins.map((plugin) => plugin.label), ['闹钟']);
+  assert.equal(config.defaultProvider, '');
+  const saved = JSON.parse(fs.readFileSync(config.configFile, 'utf8'));
+  assert.equal(saved.defaultProvider, '');
+  // 空默认指向时，注册表加载也不报错。
+  config.defaultProvider = '';
+  await loadConfiguredPlugins(config);
+  // 停用默认助手同样清空默认指向。
+  const config2 = fixture(t);
+  config2.pluginsRuntime = await loadConfiguredPlugins(config2);
+  await setPluginEnabled(config2, 'codex', false);
+  assert.equal(config2.defaultProvider, '');
+  assert.equal(JSON.parse(fs.readFileSync(config2.configFile, 'utf8')).defaultProvider, '');
+});

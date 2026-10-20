@@ -413,6 +413,33 @@ export class JobStore {
               job.updatedAt = now();
               this.save();
             }
+          }, (tool) => {
+            // 工具调用轨迹：仅存任务记录给桥接器网页端折叠展示，设备端
+            // /device/tasks 是字段白名单，天然带不出去。
+            if (job.status !== 'running') return;
+            const name = String(tool?.name || '').trim();
+            if (!name) return;
+            const entry = {
+              name: name.slice(0, 120),
+              detail: String(tool?.detail || '').slice(0, 600),
+              state: tool?.state === 'completed' ? 'completed' : 'started',
+              at: now(),
+            };
+            const calls = Array.isArray(job.toolCalls) ? job.toolCalls : [];
+            // 同名同参数的 completed 覆盖前一条 started，避免每个工具占两行。
+            const previous = calls.length - 1 >= 0 ? calls[calls.length - 1] : null;
+            if (previous && previous.state === 'started' && previous.name === entry.name &&
+                previous.detail === entry.detail) {
+              previous.state = 'completed';
+            } else {
+              calls.push(entry);
+            }
+            job.toolCalls = calls.slice(-40);
+            const current = Date.now();
+            if (current - (this.progressSavedAt.get(job.id) || 0) >= 750) {
+              this.progressSavedAt.set(job.id, current);
+              this.save();
+            }
           });
           if (job.status === 'running') {
             if (!outcome || !['completed', 'handed_off'].includes(outcome.status || 'completed')) {

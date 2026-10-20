@@ -109,7 +109,7 @@ function changeFooter(state, message) {
   return state.changed ? `${message('改动文件：')}\n${state.changed}` : message('没有检测到代码改动。');
 }
 
-export function runCli({ job, project, signal, onProgress, onSession, config, model }, adapter) {
+export function runCli({ job, project, signal, onProgress, onSession, onTool, config, model }, adapter) {
   const startingGitSnapshot = repositorySnapshot(project.path);
   const message = (value) => translateKnownMessage(value, config.locale);
   // 每轮都拼上权限边界：用户原文一字不改，边界文案按界面语言翻译。
@@ -189,6 +189,9 @@ export function runCli({ job, project, signal, onProgress, onSession, config, mo
     child.stdout.on('data', (chunk) => {
       bumpIdle();
       events.write(chunk);
+      // 工具调用只走 onTool（桥接器任务记录，网页端折叠展示），不进设备进度文本。
+      const forwarded = events.takeToolCalls?.() || [];
+      for (const call of forwarded) onTool?.(call);
     });
     child.stderr.on('data', (chunk) => {
       bumpIdle();

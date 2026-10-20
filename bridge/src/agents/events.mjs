@@ -36,19 +36,108 @@ export function streamActivity(event) {
   return '';
 }
 
+// 工具调用捕获：从 CLI 原始 JSONL 事件里抽 {name, detail, state}，只进桥接器
+// 任务记录（网页端折叠展示），绝不混入设备进度文本。codex 的 item.* 事件与
+// Claude 风格的 tool_call/assistant 事件都覆盖；认不出的形状安静返回 null。
+const TOOL_DETAIL_LIMIT = 600;
+
+function truncate(value, limit = TOOL_DETAIL_LIMIT) {
+  const text = String(value ?? '').trim();
+  return text.length <= limit ? text : `${text.slice(0, limit)}…（截断）`;
+}
+
+function toolDetail(parts) {
+  return truncate(parts.filter((part) => String(part || '').trim()).join('  '));
+}
+
+export function toolCallFromEvent(event) {
+  if (event.type === 'tool_call' && event.tool_call && typeof event.tool_call === 'object') {
+    const name = Object.keys(event.tool_call)[0] || '';
+    const args = event.tool_call[name];
+    return {
+      name: truncate(name, 120),
+      detail: toolDetail([name, typeof args === 'string' ? args : JSON.stringify(args)]),
+      state: event.subtype === 'completed' ? 'completed' : 'started',
+      key: '',
+    };
+  }
+  if (event.type === 'stream_event' && event.event?.type === 'content_block_start' &&
+      event.event.content_block?.type === 'tool_use') {
+    return {
+      name: truncate(event.event.content_block.name, 120),
+      detail: toolDetail([event.event.content_block.name,
+        JSON.stringify(event.event.content_block.input ?? '')]),
+      state: 'started', key: String(event.event.index ?? ''),
+    };
+  }
+  if (event.type === 'assistant' && Array.isArray(event.message?.content)) {
+    const block = event.message.content.find((part) => part?.type === 'tool_use');
+    if (!block) return null;
+    return {
+      name: truncate(block.name, 120),
+      detail: toolDetail([block.name, JSON.stringify(block.input ?? '')]),
+      state: 'started', key: String(block.id ?? ''),
+    };
+  }
+  if (event.type !== 'item.started' && event.type !== 'item.completed') return null;
+  const item = event.item;
+  if (!item || typeof item !== 'object') return null;
+  const completed = event.type === 'item.completed';
+  switch (item.type) {
+    case 'command_execution':
+      return { name: '命令执行', detail: toolDetail([item.command, item.cwd]), state: completed ? 'completed' : 'started', key: String(item.id ?? '') };
+    case 'file_change':
+      return {
+        name: '文件修改',
+        detail: toolDetail(Array.isArray(item.changes)
+          ? item.changes.map((change) => `${change?.path || ''}${change?.kind ? ` (${change.kind})` : ''}`)
+          : []),
+        state: completed ? 'completed' : 'started', key: String(item.id ?? ''),
+      };
+    case 'mcp_tool_call': case 'collab_tool_call':
+      return { name: truncate(item.tool || '工具调用', 120), detail: toolDetail([item.tool, JSON.stringify(item.arguments ?? '')]), state: completed ? 'completed' : 'started', key: String(item.id ?? '') };
+    case 'web_search':
+      return { name: '网页搜索', detail: toolDetail([item.query]), state: completed ? 'completed' : 'started', key: String(item.id ?? '') };
+    case 'reasoning': case 'agent_message': case 'todo_list': case 'error':
+      return null;
+    default:
+      return null;
+  }
+}
+
 // Only categorical activity is emitted by builtin adapters; raw tool arguments
-// and reasoning never become the device progress text.
+// and reasoning never become the device progress text. Tool calls are drained
+// separately (takeToolCalls) for the bridge UI only.
 export function jsonLineEvents(interpret, onProgress = () => {}, onSession = () => {}) {
   let pending = '';
   let rawTail = '';
   let discardingOversized = false;
   let sawEvent = false;
   const state = { lastMessage: '', assistantDeltas: '', finalResult: '', terminalError: '' };
+  // 半开工具调用：key → 在 calls 里的引用。completed 事件来时把对应条目置为
+  // 完成；对不上号（CLI 没给 id 或乱序）就当作独立条目追加，宁可多一行。
+  const open = new Map();
+  const calls = [];
+  const record = (call) => {
+    if (!call || !call.name) return;
+    if (call.state === 'completed' && call.key && open.has(call.key)) {
+      const entry = open.get(call.key);
+      entry.state = 'completed';
+      if (call.detail && call.detail.length > entry.detail.length) entry.detail = call.detail;
+      open.delete(call.key);
+      return;
+    }
+    const entry = { name: call.name, detail: call.detail || '', state: call.state, at: new Date().toISOString() };
+    calls.push(entry);
+    if (calls.length > 80) calls.splice(0, calls.length - 80);
+    if (entry.state === 'started' && call.key) open.set(call.key, entry);
+  };
   const consume = (line) => {
     let event;
     try { event = JSON.parse(line); } catch { return; }
     if (!event || typeof event !== 'object' || typeof event.type !== 'string') return;
     sawEvent = true;
+    record(toolCallFromEvent(event));
     const update = interpret(event, state) || {};
     if (typeof update.sessionId === 'string') onSession(update.sessionId);
     if (update.activity) onProgress(update.activity);
@@ -69,11 +158,16 @@ export function jsonLineEvents(interpret, onProgress = () => {}, onSession = () 
     },
     finish() {
       if (!discardingOversized && pending.trim()) consume(pending);
+      for (const entry of open.values()) entry.state = 'completed';
+      open.clear();
       return {
         result: (state.finalResult || state.lastMessage || (sawEvent ? '任务已执行，未返回文字摘要。' : rawTail.trim())).slice(-8000),
         hasAssistantText: Boolean(state.finalResult || state.lastMessage || !sawEvent),
         error: state.terminalError, rawTail,
       };
+    },
+    takeToolCalls() {
+      return calls.splice(0, calls.length);
     },
   };
 }

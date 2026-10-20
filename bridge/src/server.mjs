@@ -251,7 +251,7 @@ export function createApp(config, { run, transcribe, tunnel: providedTunnel, ena
   const publicTunnel = (value = tunnel.summary()) => localizeStatus(value, config.locale);
   if (!config.pluginsRuntime && (config.plugins?.length || config.disabledPlugins?.length)) throw new Error('请先 await loadConfiguredPlugins(config) 并赋值 config.pluginsRuntime');
   config.pluginsRuntime ||= createPluginRegistry();
-  if (!config.pluginsRuntime.hasAgent(config.defaultProvider)) throw new Error('默认编程助手未安装或已禁用');
+  if (config.defaultProvider && !config.pluginsRuntime.hasAgent(config.defaultProvider)) throw new Error('默认编程助手未安装或已禁用');
   if (!config.speech) initializeSpeechSettings(config);
   config.models = { ...Object.fromEntries(config.pluginsRuntime.agents().filter(p => p.capabilities.model).map(p => [p.id, p.model?.default || ''])), ...(config.codexModel ? {codex: config.codexModel} : {}), ...config.models };
   validateModelSettings(Object.fromEntries(Object.entries(publicModels(config)).filter(([, value]) => value !== null)), config.pluginsRuntime);
@@ -909,6 +909,7 @@ export function createApp(config, { run, transcribe, tunnel: providedTunnel, ena
       }
       if (req.method === 'POST' && url.pathname === '/device/sessions') {
         const provider = url.searchParams.get('provider') || config.defaultProvider;
+        if (!provider) throw new Error('请先在电脑桥接器里选择编程助手');
         const projectId = url.searchParams.get('projectId') || config.defaultProject;
         if (!config.pluginsRuntime.hasAgent(provider)) throw new Error('未知编程工具');
         const payload = await body(req);
@@ -1045,7 +1046,10 @@ export function createApp(config, { run, transcribe, tunnel: providedTunnel, ena
       }
       const match = url.pathname.match(/^\/device\/tasks\/([a-z0-9-]+)\/(confirm|cancel)$/);
       if (req.method === 'POST' && match) {
-        deviceSend(res, 200, publicJob(match[2] === 'confirm' ? store.confirm(match[1]) : store.cancel(match[1]), deviceLocale));
+        const confirmed = publicJob(match[2] === 'confirm' ? store.confirm(match[1]) : store.cancel(match[1]), deviceLocale);
+        // 工具调用轨迹只给桥接器网页端，任何设备回包都不携带。
+        const { toolCalls, ...deviceJob } = confirmed;
+        deviceSend(res, 200, deviceJob);
         return;
       }
       // 板端截屏回传：固件把当前画面以 RGB565 裸帧 POST 上来（tools/shot.mjs 触发）。

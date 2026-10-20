@@ -905,8 +905,8 @@ export const messages = {
     "en": "History"
   },
   "app.227": {
-    "zh-CN": "这个任务的全部指令与回复，新的在上面。",
-    "en": "Every instruction and reply of this task, newest first."
+    "zh-CN": "这个任务的全部指令与回复，第一轮在最上面。",
+    "en": "Every instruction and reply of this task, oldest first."
   },
   "app.228": {
     "zh-CN": "第 {v0} 轮",
@@ -919,6 +919,14 @@ export const messages = {
   "app.230": {
     "zh-CN": "关闭",
     "en": "Close"
+  },
+  "app.231": {
+    "zh-CN": "工具调用（{v0}）",
+    "en": "Tool calls ({v0})"
+  },
+  "app.232": {
+    "zh-CN": "进行中",
+    "en": "running"
   },
   "tunnel.official.title": {
     "zh-CN": "官方入口",

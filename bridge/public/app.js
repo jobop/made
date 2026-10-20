@@ -297,6 +297,28 @@ import { t, m, getLocale, setLocale, supportedLocales, applyStaticTranslations, 
           showToast(error.message || t('app.065'), true);
         } finally { state.busy.delete('rename-session'); render(); }
       }
+      /** 工具调用轨迹（仅桥接器网页端展示，不下发设备）：可折叠列表。 */
+      function toolTrace(job) {
+        const calls = Array.isArray(job.toolCalls) ? job.toolCalls.filter((call) => call && safeString(call.name)) : [];
+        if (!calls.length) return null;
+        const details = document.createElement('details');
+        details.className = 'tool-trace';
+        const summary = document.createElement('summary');
+        summary.textContent = t('app.231', { v0: calls.length });
+        details.append(summary);
+        const list = text('div', 'tool-trace-list');
+        for (const call of [...calls].reverse()) {
+          const line = text('div', `tool-trace-line ${call.state === 'completed' ? 'done' : 'active'}`);
+          line.append(
+            text('span', 'tool-trace-mark', call.state === 'completed' ? '✓' : '…'),
+            text('span', 'tool-trace-name', safeString(call.name)),
+          );
+          if (safeString(call.detail)) line.append(text('code', 'tool-trace-detail', safeString(call.detail)));
+          list.append(line);
+        }
+        details.append(list);
+        return details;
+      }
       function renderJobs() {
         if (!$('jobList')) return;
         const list = $('jobList'); list.replaceChildren();
@@ -319,6 +341,7 @@ import { t, m, getLocale, setLocale, supportedLocales, applyStaticTranslations, 
         card.append(top, text('div', 'job-instruction', t('app.073', { v0: (job.instruction || t('app.072')) })));
         const answer = turnAnswer(job);
         card.append(text('p', `job-summary turn-answer ${job.error && !job.retryPending ? 'error' : ''}`, t('app.077', { v0: (providerName(job.provider)), v1: (safeString(answer)) })));
+        const trace = toolTrace(job); if (trace) card.append(trace);
         if (job.provider === 'codex' && job.retryPending) {
           card.append(text('p', 'job-retry-notice', t('app.078')));
         }
@@ -329,7 +352,7 @@ import { t, m, getLocale, setLocale, supportedLocales, applyStaticTranslations, 
         if (actions.children.length) { const bottom = text('div', 'job-bottom'); bottom.append(actions); card.append(bottom); }
         list.append(card);
       }
-      /** 历史会话抽屉：当前任务的全部指令与回复，新的在上。数据来自 /api/state 的 jobs。 */
+      /** 历史会话抽屉：当前任务的全部指令与回复，从第一轮按时间往下排。数据来自 /api/state 的 jobs。 */
       function renderHistory() {
         const button = $('historyDrawerButton');
         const overlay = $('historyDrawerOverlay');
@@ -346,18 +369,20 @@ import { t, m, getLocale, setLocale, supportedLocales, applyStaticTranslations, 
           list.append(text('p', 'history-empty', t('app.229')));
           return;
         }
+        // /api/state 的 jobs 是新→旧，反转成第一轮在最上面，编号也按时间顺序。
         [...jobs].reverse().forEach((job, index) => {
           const info = jobStatus(job);
           const turn = text('article', 'history-turn');
           const top = text('div', 'history-turn-top');
           top.append(
-            text('span', 'turn-number', t('app.228', { v0: jobs.length - index })),
+            text('span', 'turn-number', t('app.228', { v0: index + 1 })),
             text('span', 'history-turn-time', formatDateTime(job.createdAt)),
             text('span', `job-status ${info.css}`, info.label),
           );
           turn.append(top, text('div', 'history-turn-instruction', job.instruction || t('app.072')));
           const answer = turnAnswer(job);
           if (answer) turn.append(text('p', `history-turn-answer ${job.error && !job.retryPending ? 'error' : ''}`, answer));
+          const trace = toolTrace(job); if (trace) turn.append(trace);
           list.append(turn);
         });
       }

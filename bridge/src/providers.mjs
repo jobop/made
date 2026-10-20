@@ -60,7 +60,7 @@ export function providerStates(config, locale = config.locale) {
 }
 
 export function createRunner(config) {
-  const runner = async (job, project, signal, onProgress = () => {}, onSession = () => {}) => {
+  const runner = async (job, project, signal, onProgress = () => {}, onSession = () => {}, onTool = () => {}) => {
     const plugin = agentFor(config, job.provider);
     if (!plugin) throw new Error('编程工具插件未加载，请先安装或启用对应插件');
     if (signal.aborted) throw new Error('任务已取消');
@@ -71,6 +71,9 @@ export function createRunner(config) {
       job, project, signal, config, model,
       onProgress: plugin.capabilities.progress ? onProgress : () => {},
       onSession: plugin.capabilities.session === 'native' ? onSession : () => {},
+      // 工具调用轨迹（仅桥接器网页端展示）：CLI 型插件的 runCli 会自动消费，
+      // 不认识该字段的旧插件安全忽略。
+      onTool,
     });
   };
   runner.agent = (id) => agentFor(config, id);

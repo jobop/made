@@ -137,7 +137,7 @@ test('生命周期通知按序到达；插件创建的任务不广播 created', 
   assert.deepEqual(events.map((item) => item.split(':')[0]), ['created', 'confirmed', 'started', 'completed']);
 
   events.length = 0;
-  const created = enhance.bridge().createTask({ instruction: '插件任务' });
+  const created = enhance.bridge().createTask({ instruction: '插件任务', agentId: 'fake-agent' });
   assert.equal(created.job.status, 'waiting_confirmation');
   assert.equal(created.job.source, 'plugin');
   await settle();
@@ -173,7 +173,7 @@ test('bridge 句柄：助手清单、直接入队命令、事件上下文携带 
 test('createTask 限流：超出每分钟上限后拒绝', async () => {
   const { directory, enhance } = makeSetup([], async () => ({ status: 'completed', result: 'ok' }));
   const bridge = enhance.bridge();
-  for (let index = 0; index < 10; index += 1) bridge.createTask({ instruction: `第 ${index} 个任务` });
-  assert.throws(() => bridge.createTask({ instruction: '超额任务' }), /过于频繁/);
+  for (let index = 0; index < 10; index += 1) bridge.createTask({ instruction: `第 ${index} 个任务`, agentId: 'fake-agent' });
+  assert.throws(() => bridge.createTask({ instruction: '超额任务', agentId: 'fake-agent' }), /过于频繁/);
   fs.rmSync(directory, { recursive: true, force: true });
 });

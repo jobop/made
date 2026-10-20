@@ -91,6 +91,7 @@ export function createEnhancement(config) {
         if (!wired.jobs) throw new Error('桥接器尚未就绪');
         createTaskGuard();
         const provider = agentId || config.defaultProvider;
+        if (!provider) throw new Error('请指定编程助手（createTask 需要显式 agentId）');
         const project = projectId || wired.jobs.defaultProject;
         const session = wired.jobs.createSession({ provider, projectId: project, title });
         const job = wired.jobs.submit({ instruction, sessionId: session.id, provider, projectId: project, source: 'plugin' });

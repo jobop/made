@@ -65,6 +65,7 @@ export class SessionStore {
 
   create({ provider, projectId, title, legacy = false, cliSessionId = '' } = {}) {
     const selectedProvider = provider || this.defaultProvider;
+    if (!selectedProvider) throw new Error('请先选择编程助手');
     const selectedProject = projectId || this.defaultProject;
     const plugin = this.agent(selectedProvider);
     if (!plugin && !(legacy && PROVIDER_ID.test(selectedProvider))) throw new Error('不支持的编程工具');

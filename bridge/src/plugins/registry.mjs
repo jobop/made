@@ -156,6 +156,7 @@ export async function loadConfiguredPlugins(config) {
     await loadFile(filename, label);
   }
   const registry = createPluginRegistry(plugins);
-  if (!registry.hasAgent(config.defaultProvider)) throw new Error('默认编程助手未安装或已禁用');
+  // 默认助手是可选偏好：配置了才校验存在性；留空表示没有兜底助手。
+  if (config.defaultProvider && !registry.hasAgent(config.defaultProvider)) throw new Error('默认编程助手未安装或已禁用');
   return registry;
 }

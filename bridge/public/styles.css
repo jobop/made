@@ -461,6 +461,26 @@
     .history-turn-instruction { margin: 9px 0 0; font-size: var(--font-body); font-weight: 600; line-height: 1.55; white-space: pre-wrap; overflow-wrap: anywhere; }
     .history-turn-answer { margin: 7px 0 0; color: var(--muted); font-size: var(--font-body); line-height: 1.6; white-space: pre-wrap; overflow-wrap: anywhere; }
     .history-turn-answer.error { color: var(--red); }
+
+    /* 工具调用轨迹：仅桥接器网页端展示，可折叠；设备端不携带该数据 */
+    .tool-trace { margin: 2px 0 12px; border: 1px dashed var(--line); border-radius: 12px; background: var(--panel); }
+    .tool-trace summary { padding: 9px 13px; color: var(--muted); font-size: var(--font-small); font-weight: 700; cursor: pointer; user-select: none; list-style: none; display: flex; align-items: center; gap: 7px; }
+    .tool-trace summary::-webkit-details-marker { display: none; }
+    .tool-trace summary::after { content: '+'; margin-left: auto; color: var(--dim); font-size: 16px; }
+    .tool-trace[open] summary::after { content: '–'; }
+    .tool-trace summary:hover { color: var(--green-deep); }
+    .tool-trace-list { display: grid; gap: 6px; max-height: 320px; overflow-y: auto; padding: 4px 13px 12px; }
+    .tool-trace-line { display: flex; align-items: baseline; gap: 8px; min-width: 0; font-size: var(--font-small); line-height: 1.5; }
+    .tool-trace-mark { flex: 0 0 auto; color: var(--green); font-weight: 700; }
+    .tool-trace-line.active .tool-trace-mark { color: var(--blue); animation: tool-trace-pulse 1.2s ease-in-out infinite; }
+    @keyframes tool-trace-pulse { 0%, 100% { opacity: 1; } 50% { opacity: .35; } }
+    .tool-trace-name { flex: 0 0 auto; color: var(--text); font-weight: 600; }
+    .tool-trace-detail { flex: 1; min-width: 0; overflow-x: auto; white-space: nowrap; color: var(--muted); background: var(--panel-2); border: 1px solid var(--line); border-radius: 8px; padding: 2px 8px; font-size: 13px; }
+    @media (max-width: 650px) {
+      .tool-trace-line { flex-wrap: wrap; }
+      .tool-trace-detail { flex-basis: 100%; white-space: normal; overflow-wrap: anywhere; }
+    }
+
     @media (max-width: 650px) {
       .history-head { padding: 18px 16px 13px; }
       .history-list { padding: 14px 16px 24px; }

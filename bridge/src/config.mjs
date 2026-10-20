@@ -128,9 +128,11 @@ export function loadConfig(env = process.env) {
     };
   });
   const defaultProject = raw.defaultProject || projects[0].id;
-  const defaultProvider = raw.defaultProvider || 'codex';
-  if (!seen.has(defaultProject) || !PLUGIN_ID.test(defaultProvider)) {
-    throw new Error('默认项目或默认编程工具不在配置中');
+  // 默认编程助手只是可选偏好（未指定 provider 时兜底），不再是必须存在的"主力"：
+  // 可以留空——没有助手享有特权，入口处没指定就明确报错让用户选。
+  const defaultProvider = typeof raw.defaultProvider === 'string' && PLUGIN_ID.test(raw.defaultProvider) ? raw.defaultProvider : '';
+  if (!seen.has(defaultProject)) {
+    throw new Error('默认项目不在配置中');
   }
   const port = Number(raw.port || 8787);
   const devicePort = Number(raw.devicePort || 8788);
