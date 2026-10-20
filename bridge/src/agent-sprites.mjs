@@ -259,12 +259,14 @@ export function readSprite(packageDir) {
   const raw = readManifestFile(spriteDir);
   if (!raw) return null;
   const manifest = validateManifest(raw);
-  // 引用完整性：目录里的 PNG 必须全部被 manifest 层引用、GIF 必须被某个
-  // GIF 动作引用，帮开发者抓住文件名拼写错误。
-  const gifReferenced = new Set();
+  // 引用完整性只做提示不做拒绝（2026-10-20 用户拍板）：目录里未被 manifest
+  // 引用的 PNG/GIF 属于换绑/改形象后忘记删的旧素材，拒整包会让助手形象
+  // 整体加载不到（雪球实锤），代价远大于死重。清理责任放在 made-kit skill
+  // 层软性强调。manifest 引用不存在的文件（拼写错）仍是硬错误（下方 stat）。
+  const gifReferencedHint = new Set();
   if (manifest.actions) {
     for (const action of Object.values(manifest.actions)) {
-      if (action && typeof action.gif === 'string') gifReferenced.add(action.gif);
+      if (action && typeof action.gif === 'string') gifReferencedHint.add(action.gif);
     }
   }
   for (const name of fs.readdirSync(spriteDir)) {
@@ -272,9 +274,11 @@ export function readSprite(packageDir) {
     if (lower.endsWith('.png')) {
       const referenced = manifest.layers.some((layer) =>
         (layer.frames !== undefined ? layer.frames : [layer.file]).includes(name));
-      if (!referenced) throw new SpriteError(`sprite/${name} 未被 manifest 引用`);
-    } else if (lower.endsWith('.gif')) {
-      if (!gifReferenced.has(name)) throw new SpriteError(`sprite/${name} 未被任何 GIF 动作引用`);
+      if (!referenced) {
+        console.error(`[plugins] sprite 提示：${path.basename(spriteDir)}/${name} 未被 manifest 引用，不会被下发（建议删除旧素材省空间）`);
+      }
+    } else if (lower.endsWith('.gif') && !gifReferencedHint.has(name)) {
+      console.error(`[plugins] sprite 提示：${path.basename(spriteDir)}/${name} 未被任何 GIF 动作引用，不会被下发（建议删除旧素材省空间）`);
     }
   }
   let total = 0;
