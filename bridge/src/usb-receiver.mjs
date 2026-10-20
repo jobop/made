@@ -298,6 +298,18 @@ export class UsbReceiverProtocol {
       this.onActivity();
       // The receiver waits for this acknowledgement before forwarding HTTP.
       // A USB cable being present does not mean the desktop process is ready.
+      // ready 直发不进 pendingWork：pendingWork 同时承载 writeResponse 的
+      // ack 流控等待——设备偶发丢 ack 时该链最长堵 15s，期间所有重握手
+      // 都等不到 ready，设备侧表现为连环 E263 + UI 闪「连接电脑」（实锤
+      // 于 2026-10-20 冒烟：ack TIMEOUT id=52 前后 15s 全是 1.5s 间隔握手
+      // 超时）。sendLine 走 link.writeQueue，帧原子性与 pendingWork 相同；
+      // direct 固件 read_request_frame 本就支持在响应流中处理 ready。
+      // receiver 模式保持原排队路径（ready 语义 = 桥接进程就绪）。
+      if (peer.mode === 'direct' && !this.closed) {
+        this.sendLine(JSON.stringify({ type: 'ready', version: 1, connectionId: this.connectionId }))
+          .catch(() => this.dispose());
+        return;
+      }
       const generation = this.generation;
       this.pendingWork = this.pendingWork.then(async () => {
         if (!this.closed && this.helloReceived && this.generation === generation) {
@@ -495,7 +507,7 @@ export class UsbReceiverProtocol {
         console.error(`[usb-link] ack TIMEOUT id=${id} ${new Date().toISOString()}`);
         this.ackWaiters.delete(id);
         reject(new Error('USB ACK 超时'));
-      }, 15_000);
+      }, 3_000);
       timer.unref?.();
       const check = () => {
         if ((this.ackCredits.get(id) || 0) < target) return;

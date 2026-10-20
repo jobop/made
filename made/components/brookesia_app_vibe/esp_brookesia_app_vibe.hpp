@@ -10,11 +10,12 @@
 
 #include "esp_http_client.h"
 #include "provider_catalog.hpp"
+#include "vibe_pairing.hpp"
+#include "vibe_voice_capture.hpp"
 #include "vibe_wifi.hpp"
 #include "vibe_theme.hpp"
 #include "systems/phone/esp_brookesia_phone_app.hpp"
 
-namespace vibe_pairing { struct Snapshot; }
 namespace vibe_phone_setup { struct Submission; }
 
 namespace esp_brookesia::apps {
@@ -199,6 +200,50 @@ private:
     void refreshSessions();
     void refreshTasks();
     void refreshConfig();
+    // config 里固件字段 → 待更新状态与文案（须持 model_mutex_；vibe_app_transport.cpp）。
+    struct FirmwareFields {
+        std::string url;
+        std::string sha;
+        std::string version;
+        int size = 0;
+    };
+    void applyFirmwareOffer(const FirmwareFields &fields);
+    // 渲染视图（vibe_app_render.cpp）：render() 按屏幕状态拆出，每个视图
+    // 只管一种屏幕状态，共享上下文一次构建（视图函数只读不改判定基准）。
+    struct RenderViewCtx {
+        vibe_pairing::Snapshot pairing;
+        Snapshot snapshot;
+        vibe_voice::Status voice;
+        std::string own_error;
+        std::string own_feedback;
+        std::string own_voice_hint;
+        std::string own_session_notice;
+        bool catalog_ready = false;
+        bool provider_ready = true;
+        int provider_index = 0;
+        size_t provider_count = 0;
+        std::string selected_session_id;
+        vibe_provider::Provider provider;
+        bool voice_for_selected_session = false;
+        std::string voice_notice;
+    };
+    void renderSpriteStage(const vibe_voice::Status &voice);
+    void renderPairingView(const RenderViewCtx &ctx);
+    void renderCatalogEmptyView(const RenderViewCtx &ctx);
+    void renderNoSessionView(const RenderViewCtx &ctx);
+    void renderTaskView(const RenderViewCtx &ctx, const Session *selected_session);
+    // UI 构建（vibe_app_ui.cpp）：run() 按屏幕区域拆出的搭建函数，每函数
+    // 只建一个区域。顺序敏感：delete_dialog_ 后建于 drawer_（弹窗层级）。
+    void prepareRunState();
+    void buildHomeStage();
+    void buildSettingsHome();
+    void buildSettingsPanels();
+    void buildAccessPanel();
+    void buildNetworkAndEditorPanels();
+    void buildStatusWidgets();
+    void buildAnswerArea();
+    void buildBridgePicker();
+    void buildDrawer();
     void syncArtwork();
     void preloadArtworkCache();
     bool artworkRetryDue() const;
@@ -210,6 +255,11 @@ private:
     bool request(const std::string &path, bool post, std::string &response, int &status,
                  const std::string &json_body = {}, size_t response_limit = 32 * 1024,
                  int timeout_ms = 5000);
+    // 大 body（如截屏 ~412KB）专用：裸指针零拷贝。std::string 承载大 body
+    // 会在内部堆（未开 SPIRAM_USE_MALLOC）上炸掉。
+    bool requestRaw(const std::string &path, bool post, const char *content_type,
+                    const uint8_t *body, size_t body_len, std::string &response, int &status,
+                    size_t response_limit = 32 * 1024, int timeout_ms = 5000);
     void queueBoardEvent(const char *name,
                          const std::vector<std::pair<std::string, std::string>> &fields = {});
     void notifyMotionShake();   // 摇晃回调：把当前助手 ID 塞进事件字段再入队

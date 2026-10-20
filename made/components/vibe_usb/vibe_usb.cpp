@@ -31,6 +31,18 @@ constexpr int64_t kHandshakeUs = 1500000;
 constexpr int64_t kHelloIntervalUs = 3000000;
 constexpr int kIoSliceMs = 20;
 
+// 诊断槽：最近一次 request 失败的摘要（借道 hello 帧带出——hello 是唯一
+// 在链路受损时仍必达的通道）。仅压测排障用。
+char s_diag[48] = "";
+// operation_error 最近一次 E259 的细分原因（enabled/cancel/cable/flag），
+// 供 request() 失败时拼进 diag——裸 E259 无法区分是 USB 连接抖动还是
+// 取消/停用，2026-10-20 冒烟排障加。单请求线程内读写，无竞争。
+const char* s_op_reason = "";
+void set_diag(const char* what, esp_err_t error) {
+    std::snprintf(s_diag, sizeof(s_diag), "%s=E%d", what, static_cast<int>(error));
+}
+const char* diag_text() { return s_diag; }
+
 std::atomic<bool> initialized{false};
 std::atomic<bool> initializing{false};
 std::atomic<bool> enabled{false};
@@ -64,19 +76,43 @@ void invalidate_connection() {
     }
 }
 
+// USB 连接状态消抖：is_connected 偶发抖动（2026-10-20 冒烟 diag 实锤
+// e=cable 每 10-40s 一次、单次仅一两个请求窗口）若立即放行会让在飞
+// 请求 E259 失败 → 固件清目录 → UI 闪「连接电脑」。false 持续超过
+// kCableDebounceUs 才认定真断；真拔线只晚 ~300ms 察觉，无副作用。
+constexpr int64_t kCableDebounceUs = 300000;
+std::atomic<int64_t> cable_down_since_us{0};
 bool cable_connected() {
     const bool present = usb_serial_jtag_is_connected();
-    if (!present) invalidate_connection();
-    return present;
+    if (present) {
+        cable_down_since_us.store(0, std::memory_order_relaxed);
+        return true;
+    }
+    int64_t down_at = cable_down_since_us.load(std::memory_order_relaxed);
+    const int64_t now = esp_timer_get_time();
+    if (down_at == 0) {
+        cable_down_since_us.compare_exchange_strong(down_at, now, std::memory_order_relaxed);
+    }
+    if (down_at != 0 && now - down_at < kCableDebounceUs) return true;
+    invalidate_connection();
+    return false;
 }
 
 esp_err_t operation_error(const Operation& operation) {
     if (!enabled.load() || cancellation.load() != operation.cancellation_generation ||
         (operation.cancellation_flag != nullptr && operation.cancellation_flag->load())) {
+        s_op_reason = !enabled.load() ? "e=off" :
+            cancellation.load() != operation.cancellation_generation ? "e=cancel" : "e=flag";
         return ESP_ERR_INVALID_STATE;
     }
-    if (!cable_connected()) return ESP_ERR_INVALID_STATE;
-    if (esp_timer_get_time() >= operation.deadline) return ESP_ERR_TIMEOUT;
+    if (!cable_connected()) {
+        s_op_reason = "e=cable";
+        return ESP_ERR_INVALID_STATE;
+    }
+    if (esp_timer_get_time() >= operation.deadline) {
+        s_op_reason = "e=deadline";
+        return ESP_ERR_TIMEOUT;
+    }
     return ESP_OK;
 }
 
@@ -107,14 +143,6 @@ esp_err_t write_line(const char* json, size_t length, const Operation& operation
     const esp_err_t result = write_bytes(json, length, operation, control);
     return result == ESP_OK ? write_bytes("\n", 1, operation, control) : result;
 }
-
-// 诊断槽：最近一次 request 失败的摘要（借道 hello 帧带出——hello 是唯一
-// 在链路受损时仍必达的通道）。仅压测排障用。
-char s_diag[48] = "";
-void set_diag(const char* what, esp_err_t error) {
-    std::snprintf(s_diag, sizeof(s_diag), "%s=E%d", what, static_cast<int>(error));
-}
-const char* diag_text() { return s_diag; }
 
 esp_err_t write_json(cJSON* object, const Operation& operation) {
     if (object == nullptr) return ESP_ERR_NO_MEM;
@@ -587,11 +615,14 @@ esp_err_t request(const std::string& path, bool post, const std::string& authori
     if (result != ESP_OK) {
         // 摘要进诊断槽：hello 每次重连都会带出（req 帧本身可能到不了对端）。
         // receive_response 超时不覆盖 post_wr 标记（分辨写入/接收侧）。
+        // E259 附带细分原因（e=cable/cancel/off/flag）——定位链路失效根因。
         if (started && result == ESP_ERR_TIMEOUT) {
             set_diag("resp_to", result);
         } else {
             const size_t slash = path.find_last_of('/');
-            set_diag(path.substr(slash == std::string::npos ? 0 : slash + 1, 12).c_str(), result);
+            std::string what = path.substr(slash == std::string::npos ? 0 : slash + 1, 12);
+            if (result == ESP_ERR_INVALID_STATE) what += s_op_reason;
+            set_diag(what.c_str(), result);
         }
     }
     send_pending_bye();

@@ -47,7 +47,7 @@ ApplyFail lastApplyFail();
 void clearArtwork(lv_obj_t *root);
 
 // —— 滑动方向预取（后台解码，松手零等待换装）——
-// 滑动一开始就在后台任务里把目标助手的 PNG 全部解码成 ARGB 像素暂存
+// 滑动一开始就在后台任务里把目标助手的 PNG 全部解码成 RGB565A8 像素暂存
 // （只占 PSRAM，不建 LVGL 对象，屏幕上仍只有当前一套在渲染）；松手裁决
 // 出目标后 commitPrefetched 原子换装（旧素材存活到提交成功那一刻才释放，
 // 不闪空白）。PSRAM 不足以同时容纳两套时解码会失败——那是优雅降级：

@@ -192,6 +192,15 @@ for name, img in [('bean-body.png', body112), ('bean-eyes-open.png', eyes_open11
     img.save(ROOT / name)
     print(name, img.size, f'{len(img.tobytes("raw", "BGRA"))} bytes')
 
+# 素材压缩规范（docs/SPRITES.md）：生成的帧统一过激进压缩（幂等，已压过会跳过）。
+import sys as _sys
+_sys.path.insert(0, str(ROOT.parent.parent / 'tools'))
+from compress_images import compress_file as _compress_file
+for name, _img in [('bean-body.png', None), ('bean-eyes-open.png', None),
+                   ('bean-eyes-closed.png', None), ('bean-mouth-closed.png', None),
+                   ('bean-mouth-open.png', None)]:
+    _compress_file(str(ROOT / name))
+
 def scale_box(box):
     k = BASIS / max(w, h)
     return tuple(round(v * k) for v in box)

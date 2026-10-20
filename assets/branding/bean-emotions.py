@@ -215,6 +215,13 @@ def main():
     print(f'manifest version -> {m["version"]}')
     print('eyes-closed 帧尺寸一致:',
           Image.open(os.path.join(target, 'eyes-closed.png')).size == base_eyes_open.size)
+    # 素材压缩规范（docs/SPRITES.md）：新生成的帧统一过激进压缩。
+    # manifest 版本上面已自增，压缩不再重复 bump。
+    sys.path.insert(0, os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), '..', '..', 'tools'))
+    from compress_images import compress_file
+    for name in ('eyes-focus.png', 'eyes-wow.png', 'eyes-happy.png', 'eyes-sad.png'):
+        compress_file(os.path.join(target, name))
 
 
 if __name__ == '__main__':

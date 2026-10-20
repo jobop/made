@@ -221,8 +221,8 @@ thread_local ApplyFail t_last_apply_fail = ApplyFail::none;
 // 耗尽 → wm=67KB、16 分钟 1345 次 alloc 失败。
 // v2：大槽（body/全画布帧）+ 小槽（bbox 特征帧）两档；扩池带余量守卫
 //（自由 PSRAM 低于阈值不再扩），池尽仍回退堆（旧 360 素材缓存也走堆）。
-constexpr size_t kSlotBigBytes = 240 * 240 * 4;   // 225KB：body/全画布帧
-constexpr int kSlotBigMax = 10;                   // 大槽上限 ≤2.25MB（最坏三套驻留 8 + 未来加助手/加帧余量 2）
+constexpr size_t kSlotBigBytes = 240 * 240 * 3;   // 168KB：body/全画布帧（RGB565A8 解码目标 = 3 字节/像素）
+constexpr int kSlotBigMax = 10;                   // 大槽上限 ≤1.68MB（最坏三套驻留 8 + 未来加助手/加帧余量 2）
 constexpr size_t kSlotSmallBytes = 48 * 1024;     // 48KB：bbox 特征帧（实测 eyes 33KB）
 constexpr int kSlotSmallMax = 20;                 // 小槽上限 ≤0.96MB（实测 codex 全套 11 小帧 + 余量）
 constexpr size_t kPoolReserveBytes = 600 * 1024;  // 扩池前必须留出的自由余量
@@ -263,19 +263,6 @@ uint8_t *slotTake(SlotPool &p) {
         }
     }
     return nullptr;
-}
-
-void slotRelease(uint8_t *p) {
-    if (!p) return;
-    std::lock_guard<std::mutex> lock(g_slot_mutex);
-    for (SlotPool *pool : {&g_pool_big, &g_pool_small}) {
-        for (int i = 0; i < pool->count; ++i) {
-            if (pool->base[i] == p) {
-                pool->used[i] = false;
-                return;
-            }
-        }
-    }
 }
 
 // 帧内存统一分配口：≤小槽走小槽（尽可借大槽），≤大槽走大槽，更大或池
@@ -325,21 +312,77 @@ void frameFree(uint8_t *p) {
     if (!owned) heap_caps_free(p);
 }
 
-// PNG → ARGB8888（PNG_FORMAT_BGRA 的内存字节序与 LVGL ARGB8888 一致，同
-// esp_lv_decoder 的做法）。缓冲驻留 PSRAM，只在应用素材时各调一次。
+// PNG → RGB565A8。LVGL 语义（v9）：RGB565 平面在前（stride = w*2），其后
+// 紧跟 A8 alpha 平面（行距 = stride/2 = w），data_size = w*h*3。直出设备
+// 主色深（RGB565），帧内存从 ARGB8888 的 4B/px 降到 3B/px（-25%），渲染
+// 侧还省一次格式转换。逐行解码：峰值内存就是成品帧本身，libpng 不再持有
+// 整幅中间图。16-bit/灰度/调色板/tRNS 通道统一展开成 RGBA8 再打包；
+// interlace 逐 pass 重写同一条扫描行（后写胜出，最终数据完整）。
 uint8_t *decodePngArgb(const std::string &path, int &width, int &height) {
-    png_image image;
-    std::memset(&image, 0, sizeof(image));
-    image.version = PNG_IMAGE_VERSION;
-    if (!png_image_begin_read_from_file(&image, path.c_str())) {
-        ESP_LOGE("made_sprite", "[sprite] png_begin_failed path=%s msg=%s",
-            path.c_str(), image.message);
-        png_image_free(&image);
+    width = 0;
+    height = 0;
+    // 预置 decode 归因：任何失败默认内容问题，只有 frameAlloc 失败才改写 alloc。
+    t_last_apply_fail = ApplyFail::decode;
+    FILE *fp = fopen(path.c_str(), "rb");
+    if (!fp) {
+        ESP_LOGE("made_sprite", "[sprite] png_begin_failed path=%s msg=open failed", path.c_str());
         return nullptr;
     }
-    image.format = PNG_FORMAT_BGRA;
-    const size_t bytes = static_cast<size_t>(image.width) * image.height * 4;
-    uint8_t *buffer = frameAlloc(bytes);
+    png_structp png = png_create_read_struct(PNG_LIBPNG_VER_STRING, nullptr, nullptr, nullptr);
+    png_infop info = png ? png_create_info_struct(png) : nullptr;
+    // buffer/rowbuf 在 setjmp 之后赋值，longjmp 回来要读它们做清理，必须
+    // volatile（C 标准：非 volatile 局变量跨 setjmp/longjmp 修改后值不确定）。
+    // png/info/fp 在 setjmp 前就已定形且此后不再改，普通变量即可。
+    uint8_t * volatile buffer = nullptr;
+    uint8_t * volatile rowbuf = nullptr;
+    if (!png || !info) {
+        ESP_LOGE("made_sprite", "[sprite] png_begin_failed path=%s msg=libpng init failed", path.c_str());
+        if (png) png_destroy_read_struct(&png, nullptr, nullptr);
+        fclose(fp);
+        return nullptr;
+    }
+    if (setjmp(png_jmpbuf(png))) {
+        // libpng 错误长跳转统一到这里。
+        ESP_LOGE("made_sprite", "[sprite] png_begin_failed path=%s msg=decode failed", path.c_str());
+        if (rowbuf) free(rowbuf);
+        if (buffer) frameFree(buffer);
+        png_destroy_read_struct(&png, &info, nullptr);
+        fclose(fp);
+        return nullptr;
+    }
+    png_init_io(png, fp);
+    png_read_info(png, info);
+    const png_uint_32 w = png_get_image_width(png, info);
+    const png_uint_32 h = png_get_image_height(png, info);
+    if (w == 0 || h == 0 || w > 4096 || h > 4096) {
+        ESP_LOGE("made_sprite", "[sprite] png_begin_failed path=%s msg=bad size %ux%u",
+            path.c_str(), static_cast<unsigned>(w), static_cast<unsigned>(h));
+        png_destroy_read_struct(&png, &info, nullptr);
+        fclose(fp);
+        return nullptr;
+    }
+    const int color_type = png_get_color_type(png, info);
+    if (png_get_bit_depth(png, info) == 16) png_set_strip_16(png);
+    if (png_get_bit_depth(png, info) < 8 || color_type == PNG_COLOR_TYPE_PALETTE ||
+        png_get_valid(png, info, PNG_INFO_tRNS))
+        png_set_expand(png);
+    png_set_gray_to_rgb(png);
+    if (!(color_type & PNG_COLOR_MASK_ALPHA) && !png_get_valid(png, info, PNG_INFO_tRNS))
+        png_set_add_alpha(png, 0xff, PNG_FILLER_AFTER);
+    const int passes = png_set_interlace_handling(png);
+    png_read_update_info(png, info);
+    const size_t rowbytes = png_get_rowbytes(png, info);
+    if (rowbytes < static_cast<size_t>(w) * 4) {
+        // 展开变换后理应得到 RGBA8 行；不符说明遇到了没覆盖的 PNG 变体。
+        ESP_LOGE("made_sprite", "[sprite] png_begin_failed path=%s msg=unexpected rowbytes %u",
+            path.c_str(), static_cast<unsigned>(rowbytes));
+        png_destroy_read_struct(&png, &info, nullptr);
+        fclose(fp);
+        return nullptr;
+    }
+
+    const size_t bytes = static_cast<size_t>(w) * h * 3;
+    buffer = frameAlloc(bytes);
     const bool pooled = buffer && frameSlotOwnedAny(buffer);
     if (!buffer) {
         t_last_apply_fail = ApplyFail::alloc;
@@ -348,40 +391,65 @@ uint8_t *decodePngArgb(const std::string &path, int &width, int &height) {
             static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_SPIRAM)),
             static_cast<unsigned>(heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM)),
             pooled ? 1 : 0);
-        png_image_free(&image);
+        png_destroy_read_struct(&png, &info, nullptr);
+        fclose(fp);
         return nullptr;
     }
-    if (!png_image_finish_read(&image, nullptr, buffer, 0, nullptr)) {
-        ESP_LOGE("made_sprite", "[sprite] png_read_failed path=%s msg=%s",
-            path.c_str(), image.message);
-        png_image_free(&image);
-        if (pooled) {
-            slotRelease(buffer);
-        } else {
-            heap_caps_free(buffer);
+    rowbuf = static_cast<uint8_t *>(malloc(rowbytes));
+    if (!rowbuf) {
+        t_last_apply_fail = ApplyFail::alloc;
+        ESP_LOGE("made_sprite", "[sprite] png_alloc_failed path=%s msg=row buffer", path.c_str());
+        frameFree(buffer);
+        buffer = nullptr;
+        png_destroy_read_struct(&png, &info, nullptr);
+        fclose(fp);
+        return nullptr;
+    }
+
+    uint8_t *rgb = buffer;
+    uint8_t *a8 = rgb + static_cast<size_t>(w) * h * 2;
+    for (int pass = 0; pass < passes; ++pass) {
+        for (png_uint_32 y = 0; y < h; ++y) {
+            png_read_row(png, rowbuf, nullptr);
+            uint8_t *rgb_row = rgb + static_cast<size_t>(y) * w * 2;
+            uint8_t *a8_row = a8 + static_cast<size_t>(y) * w;
+            const uint8_t *src = rowbuf;
+            for (png_uint_32 x = 0; x < w; ++x, src += 4) {
+                // RGBA8 → RGB565（小端内存序，与 LVGL u16 一致）+ A8 直存。
+                const uint16_t v = static_cast<uint16_t>(
+                    ((src[0] & 0xF8) << 8) | ((src[1] & 0xFC) << 3) | (src[2] >> 3));
+                rgb_row[x * 2] = static_cast<uint8_t>(v & 0xFF);
+                rgb_row[x * 2 + 1] = static_cast<uint8_t>(v >> 8);
+                a8_row[x] = src[3];
+            }
         }
-        return nullptr;
     }
-    width = static_cast<int>(image.width);
-    height = static_cast<int>(image.height);
+    png_read_end(png, nullptr);
+    png_destroy_read_struct(&png, &info, nullptr);
+    free(rowbuf);
+    fclose(fp);
+    width = static_cast<int>(w);
+    height = static_cast<int>(h);
     return buffer;
 }
 
 // —— 做法 A：呼吸帧轮播烘焙 ——
-// body 层的呼吸缩放（约 ±4%）按等标度步进预烘焙成 K 帧显示尺寸的 ARGB8888
+// body 层的呼吸缩放（约 ±4%）按等标度步进预烘焙成 K 帧显示尺寸的位图
 // 位图（源图先裁到内容 bbox 省内存）。运行时逐拍只换 src + 位移补偿，变换
 // 域从「每拍重采样整张大图」缩小到「零变换 blit」——滑动/动效卡顿的最大
 // 单一来源。烘焙是一次性 CPU（每帧几毫秒），内存按 SPIRAM 预算从 12 帧
 // 逐级降到 4 帧，全失败则回退原动态缩放路径。
 
 // 内容 bbox（alpha≥16 视为有内容）。整图透明返回 false。
+// px 为 RGB565A8：A8 平面在 RGB 平面（w*h*2 字节）之后，行距 = w。
 bool contentBbox(const uint8_t *px, int w, int h, int &bx, int &by, int &bw, int &bh)
 {
+    const uint8_t *alpha = px + static_cast<size_t>(w) * h * 2;
     int minx = w, miny = h, maxx = -1, maxy = -1;
     for (int y = 0; y < h; ++y) {
-        const uint8_t *row = px + static_cast<size_t>(y) * w * 4;
+        const uint8_t *row = alpha + static_cast<size_t>(y) * w;
         for (int x = 0; x < w; ++x) {
-            if (row[x * 4 + 3] >= 16) {
+            if (row[x] >= 16) {
                 if (x < minx) minx = x;
                 if (x > maxx) maxx = x;
                 if (y < miny) miny = y;
@@ -394,6 +462,25 @@ bool contentBbox(const uint8_t *px, int w, int h, int &bx, int &by, int &bw, int
     bw = maxx - minx + 1;
     bh = maxy - miny + 1;
     return true;
+}
+
+// ARGB8888 → RGB565A8 打包（烘焙输出转设备主色深用）。565 量化的位复制
+// 展开（5→8、6→8）保证往返 565↔888 无系统性偏暗。失败返回 null。
+uint8_t *convertArgbToRgb565a8(const uint8_t *src, int w, int h)
+{
+    const size_t n = static_cast<size_t>(w) * h;
+    auto *dst = frameAlloc(n * 3);
+    if (!dst) return nullptr;
+    uint8_t *rgb = dst;
+    uint8_t *a8 = dst + n * 2;
+    for (size_t i = 0; i < n; ++i) {
+        const uint16_t v = static_cast<uint16_t>(
+            ((src[i * 4 + 0] & 0xF8) << 8) | ((src[i * 4 + 1] & 0xFC) << 3) | (src[i * 4 + 2] >> 3));
+        rgb[i * 2] = static_cast<uint8_t>(v & 0xFF);
+        rgb[i * 2 + 1] = static_cast<uint8_t>(v >> 8);
+        a8[i] = src[i * 4 + 3];
+    }
+    return dst;
 }
 
 // 双线性重采样 ARGB8888 的源图子区域（straight alpha：预乘后采样再还原，
@@ -495,7 +582,7 @@ bool planBakeScales(int bw, int bh, int base_scale, int amp, std::vector<int> &s
             const int s = 256 - amp + (2 * amp * k + (M - 1) / 2) / (M - 1);
             const int dw = std::max(1, static_cast<int>((static_cast<int64_t>(bw) * base_scale * s + 32768) / 65536));
             const int dh = std::max(1, static_cast<int>((static_cast<int64_t>(bh) * base_scale * s + 32768) / 65536));
-            const int bytes = dw * dh * 4;
+            const int bytes = dw * dh * 3;   // 烘焙帧驻留为 RGB565A8
             total += static_cast<size_t>(bytes);
             max_frame = std::max(max_frame, bytes);
             scales.push_back(s);
@@ -547,16 +634,20 @@ void bakeWorker(void *)
         auto *px = resampleArgb(g_bake.region, g_bake.bw, g_bake.bh,
                                 0, 0, g_bake.bw, g_bake.bh, dw, dh);
         if (!px) break;   // 内存吃紧：帧数就到这，短表也照常可用
-        g_bake.checksums.push_back(fnv1a(px, static_cast<size_t>(dw) * dh * 4));
+        // 烘焙帧转 RGB565A8 驻留（ARGB 中间帧立即释放）：长驻帧省 25% PSRAM。
+        auto *packed = convertArgbToRgb565a8(px, dw, dh);
+        frameFree(px);
+        if (!packed) break;
+        g_bake.checksums.push_back(fnv1a(packed, static_cast<size_t>(dw) * dh * 3));
         Frame f;
-        f.pixels = px;
+        f.pixels = packed;
         f.dsc.header.magic = LV_IMAGE_HEADER_MAGIC;
-        f.dsc.header.cf = LV_COLOR_FORMAT_ARGB8888;
+        f.dsc.header.cf = LV_COLOR_FORMAT_RGB565A8;
         f.dsc.header.w = static_cast<uint32_t>(dw);
         f.dsc.header.h = static_cast<uint32_t>(dh);
-        f.dsc.header.stride = static_cast<uint32_t>(dw) * 4;
-        f.dsc.data_size = static_cast<size_t>(dw) * dh * 4;
-        f.dsc.data = px;
+        f.dsc.header.stride = static_cast<uint32_t>(dw) * 2;
+        f.dsc.data_size = static_cast<size_t>(dw) * dh * 3;
+        f.dsc.data = packed;
         g_bake.frames.push_back(f);
     }
     ESP_LOGD("made_sprite", "[bake] worker done frames=%u region=%08x",
@@ -657,10 +748,12 @@ void bakeTick(Parts *parts)
         return;
     }
     // bbox 区域私有副本（PSRAM→PSRAM，≤0.5MB 逐行 memcpy）。
-    // 注意必须逐行拷：bbox 在整幅源图里每行之间隔着 (sw-bw) 像素不连续
-    // 数据，整块 memcpy 会把行尾拼上下行开头、逐行漂移 (sw-bw)*4 字节，
-    // 渲染成斜向剪切条纹（真机与 sim 同错，校验和一致但内容本身是错的——
-    // 「数据校验正确」不等于「拷贝正确」，校验只能证自洽不能证对）。
+    // 源帧是 RGB565A8（3B/px），重采样器吃 ARGB8888：拷贝时同步做 565 位
+    // 复制展开（5→8、6→8）。注意必须逐行拷：bbox 在整幅源图里每行之间隔着
+    // (sw-bw) 像素不连续数据，整块 memcpy 会把行尾拼上下行开头、逐行漂移
+    // (sw-bw)*4 字节，渲染成斜向剪切条纹（真机与 sim 同错，校验和一致但
+    // 内容本身是错的——「数据校验正确」不等于「拷贝正确」，校验只能证自洽
+    // 不能证对）。
     auto *region = static_cast<uint8_t *>(heap_caps_malloc(
         static_cast<size_t>(bw) * bh * 4, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
     if (!region) return;
@@ -668,11 +761,23 @@ void bakeTick(Parts *parts)
         const uint8_t *src = static_cast<const uint8_t *>(srcf.dsc.data);
         const size_t sstride = srcf.dsc.header.stride
             ? static_cast<size_t>(srcf.dsc.header.stride)
-            : static_cast<size_t>(sw) * 4;
+            : static_cast<size_t>(sw) * 2;
+        const uint8_t *a8 = src + static_cast<size_t>(sw) * sh * 2;   // 源图 A8 平面
+        const size_t astride = sstride / 2;
         for (int y = 0; y < bh; ++y) {
-            std::memcpy(region + static_cast<size_t>(y) * bw * 4,
-                src + static_cast<size_t>(by + y) * sstride + static_cast<size_t>(bx) * 4,
-                static_cast<size_t>(bw) * 4);
+            const uint8_t *srow = src + static_cast<size_t>(by + y) * sstride + static_cast<size_t>(bx) * 2;
+            const uint8_t *arow = a8 + static_cast<size_t>(by + y) * astride + bx;
+            uint8_t *out = region + static_cast<size_t>(y) * bw * 4;
+            for (int x = 0; x < bw; ++x) {
+                const uint16_t v = static_cast<uint16_t>(srow[x * 2] | (srow[x * 2 + 1] << 8));
+                const uint8_t r = static_cast<uint8_t>((v >> 11) & 0x1F);
+                const uint8_t g = static_cast<uint8_t>((v >> 5) & 0x3F);
+                const uint8_t b = static_cast<uint8_t>(v & 0x1F);
+                out[x * 4 + 0] = static_cast<uint8_t>((r << 3) | (r >> 2));
+                out[x * 4 + 1] = static_cast<uint8_t>((g << 2) | (g >> 4));
+                out[x * 4 + 2] = static_cast<uint8_t>((b << 3) | (b >> 2));
+                out[x * 4 + 3] = arow[x];
+            }
         }
     }
     g_bake.region = region;
@@ -1087,7 +1192,7 @@ void update(lv_obj_t *root, uint32_t elapsed_ms, int mood) {
     auto *parts = static_cast<Parts *>(lv_obj_get_user_data(root));
     if (!parts || !parts->art.active) return;
     // 动效 10Hz 节流：渲染泵 20Hz，但呼吸/轻摆/眨眼都是 1.4–4s 的慢波，
-    // 10Hz 采样视觉无差；而每拍动效都会重采样全部图层（ARGB8888 软件缩放）
+    // 10Hz 采样视觉无差；而每拍动效都会重采样全部图层（RGB565A8 软件缩放）
     // 并整屏失效——这是滑动不跟手、整体掉帧的最大单一来源，直接砍半。
     // 情绪切换不受节流，立即反映。
     bakeTick(parts);   // 烘焙收割/调度（有原子门，常驻开销近乎为零）
@@ -1202,11 +1307,11 @@ static bool buildSpecsFromManifest(const std::string &manifest_json, const std::
             Frame frame;
             frame.pixels = pixels;
             frame.dsc.header.magic = LV_IMAGE_HEADER_MAGIC;
-            frame.dsc.header.cf = LV_COLOR_FORMAT_ARGB8888;
+            frame.dsc.header.cf = LV_COLOR_FORMAT_RGB565A8;
             frame.dsc.header.w = static_cast<uint32_t>(width);
             frame.dsc.header.h = static_cast<uint32_t>(height);
-            frame.dsc.header.stride = static_cast<uint32_t>(width) * 4;
-            frame.dsc.data_size = static_cast<size_t>(width) * height * 4;
+            frame.dsc.header.stride = static_cast<uint32_t>(width) * 2;
+            frame.dsc.data_size = static_cast<size_t>(width) * height * 3;
             frame.dsc.data = pixels;
             spec.frames.push_back(frame);
         }
@@ -1228,12 +1333,15 @@ static bool buildSpecsFromManifest(const std::string &manifest_json, const std::
         int bx0 = 0, by0 = 0, bx1 = -1, by1 = -1;   // 设计像素坐标系
         for (const auto &spec : specs) {
             const Frame &f = spec.frames.front();
-            const auto *pixels = reinterpret_cast<const uint32_t *>(f.dsc.data);
             const int fw = static_cast<int>(f.dsc.header.w);
             const int fh = static_cast<int>(f.dsc.header.h);
+            // RGB565A8：A8 平面在 RGB 平面（fw*fh*2 字节）之后
+            const uint8_t *alpha = static_cast<const uint8_t *>(f.dsc.data) +
+                static_cast<size_t>(fw) * fh * 2;
             for (int py = 0; py < fh; ++py) {
+                const uint8_t *row = alpha + static_cast<size_t>(py) * fw;
                 for (int px = 0; px < fw; ++px) {
-                    if ((pixels[static_cast<size_t>(py) * fw + px] >> 24) <= 8) continue;
+                    if (row[px] <= 8) continue;
                     const int dx = spec.x + px;
                     const int dy = spec.y + py;
                     if (!have_bbox) {
@@ -1417,12 +1525,12 @@ bool applyArtwork(lv_obj_t *root, const std::string &manifest_json, const std::s
         t_last_apply_fail = ApplyFail::bad_input;
         return false;
     }
-    // 最大连续块容不下最大层的解码像素（ARGB8888）：先丢预取暂存帧腾内存。
+    // 最大连续块容不下最大层的解码像素（RGB565A8 = 3B/px）：先丢预取暂存帧腾内存。
     // 预取是邻页的备胎，优先级低于当前页显示；prefetchBegin 有 1.5MB 门槛，
     // 内存紧张期被丢弃后不会立即重占。不腾的话解码 alloc 失败，旧素材已撤，
     // 舞台白屏等重试（实机「划着划着雪球变白」）。
     const size_t layer_bytes =
-        static_cast<size_t>(canvas_w->valueint) * canvas_h->valueint * 4;
+        static_cast<size_t>(canvas_w->valueint) * canvas_h->valueint * 3;
     if (heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM) < layer_bytes) {
         ESP_LOGW("made_sprite",
             "[sprite] alloc_tight need=%u largest=%u -> drop prefetch frames",
@@ -1452,7 +1560,15 @@ bool applyArtwork(lv_obj_t *root, const std::string &manifest_json, const std::s
     std::vector<ActionSpec> actions;
     std::vector<std::pair<std::string, std::string>> commands;
     if (!buildSpecsFromManifest(manifest_json, base_dir, motion, specs, actions, commands)) {
-        t_last_apply_fail = ApplyFail::bad_input;
+        // buildSpecs 内部的解码失败已由 decodePngArgb 归因（alloc/decode）。
+        // 只有没被归因过的失败（manifest 结构坏、层表空等）才算 bad_input——
+        // 无条件覆盖会把 alloc 失败伪装成缓存坏，上层 tryApplyCachedArtwork
+        // 计数 2 次后 purge+redownload，而内存没释放照样失败，形成
+        // 「删缓存→重下→解码失败→再删」死循环（2026-10-20 实机实锤，
+        // 单次会话 purge 15+ 次，把其他助手的缓存与预取也搅乱）。
+        if (t_last_apply_fail == ApplyFail::none) {
+            t_last_apply_fail = ApplyFail::bad_input;
+        }
         return false;
     }
 

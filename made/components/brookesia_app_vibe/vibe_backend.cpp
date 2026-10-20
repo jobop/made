@@ -889,19 +889,13 @@ void VibeCoding::workerLoop()
             (language_refresh_pending_.exchange(false) || (active_cycles++ % 14) == 0 || !config_loaded_.load() || !voice_available_.load())) {
             refreshConfig();
         }
-        if (canOperate() &&
-            (artwork_request_.exchange(false) || artworkRetryDue())) {
-            // 内存紧张兜底：syncArtwork 内部分配失败不得击穿 worker 线程
-            // （异常逃出会 std::terminate → abort → 反复重启）。
-            try {
-                syncArtwork();
-            } catch (...) {
-                ESP_LOGE(BUTTON_TAG, "[sprite] sync_artwork_exception");
-            }
-        }
         if (artwork_purge_pending_.exchange(false)) {
             // LVGL 判定缓存损坏（解码连败）：整套删掉，标记 dirty 让
             // syncArtwork/preload 走 ensure() 完整重下（ensure 逐文件验哈希）。
+            // 必须先 purge 再 syncArtwork（顺序反了会出现「ensure 快路径
+            // ok → 随后 purge 删文件 → 下轮被 already_attempted 拦截 →
+            // 文件永不补齐」死循环，2026-10-20 冒烟实锤），且 purge 后要
+            // 清 attempt memo，否则同版本 retry 门禁会把重下挡在门外。
             std::string purge_provider;
             {
                 std::lock_guard<std::mutex> lock(artwork_mutex_);
@@ -910,8 +904,23 @@ void VibeCoding::workerLoop()
             }
             if (!purge_provider.empty()) {
                 made_sprite_cache::purge(purge_provider);
+                {
+                    std::lock_guard<std::mutex> lock(artwork_mutex_);
+                    artwork_attempted_ = false;
+                    artwork_retry_at_ms_ = 0;
+                    artwork_retry_count_ = 0;
+                }
                 artwork_dirty_.store(true);
-                artwork_request_.store(true);
+            }
+        }
+        if (canOperate() &&
+            (artwork_request_.exchange(false) || artworkRetryDue())) {
+            // 内存紧张兜底：syncArtwork 内部分配失败不得击穿 worker 线程
+            // （异常逃出会 std::terminate → abort → 反复重启）。
+            try {
+                syncArtwork();
+            } catch (...) {
+                ESP_LOGE(BUTTON_TAG, "[sprite] sync_artwork_exception");
             }
         }
         if (firmware_update_requested_.exchange(false)) runFirmwareUpdate();

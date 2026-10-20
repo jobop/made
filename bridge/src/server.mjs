@@ -582,7 +582,9 @@ export function createApp(config, { run, transcribe, tunnel: providedTunnel, ena
             }
           }
           if (!queued) throw new Error(lastError || '命令未能下发');
-          const deadline = Date.now() + 15000;
+          // USB 分片上传 240×320 帧实测 >15s（base64 走请求通道），15s 会
+          // 误报失败——其实 PNG 随后正常落盘。放宽到 45s。
+          const deadline = Date.now() + 45000;
           while (Date.now() < deadline) {
             const file = screenshots.latest(before);
             if (file) {
@@ -599,7 +601,7 @@ export function createApp(config, { run, transcribe, tunnel: providedTunnel, ena
             }
             await new Promise((resolve) => setTimeout(resolve, 250));
           }
-          throw new Error('码得未在 15 秒内回传截图（固件需要更新到支持 debug.screenshot 的版本）');
+          throw new Error('码得未在 45 秒内回传截图（固件需要更新到支持 debug.screenshot 的版本）');
         }
         if (url.pathname === '/api/firmware') {
           const type = String(req.headers['content-type'] || '');

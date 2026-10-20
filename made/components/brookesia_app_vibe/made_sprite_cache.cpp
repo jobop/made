@@ -197,6 +197,10 @@ bool ensureImpl(const std::string &provider, const vibe_provider::SpriteInfo &sp
     // 落盘前的最后一道闸：写它之前每个文件都验过流式哈希。这里不再逐文件
     // 复检（省掉每次换装的全量 SPIFFS 读 + SHA 计算）；文件真坏了会走
     // 应用侧 cached_apply_dead → purge+redownload 兜底。
+    // 前提是文件齐：purge / 下载中断会留下「manifest 在、帧文件缺」的残缺
+    // 缓存，此时快路径秒回 ok 而文件永远不补（2026-10-20 冒烟实锤：解码
+    // 连败 → purge → ensure 快路径又 ok → already_attempted 拦截重下 →
+    // 死循环打崩 PSRAM）。逐文件 stat 一次（无 SHA，开销可忽略）。
     if (have_cached) {
         bool same_version = false;
         if (cJSON *root = cJSON_Parse(cached.c_str())) {
@@ -205,7 +209,18 @@ bool ensureImpl(const std::string &provider, const vibe_provider::SpriteInfo &sp
                 static_cast<uint32_t>(version->valueint) == sprite.version;
             cJSON_Delete(root);
         }
-        if (same_version) return true;
+        if (same_version) {
+            bool files_present = true;
+            for (const auto &file : sprite.files) {
+                struct stat st {};
+                if (stat(pathFor(prefix, file.file).c_str(), &st) != 0) {
+                    files_present = false;
+                    break;
+                }
+            }
+            if (files_present) return true;
+            ESP_LOGW(kTag, "[sprite] cache_incomplete provider=%s -> slow path", provider.c_str());
+        }
     }
 
     // 慢路径：逐文件分片下载 → 大小核对 → 原子落盘（不做哈希，见文件头注释）。
