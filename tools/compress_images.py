@@ -27,6 +27,7 @@
 # PIL（quantize FASTOCTREE + FLOYDSTEINBERG）/ffmpeg（palettegen/paletteuse）
 # 兜底，两条路径产出等价。本机当前无 pngquant（brew 被系统沙箱挡），走兜底。
 import argparse
+import io
 import json
 import os
 import shutil
@@ -208,18 +209,34 @@ def compress_png(path, preset, max_dim, dry_run):
     if preset['colors']:
         has_alpha = im.mode in ('RGBA', 'LA', 'PA') or (
             im.mode == 'P' and 'transparency' in im.info)
-        if has_alpha:
-            q = quantize_rgba_safe(im.convert('RGBA'), preset['colors'])
-        else:
-            q = im.convert('RGB').quantize(
-                colors=preset['colors'],
-                method=Image.Quantize.MEDIANCUT,
-                dither=Image.Dither.FLOYDSTEINBERG)
-        im = q
-    import io
-    buf = io.BytesIO()
-    im.save(buf, 'PNG', optimize=True, compress_level=9)
-    return buf.getvalue(), '; '.join(note)
+
+        def _encode(colors):
+            if has_alpha:
+                q = quantize_rgba_safe(im.convert('RGBA'), colors)
+            else:
+                q = im.convert('RGB').quantize(
+                    colors=colors,
+                    method=Image.Quantize.MEDIANCUT,
+                    dither=Image.Dither.FLOYDSTEINBERG)
+            buf = io.BytesIO()
+            q.save(buf, 'PNG', optimize=True, compress_level=9)
+            return buf.getvalue()
+
+        # 自适应降色：同画质档内减色通常更小（实测 240 画布水彩角色 64c→32c
+        # 再省 ~26%，轮廓/高光无损）；只认字节数，谁小用谁。24c 以下开始掉
+        # 高光细节，不主动降。
+        cands = [preset['colors']]
+        if preset['colors'] >= 32:
+            cands.append(preset['colors'] // 2)
+        data = min((_encode(c) for c in cands), key=len)
+        if len(cands) > 1 and len(data) >= len(_encode(cands[0])):
+            data = _encode(cands[0])  # 半档没赚到就守原档（避免白劣化）
+        im = data
+    else:
+        buf = io.BytesIO()
+        im.save(buf, 'PNG', optimize=True, compress_level=9)
+        im = buf.getvalue()
+    return im, '; '.join(note)
 
 
 def compress_gif(path, preset, max_dim, dry_run):
