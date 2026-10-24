@@ -71,12 +71,12 @@ void VibeCoding::renderAttachments(const std::vector<Attachment> &atts) {
         lv_obj_set_style_bg_opa(attachments_box_, LV_OPA_TRANSP, 0);
         lv_obj_set_style_border_width(attachments_box_, 0, 0);
         lv_obj_set_style_pad_all(attachments_box_, 0, 0);
-        lv_obj_set_style_pad_row(attachments_box_, 8, 0);
+        lv_obj_set_style_pad_row(attachments_box_, made_s(8), 0);
         lv_obj_set_flex_flow(attachments_box_, LV_FLEX_FLOW_COLUMN);
         lv_obj_set_flex_align(attachments_box_, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
         lv_obj_remove_flag(attachments_box_, LV_OBJ_FLAG_SCROLLABLE);
     }
-    lv_obj_set_pos(attachments_box_, 6, label_h + 8);
+    lv_obj_set_pos(attachments_box_, made_s(6), label_h + made_s(8));
     lv_obj_set_size(attachments_box_, box_w, LV_SIZE_CONTENT);
     lv_obj_clear_flag(attachments_box_, LV_OBJ_FLAG_HIDDEN);
 
@@ -87,9 +87,9 @@ void VibeCoding::renderAttachments(const std::vector<Attachment> &atts) {
         lv_obj_set_style_bg_opa(row, LV_OPA_20, 0);
         lv_obj_set_style_bg_color(row, lv_color_hex(VT(btn_normal)), 0);
         lv_obj_set_style_border_width(row, 0, 0);
-        lv_obj_set_style_radius(row, 6, 0);
-        lv_obj_set_style_pad_all(row, 5, 0);
-        lv_obj_set_style_pad_column(row, 8, 0);
+        lv_obj_set_style_radius(row, made_s(6), 0);
+        lv_obj_set_style_pad_all(row, made_s(5), 0);
+        lv_obj_set_style_pad_column(row, made_s(8), 0);
         lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
         lv_obj_set_flex_align(row, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_START);
         lv_obj_add_flag(row, LV_OBJ_FLAG_CLICKABLE);
@@ -100,23 +100,23 @@ void VibeCoding::renderAttachments(const std::vector<Attachment> &atts) {
 
         if (a.type == "image") {
             lv_obj_t *img = lv_image_create(row);
-            lv_obj_set_size(img, 84, 84);
+            lv_obj_set_size(img, made_s(84), made_s(84));
             lv_obj_t *cap = lv_label_create(row);
             lv_label_set_text(cap, "图片加载中…");
-            lv_obj_set_width(cap, box_w - 100);
+            lv_obj_set_width(cap, box_w - made_s(100));
             lv_label_set_long_mode(cap, LV_LABEL_LONG_DOT);
             lv_obj_set_style_text_color(cap, lv_color_hex(VT(text_hint)), 0);
             startImageFetch(a.url, img, i);
         } else {
             lv_obj_t *qr = lv_qrcode_create(row);
-            lv_qrcode_set_size(qr, 84);
+            lv_qrcode_set_size(qr, made_s(84));
             lv_qrcode_set_dark_color(qr, lv_color_black());
             lv_qrcode_set_light_color(qr, lv_color_white());
             lv_qrcode_set_quiet_zone(qr, true);
             lv_qrcode_update(qr, a.url.c_str(), a.url.size());
             lv_obj_t *cap = lv_label_create(row);
             lv_label_set_text(cap, a.text.empty() ? a.url.c_str() : a.text.c_str());
-            lv_obj_set_width(cap, box_w - 100);
+            lv_obj_set_width(cap, box_w - made_s(100));
             lv_label_set_long_mode(cap, LV_LABEL_LONG_DOT);
             lv_obj_set_style_text_color(cap, lv_color_hex(VT(text_hint)), 0);
         }
@@ -238,7 +238,7 @@ void VibeCoding::onImageFetched(size_t index, uint8_t *px, int w, int h, lv_obj_
     if (index < attachment_dscs_.size()) attachment_dscs_[index] = dsc;
     if (img && lv_obj_is_valid(img)) {
         lv_image_set_src(img, dsc);
-        lv_obj_set_size(img, 84, 84);
+        lv_obj_set_size(img, made_s(84), made_s(84));
     }
 }
 
