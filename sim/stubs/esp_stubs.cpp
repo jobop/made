@@ -20,6 +20,7 @@
 #include <chrono>
 #include <cstdio>
 #include <cstring>
+#include <fstream>
 #include <map>
 #include <mutex>
 #include <string>
@@ -27,11 +28,59 @@
 #include <vector>
 #include <unistd.h>
 
+#ifdef __ANDROID__
+#include <SDL2/SDL.h>
+#endif
+
 namespace {
 struct NvsKey { std::string ns; std::string key; char type; bool operator<(const NvsKey &o) const {
     return ns < o.ns || (ns == o.ns && (key < o.key || (key == o.key && type < o.type))); } };
 static std::map<NvsKey, std::vector<uint8_t>> nvs_store;
 static std::mutex nvs_mutex;
+
+// 安卓上把 NVS 落到私有目录，重启不丢；PC sim 保持纯内存。
+#ifdef __ANDROID__
+static std::string nvs_file_path() {
+    char *base = SDL_GetPrefPath("made", "made");
+    std::string p = std::string(base ? base : ".") + "nvs.bin";
+    SDL_free(base);
+    return p;
+}
+static void nvs_load_locked() {
+    std::ifstream f(nvs_file_path(), std::ios::binary);
+    if (!f) return;
+    char magic[4] = {};
+    f.read(magic, 4);
+    if (memcmp(magic, "NVS1", 4) != 0) return;
+    while (f) {
+        uint32_t nl = 0, kl = 0, vl = 0; char type = 0;
+        f.read((char *)&nl, 4); if (!f) break;
+        std::string ns(nl, '\0'); f.read(ns.data(), nl);
+        f.read((char *)&kl, 4);
+        std::string key(kl, '\0'); f.read(key.data(), kl);
+        f.read(&type, 1);
+        f.read((char *)&vl, 4);
+        std::vector<uint8_t> val(vl);
+        if (vl) f.read((char *)val.data(), vl);
+        nvs_store[{ns, key, type}] = std::move(val);
+    }
+}
+static void nvs_save_locked() {
+    std::ofstream f(nvs_file_path(), std::ios::binary | std::ios::trunc);
+    if (!f) return;
+    f.write("NVS1", 4);
+    for (const auto &[k, v] : nvs_store) {
+        uint32_t nl = k.ns.size(), kl = k.key.size(), vl = v.size();
+        f.write((char *)&nl, 4); f.write(k.ns.data(), nl);
+        f.write((char *)&kl, 4); f.write(k.key.data(), kl);
+        f.write(&k.type, 1);
+        f.write((char *)&vl, 4); f.write((char *)v.data(), vl);
+    }
+}
+#else
+static void nvs_load_locked() {}
+static void nvs_save_locked() {}
+#endif
 }
 
 template <typename T>
@@ -51,6 +100,7 @@ static esp_err_t nvs_set_scalar_impl(nvs_handle_t h, const char *key, T value)
     (void)h;
     std::lock_guard<std::mutex> lock(nvs_mutex);
     nvs_store[{"", key, 'n'}].assign((uint8_t *)&value, (uint8_t *)&value + sizeof(T));
+    nvs_save_locked();
     return ESP_OK;
 }
 
@@ -198,10 +248,11 @@ esp_err_t nvs_erase_key(nvs_handle_t handle, const char *key)
     for (auto it = nvs_store.begin(); it != nvs_store.end();) {
         if (it->first.key == key) { it = nvs_store.erase(it); erased = true; } else ++it;
     }
+    if (erased) nvs_save_locked();
     return erased ? ESP_OK : ESP_ERR_NVS_NOT_FOUND;
 }
 
-esp_err_t nvs_erase_all(nvs_handle_t handle) { (void)handle; std::lock_guard<std::mutex> lock(nvs_mutex); nvs_store.clear(); return ESP_OK; }
+esp_err_t nvs_erase_all(nvs_handle_t handle) { (void)handle; std::lock_guard<std::mutex> lock(nvs_mutex); nvs_store.clear(); nvs_save_locked(); return ESP_OK; }
 
 esp_err_t nvs_get_str(nvs_handle_t h, const char *key, char *out, size_t *length)
 {
@@ -222,6 +273,7 @@ esp_err_t nvs_set_str(nvs_handle_t h, const char *key, const char *value)
     std::lock_guard<std::mutex> lock(nvs_mutex);
     const size_t len = strlen(value) + 1;
     nvs_store[{"", key, 's'}] = std::vector<uint8_t>((const uint8_t *)value, (const uint8_t *)value + len);
+    nvs_save_locked();
     return ESP_OK;
 }
 
@@ -244,6 +296,7 @@ esp_err_t nvs_set_blob(nvs_handle_t h, const char *key, const void *value, size_
     std::lock_guard<std::mutex> lock(nvs_mutex);
     const uint8_t *p = (const uint8_t *)value;
     nvs_store[{"", key, 'b'}] = std::vector<uint8_t>(p, p + length);
+    nvs_save_locked();
     return ESP_OK;
 }
 
@@ -256,8 +309,17 @@ esp_err_t nvs_set_u32(nvs_handle_t h, const char *k, uint32_t v) { return nvs_se
 esp_err_t nvs_get_i32(nvs_handle_t h, const char *k, int32_t *o) { return nvs_get_scalar_impl(h, k, o); }
 esp_err_t nvs_set_i32(nvs_handle_t h, const char *k, int32_t v) { return nvs_set_scalar_impl(h, k, v); }
 
-esp_err_t nvs_flash_init(void) { return ESP_OK; }
-esp_err_t nvs_flash_erase(void) { return ESP_OK; }
+esp_err_t nvs_flash_init(void) {
+    std::lock_guard<std::mutex> lock(nvs_mutex);
+    nvs_load_locked();
+    return ESP_OK;
+}
+esp_err_t nvs_flash_erase(void) {
+    std::lock_guard<std::mutex> lock(nvs_mutex);
+    nvs_store.clear();
+    nvs_save_locked();
+    return ESP_OK;
+}
 
 /* ---------------- WiFi（永不连上） ---------------- */
 esp_err_t esp_wifi_start(void) { return ESP_OK; }
