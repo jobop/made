@@ -1,0 +1,5 @@
+# 叠加在 sdkconfig.defaults 之上：选 Waveshare ESP32-S3-Touch-LCD-2.8
+# 矩形 ST7789/ILI9341 240x320 面板 + CST3530/CST328 触摸（ES8311 音频）。
+# 用法：
+#   idf.py -D SDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.defaults.lcd28" build
+CONFIG_BSP_BOARD_LCD_2_8=y

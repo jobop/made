@@ -14,8 +14,14 @@ COMP  := $(MADE)/components
 CJSON := $(MADE)/managed_components/espressif__cjson/cJSON
 FONTS := $(MADE)/managed_components/78__xiaozhi-fonts/src
 
-BUILD := build
-BIN   := $(BUILD)/sim
+# 屏幕尺寸：SCREEN=宽x高，默认对齐真机方屏 360x360；矩形屏传 SCREEN=240x320。
+# 尺寸经 MADE_SIM_H_RES / MADE_SIM_V_RES 传给 shims 与 sim_main，单一数据源。
+# 不同尺寸用独立 build 目录，互不污染增量缓存。
+SCREEN ?= 360x360
+SCR_W  := $(word 1,$(subst x, ,$(SCREEN)))
+SCR_H  := $(word 2,$(subst x, ,$(SCREEN)))
+BUILD  := build-$(SCREEN)
+BIN    := $(BUILD)/sim
 
 SYSROOT := /Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk
 CC  := clang
@@ -46,7 +52,7 @@ COMMON_INC := -I. -Ishims \
   -I$(CJSON) \
   -I$(FONTS)
 
-CFLAGS   := $(WARN) -isysroot $(SYSROOT) -O1 -g -DLV_CONF_INCLUDE_SIMPLE -DLV_LVGL_H_INCLUDE_SIMPLE -DLV_FONT_FMT_TXT_LARGE=1 $(COMMON_INC) $(SDL_CFLAGS) $(PNG_CFLAGS) $(PNG_CFLAGS)
+CFLAGS   := $(WARN) -isysroot $(SYSROOT) -O1 -g -DLV_CONF_INCLUDE_SIMPLE -DLV_LVGL_H_INCLUDE_SIMPLE -DLV_FONT_FMT_TXT_LARGE=1 -DMADE_SIM_H_RES=$(SCR_W) -DMADE_SIM_V_RES=$(SCR_H) $(COMMON_INC) $(SDL_CFLAGS) $(PNG_CFLAGS) $(PNG_CFLAGS)
 CXXFLAGS := $(CFLAGS) -std=gnu++2b -fpermissive -include lv_compat.h
 # 所有源码都用「仓库根相对路径」表达，目标文件平移到 build/obj/ 下，
 # 避免目标路径里出现 ".."（沙箱/增量构建都不友好）。

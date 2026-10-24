@@ -10,7 +10,9 @@
     "flash": "node tools/flash.mjs",
     "shot": "node tools/shot.mjs",
     "sim": "make -C sim",
-    "sim:shot": "make -C sim shot"
+    "sim:shot": "make -C sim shot",
+    "sim:rect": "make -C sim SCREEN=240x320",
+    "sim:rect:shot": "make -C sim SCREEN=240x320 shot"
   },
   "engines": {
     "node": ">=22"

@@ -6,16 +6,28 @@ WiFi / NVS / 音频 / USB 等硬件层用 `shims/` + `stubs/` 替身，UI 源码
 ## 用法
 
 ```sh
-npm run sim            # 编译（增量）并打开模拟器窗口（鼠标=触摸）
+npm run sim            # 编译（增量）并打开模拟器窗口（鼠标=触摸），默认方屏 360x360
 npm run sim:shot       # 同上，OUT=out.bmp 截图模式
+npm run sim:rect       # 切到矩形 240x320（独立 build 目录 build-240x320）
+npm run sim:rect:shot  # 矩形屏截图
 ```
+
+也可直接传尺寸（任意 宽x高）：
+
+```sh
+make -C sim SCREEN=240x320                 # 编译矩形屏
+make -C sim SCREEN=360x360                 # 编译方屏
+```
+
+尺寸经 `MADE_SIM_H_RES/MADE_SIM_V_RES` 传入，不同尺寸用独立 build 目录（`build-360x360/`、`build-240x320/`），互不污染。
 
 截图与手势（供 AI 自查布局，无需人交互）：
 
 ```sh
-sim/build/sim --shot out.bmp                                  # 首页稳定后截图
-sim/build/sim --shot out.bmp --swipe 120 300 120 40 --wait 30 # 上滑开抽屉再截
-sim/build/sim --shot out.bmp --tap 40 290 --wait 20           # 点设置按钮再截
+sim/build-360x360/sim --shot out.bmp                                  # 首页稳定后截图
+sim/build-360x360/sim --shot out.bmp --swipe 120 300 120 40 --wait 30 # 上滑开抽屉再截
+sim/build-360x360/sim --shot out.bmp --tap 40 290 --wait 20           # 点设置按钮再截
+# 矩形屏同理，把二进制换成 build-240x320/sim
 ```
 
 桩状态用环境变量切换：

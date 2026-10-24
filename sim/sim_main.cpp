@@ -8,6 +8,7 @@
 //   MADE_SIM_PAIRING=paired / MADE_SIM_WIFI=1 可切换桩状态。
 #include "lvgl.h"
 #include <SDL2/SDL.h>
+#include "bsp/display.h"
 #include "esp_brookesia_app_vibe.hpp"
 #include "made_sprite.hpp"
 
@@ -159,7 +160,7 @@ int run_sprite_test()
         const char *prefix = getenv("MADE_SIM_SHOT_PREFIX");
         std::string tag = prefix && *prefix ? prefix : "/tmp/swipe";
         lv_obj_t *screen = lv_screen_active();
-        const int w = 240;
+        const int w = BSP_LCD_H_RES;
         lv_obj_add_flag(screen, LV_OBJ_FLAG_OVERFLOW_VISIBLE);
         lv_obj_set_ext_draw_size(screen, w);
         lv_obj_refresh_ext_draw_size(screen);  // set 只注册回调，刷新一次才写入
@@ -375,7 +376,7 @@ int main(int argc, char **argv)
     }
 
     lv_init();
-    lv_display_t *disp = lv_sdl_window_create(240, 320);
+    lv_display_t *disp = lv_sdl_window_create(BSP_LCD_H_RES, BSP_LCD_V_RES);
     if (!disp) { fprintf(stderr, "lv_sdl_window_create failed\n"); return 1; }
     lv_display_set_render_mode(disp, LV_DISPLAY_RENDER_MODE_FULL);
     lv_sdl_mouse_create();
