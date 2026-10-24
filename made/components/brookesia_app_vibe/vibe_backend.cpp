@@ -170,6 +170,9 @@ void VibeCoding::runFirmwareUpdate()
         config.url = url.c_str();
         config.timeout_ms = 20000;
         config.buffer_size = 4096;
+        // 发送缓冲默认 512：长 URL（心跳遥测 query）会超限触发分块发送，见
+        // vibe_app_transport.cpp 同注释（2026-10-24）。
+        config.buffer_size_tx = 2048;
         if (url.rfind("https://", 0) == 0) config.crt_bundle_attach = esp_crt_bundle_attach;
         auto *client = esp_http_client_init(&config);
         if (client && esp_http_client_open(client, 0) == ESP_OK &&

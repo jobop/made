@@ -139,8 +139,10 @@ export function runCli({ job, project, signal, onProgress, onSession, onTool, co
     let timer;
     // 卡死看门狗：编程工具进程连续 idleMs 没有任何输出（进度、流式、stderr 都算）
     // 视为卡死，杀掉进程树并把错误标记为可自动重跑，由任务车道决定是否重试。
+    // 默认跟 config.mjs 对齐到 15 分钟：CLI 工具的 stdout/stderr 都算活动，但素材
+    // 管线里外部生图是异步轮询，单张上限 300s 且期间不吐字，5 分钟会误杀。
     const idleMs = Number(config?.stuckIdleMs)
-      || Math.max(1, Number(config?.stuckIdleMinutes) || 5) * 60 * 1000;
+      || Math.max(1, Number(config?.stuckIdleMinutes) || 15) * 60 * 1000;
     let idleTimer;
     const bumpIdle = () => {
       clearTimeout(idleTimer);

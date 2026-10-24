@@ -107,6 +107,9 @@ bool VibeCoding::requestRaw(const std::string &path, bool post, const char *cont
         config.timeout_ms = url.rfind("https://", 0) == 0 && timeout_ms < REMOTE_REQUEST_TIMEOUT_MS
                                 ? REMOTE_REQUEST_TIMEOUT_MS : timeout_ms;
         config.buffer_size = 1024;
+        // 发送缓冲默认只有 512：请求行+长 query（心跳遥测 wifiHist 等）一超就
+        // 走分块发送，打 E 级 HTTP_HEADER 噪音，URL 再长些会直接失败（2026-10-24）。
+        config.buffer_size_tx = 2048;
         esp_http_client_handle_t client = esp_http_client_init(&config);
         if (!client) return false;
         esp_http_client_set_header(client, "ngrok-skip-browser-warning", "1");

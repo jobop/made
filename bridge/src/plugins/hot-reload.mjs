@@ -92,6 +92,14 @@ export async function reloadConfiguredPlugins(config) {
 }
 
 const RELOAD_DELAY_MS = 300;
+// 热加载单次超时：reloadConfiguredPlugins 一旦挂起（插件 import 死锁/网络
+// 等待），reloading 会永远停在 true，之后所有变更只排队、不再加载也
+// 不打日志——表现为「桥接器对素材改动完全无反应」（2026-10-24 实锤）。
+// 超时后强制解锁并记账，下一轮变更还能再试。
+const RELOAD_TIMEOUT_MS = 30000;
+// fs.watch 在 macOS 长跑进程里会静默失效（事件流断掉，无错误、无回调）。
+// 轮询兜底：按 mtime 快照比对，watch 哑了也能热加载。
+const POLL_INTERVAL_MS = 3000;
 
 function relevantChange(filename) {
   if (!filename) return true;
@@ -137,6 +145,12 @@ export function watchPlugins(config, { onReload } = {}) {
     if (closed) return;
     if (reloading) { pending = true; return; }
     reloading = true;
+    let timedOut = false;
+    const guard = setTimeout(() => {
+      timedOut = true;
+      console.error(`[plugins] 热加载超过 ${RELOAD_TIMEOUT_MS}ms 未返回，强制解锁`
+        + '（保留上一份插件；下一轮变更会再试）');
+    }, RELOAD_TIMEOUT_MS);
     try {
       await reloadConfiguredPlugins(config);
       const ids = config.pluginsRuntime?.agents?.().map((plugin) => plugin.id) ?? [];
@@ -146,7 +160,11 @@ export function watchPlugins(config, { onReload } = {}) {
       console.error(`[plugins] 热加载失败，继续使用上一份：${error.message}`);
       onReload?.(error);
     } finally {
+      clearTimeout(guard);
       reloading = false;
+      // 无论成败都刷新快照：否则轮询兜底会把同一次改动再触发一遍
+      // （fs.watch 与轮询双通道各来一次）。
+      snapshotMtimes();
       if (pending && !closed) {
         pending = false;
         schedule();
@@ -173,13 +191,58 @@ export function watchPlugins(config, { onReload } = {}) {
     arm(filename, false);
     arm(dir, false);
   }
-  if (watchers.length) console.error('[plugins] 正在监视插件变更');
+  // ---- 轮询兜底（fs.watch 静默失效时仍能热加载）----
+  const mtimes = new Map();
+
+  function collect(dir, depth, out) {
+    let entries;
+    try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
+    for (const entry of entries) {
+      if (entry.isDirectory()) {
+        if (depth <= 0 || entry.name === 'node_modules') continue;
+        collect(path.join(dir, entry.name), depth - 1, out);
+        continue;
+      }
+      if (!relevantChange(entry.name)) continue;
+      const full = path.join(dir, entry.name);
+      try { out.set(full, fs.statSync(full).mtimeMs); } catch { /* 文件刚被删。 */ }
+    }
+  }
+
+  function scan() {
+    const out = new Map();
+    for (const root of pluginWatchRoots(config)) collect(root, 4, out);
+    return out;
+  }
+
+  function snapshotMtimes() {
+    mtimes.clear();
+    for (const [file, ms] of scan()) mtimes.set(file, ms);
+  }
+
+  function poll() {
+    if (closed || reloading) return;
+    const current = scan();
+    let changed = false;
+    for (const [file, ms] of current) {
+      if (mtimes.get(file) !== ms) { changed = true; break; }
+    }
+    if (!changed && current.size !== mtimes.size) changed = true;
+    mtimes.clear();
+    for (const [file, ms] of current) mtimes.set(file, ms);
+    if (changed && mtimes.size) schedule();
+  }
+
+  snapshotMtimes();
+  const pollTimer = setInterval(poll, POLL_INTERVAL_MS);
+  if (watchers.length) console.error('[plugins] 正在监视插件变更（含轮询兜底）');
 
   return {
     close() {
       closed = true;
       if (timer) clearTimeout(timer);
       timer = null;
+      clearInterval(pollTimer);
       for (const watcher of watchers) {
         try { watcher.close(); } catch { /* 已经关掉。 */ }
       }

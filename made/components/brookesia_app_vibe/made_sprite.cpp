@@ -42,6 +42,18 @@ struct EmotionSel {
     bool cycle = false;
 };
 
+// 整帧状态动画的一条轨道：素材声明「这个状态播这几帧」，固件不猜素材结构。
+// first/count 指向合并层（frames 模式下所有状态的帧拼成一个层）的帧区间。
+struct StateTrack {
+    std::string name;            // idle / talking / blink / success ...
+    int first = 0;               // 区间起点（帧下标）
+    int count = 0;               // 帧数
+    uint32_t frame_ms = 180;     // 每帧时长
+    bool periodic = false;       // true = 周期性插入（眨眼），否则按情绪常驻
+    uint32_t period_ms = 4000;   // 周期
+    uint32_t hold_ms = 120;      // 每次插入持续
+};
+
 struct ArtLayer {
     lv_obj_t *obj = nullptr;
     std::vector<Frame> frames;
@@ -90,6 +102,16 @@ struct ActionSpec {
     std::vector<Track> tracks;
 };
 
+// 整帧状态动画：素材在 manifest 里声明「每个状态播哪几帧、多快、眨眼怎么
+// 插」，固件只照表播。固件不推断素材结构（不猜层的尺寸/是不是特征块），
+// 以后新增素材形态也不需要改固件。
+struct FrameMode {
+    bool enabled = false;
+    std::vector<StateTrack> tracks;
+    int8_t mood_track[Mood::kMoodCount] = {};   // -1 = 回落到 idle 轨道
+    int blink_track = -1;
+};
+
 struct Parts {
     lv_obj_t *root = nullptr;      // 舞台根对象
     bool builtin = false;          // 兼容保留：内置素材已删除，恒为 false
@@ -99,6 +121,9 @@ struct Parts {
     struct Art {
         lv_obj_t *container = nullptr;
         std::vector<ArtLayer> layers;
+        // 整帧状态动画的播放表（素材声明，固件照播）。老素材没有这张表，
+        // enabled=false，走原来的分层叠加模型，行为与改动前完全一致。
+        FrameMode frame_mode;
         uint32_t breath_period = 3000;
         int breath_pct = 108;
         uint32_t sway_period = 1800;
@@ -174,6 +199,7 @@ struct LayerSpec {
 };
 
 struct MotionSpec {
+    FrameMode frame_mode;
     int canvas_w = made_design;
     int canvas_h = made_design;
     uint32_t breath_period = 3000;
@@ -866,6 +892,7 @@ bool commitArt(Parts *parts, const MotionSpec &motion, std::vector<LayerSpec> &&
     }
     parts->art.layers = std::move(layers);
     parts->art.container = container;
+    parts->art.frame_mode = motion.frame_mode;   // 没声明 frames 表时 enabled=false，走分层模型
     parts->art.breath_period = motion.breath_period;
     parts->art.breath_pct = motion.breath_pct;
     parts->art.sway_period = motion.sway_period;
@@ -922,9 +949,9 @@ bool commitArt(Parts *parts, const MotionSpec &motion, std::vector<LayerSpec> &&
     parts->art.epoch = g_art_epoch.fetch_add(1) + 1;
 
     for (const auto &layer : parts->art.layers) {
-        ESP_LOGI("made_sprite", "[art] layer id=%s frames=%u blink=%d emotions=%d period=%u closed=%u",
+        ESP_LOGI("made_sprite", "[art] layer id=%s frames=%u blink=%d talk=%d emotions=%d period=%u closed=%u",
             layer.id.c_str(), static_cast<unsigned>(layer.frames.size()), layer.blink ? 1 : 0,
-            layer.has_emotions ? 1 : 0,
+            layer.talk ? 1 : 0, layer.has_emotions ? 1 : 0,
             static_cast<unsigned>(layer.blink_period), static_cast<unsigned>(layer.blink_closed));
     }
     lv_obj_invalidate(parts->root);
@@ -1081,6 +1108,37 @@ void artUpdate(Parts *parts, uint32_t elapsed_ms, int mood) {
             lv_image_set_scale(layer.obj, layer.base_scale);
         }
     }
+    // —— 整帧状态动画模式：素材已声明每个状态播哪几帧，这里照表播放 ——
+    // 整只形象只有一个图层，状态切换只是换 src，不存在叠层重影；眨眼是
+    // 周期性插入的一条轨道（素材声明周期与时长），播完自动回当前情绪轨道。
+    if (art.frame_mode.enabled && !art.layers.empty()) {
+        ArtLayer &layer = art.layers[0];
+        if (layer.obj && !layer.frames.empty() &&
+            !(overridden.size() && overridden[0])) {
+            const int total = static_cast<int>(layer.frames.size());
+            const auto &fm = art.frame_mode;
+            int ti = fm.mood_track[static_cast<size_t>(mood)];
+            if (ti < 0 || ti >= static_cast<int>(fm.tracks.size())) ti = 0;
+            // 眨眼优先：它是一条短促的周期性轨道，插在当前情绪之上
+            if (fm.blink_track >= 0 && fm.blink_track < static_cast<int>(fm.tracks.size())) {
+                const StateTrack &bt = fm.tracks[static_cast<size_t>(fm.blink_track)];
+                if (bt.count > 0 && (elapsed_ms % bt.period_ms) < bt.hold_ms) ti = fm.blink_track;
+            }
+            int frame = 0;
+            if (ti >= 0 && ti < static_cast<int>(fm.tracks.size())) {
+                const StateTrack &tk = fm.tracks[static_cast<size_t>(ti)];
+                const uint32_t ms = tk.frame_ms ? tk.frame_ms : 180;
+                frame = tk.first + static_cast<int>((elapsed_ms / ms) % static_cast<uint32_t>(tk.count));
+            }
+            frame = std::min(std::max(frame, 0), total - 1);
+            if (frame != layer.last_frame) {
+                layer.last_frame = frame;
+                lv_image_set_src(layer.obj, &layer.frames[static_cast<size_t>(frame)].dsc);
+            }
+        }
+        return;   // 整帧模式没有分层选帧/显隐，其余逻辑不适用
+    }
+
     for (size_t li = 0; li < art.layers.size(); ++li) {
         ArtLayer &layer = art.layers[li];
         // 动作播放中被引用的层已由动作接管，跳过常规选帧
@@ -1223,8 +1281,13 @@ static bool buildSpecsFromManifest(const std::string &manifest_json, const std::
     const cJSON *canvas_w = cJSON_GetObjectItemCaseSensitive(canvas, "w");
     const cJSON *canvas_h = cJSON_GetObjectItemCaseSensitive(canvas, "h");
     const cJSON *layers = cJSON_GetObjectItemCaseSensitive(manifest, "layers");
-    if (!cJSON_IsNumber(canvas_w) || !cJSON_IsNumber(canvas_h) || !cJSON_IsArray(layers) ||
-        canvas_w->valueint <= 0 || canvas_h->valueint <= 0) {
+    const cJSON *frames_table_root = cJSON_GetObjectItemCaseSensitive(manifest, "frames");
+    // 两种素材形态二选一：layers（分层叠加，老素材）或 frames（整帧状态动画，
+    // 声明式）。至少要有一张表，否则素材不可用。
+    const bool has_layers = cJSON_IsArray(layers);
+    const bool has_frames = cJSON_IsObject(frames_table_root);
+    if (!cJSON_IsNumber(canvas_w) || !cJSON_IsNumber(canvas_h) ||
+        (!has_layers && !has_frames) || canvas_w->valueint <= 0 || canvas_h->valueint <= 0) {
         cJSON_Delete(manifest);
         return false;
     }
@@ -1258,7 +1321,7 @@ static bool buildSpecsFromManifest(const std::string &manifest_json, const std::
         int z;
     };
     std::vector<Pending> pending;
-    for (const cJSON *layer = layers->child; layer; layer = layer->next) {
+    for (const cJSON *layer = has_layers ? layers->child : nullptr; layer; layer = layer->next) {
         if (!cJSON_IsObject(layer) || pending.size() >= 16) continue;
         const cJSON *z = cJSON_GetObjectItemCaseSensitive(layer, "z");
         pending.push_back({layer, cJSON_IsNumber(z) ? z->valueint : 0});
@@ -1266,7 +1329,110 @@ static bool buildSpecsFromManifest(const std::string &manifest_json, const std::
     std::stable_sort(pending.begin(), pending.end(),
                      [](const Pending &a, const Pending &b) { return a.z < b.z; });
 
-    for (const auto &entry : pending) {
+    // —— 整帧状态动画（可选；有这张表就忽略 layers）——
+    // "frames": { "<state>": ["a.png", ...]
+    //             | { "frames": [...], "ms": 每帧毫秒,
+    //                 "period_ms": 周期, "hold_ms": 每次持续 } }
+    // state 取 idle/talking/running/waiting/success/sad/offline，外加 blink
+    // （周期性插入的一条短轨）。整套形象只有一个图层，状态切换只换 src——
+    // 不存在「一层一只鸟」的叠加重影，也不需要固件去猜素材长什么样。
+    {
+        static const struct { const char *name; int mood; } kMoods[] = {
+            {"idle", Mood::kIdle},           {"talking", Mood::kTalking},
+            {"running", Mood::kRunning},     {"waiting", Mood::kWaitingConfirm},
+            {"success", Mood::kSuccess},     {"sad", Mood::kSad},
+            {"offline", Mood::kOffline},
+        };
+        for (int i = 0; i < Mood::kMoodCount; ++i) motion.frame_mode.mood_track[i] = -1;
+        const cJSON *frames_table = cJSON_GetObjectItemCaseSensitive(manifest, "frames");
+        if (cJSON_IsObject(frames_table)) {
+            FrameMode fm;
+            for (int i = 0; i < Mood::kMoodCount; ++i) fm.mood_track[i] = -1;
+            const cJSON *dms = cJSON_GetObjectItemCaseSensitive(manifest, "frame_ms");
+            const uint32_t default_ms =
+                (cJSON_IsNumber(dms) && dms->valueint >= 30 && dms->valueint <= 2000)
+                    ? static_cast<uint32_t>(dms->valueint) : 180;
+            LayerSpec spec;
+            spec.id = "frames";
+            spec.x = (made_design - canvas_w->valueint) / 2;
+            spec.y = (made_design - canvas_h->valueint) / 2;
+            bool ok = true;
+            for (const cJSON *st = frames_table->child; st && ok; st = st->next) {
+                StateTrack tk;
+                if (!st->string) continue;
+                tk.name = st->string;
+                tk.frame_ms = default_ms;
+                std::vector<std::string> files;
+                if (cJSON_IsArray(st)) {
+                    for (const cJSON *f = st->child; f; f = f->next)
+                        if (cJSON_IsString(f) && f->valuestring) files.push_back(f->valuestring);
+                } else if (cJSON_IsObject(st)) {
+                    const cJSON *fl = cJSON_GetObjectItemCaseSensitive(st, "frames");
+                    if (cJSON_IsArray(fl))
+                        for (const cJSON *f = fl->child; f; f = f->next)
+                            if (cJSON_IsString(f) && f->valuestring) files.push_back(f->valuestring);
+                    const cJSON *ms = cJSON_GetObjectItemCaseSensitive(st, "ms");
+                    if (cJSON_IsNumber(ms) && ms->valueint >= 30 && ms->valueint <= 2000)
+                        tk.frame_ms = static_cast<uint32_t>(ms->valueint);
+                    const cJSON *per = cJSON_GetObjectItemCaseSensitive(st, "period_ms");
+                    if (cJSON_IsNumber(per) && per->valueint >= 500 && per->valueint <= 60000)
+                        tk.period_ms = static_cast<uint32_t>(per->valueint);
+                    const cJSON *hold = cJSON_GetObjectItemCaseSensitive(st, "hold_ms");
+                    if (cJSON_IsNumber(hold) && hold->valueint >= 30 && hold->valueint <= 2000)
+                        tk.hold_ms = static_cast<uint32_t>(hold->valueint);
+                } else {
+                    continue;
+                }
+                if (files.empty() || spec.frames.size() + files.size() > 10) { ok = false; break; }
+                tk.first = static_cast<int>(spec.frames.size());
+                for (const auto &name : files) {
+                    if (name.empty() || name.size() > 32 ||
+                        name.find_first_of("/\\") != std::string::npos ||
+                        name.find_first_not_of(
+                            "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-.") !=
+                            std::string::npos) { ok = false; break; }
+                    int width = 0, height = 0;
+                    auto *pixels = decodePngArgb(base_dir + name, width, height);
+                    if (!pixels) { ok = false; break; }
+                    Frame frame;
+                    frame.pixels = pixels;
+                    frame.dsc.header.magic = LV_IMAGE_HEADER_MAGIC;
+                    frame.dsc.header.cf = LV_COLOR_FORMAT_RGB565A8;
+                    frame.dsc.header.w = static_cast<uint32_t>(width);
+                    frame.dsc.header.h = static_cast<uint32_t>(height);
+                    frame.dsc.header.stride = static_cast<uint32_t>(width) * 2;
+                    frame.dsc.data_size = static_cast<size_t>(width) * height * 3;
+                    frame.dsc.data = pixels;
+                    spec.frames.push_back(frame);
+                }
+                if (!ok) break;
+                tk.count = static_cast<int>(files.size());
+                // 登记必须在 push_back(std::move(tk)) 之前：搬走后 tk.name 已空
+                const int index = static_cast<int>(fm.tracks.size());
+                const std::string tname = tk.name;
+                if (tname == "blink") {
+                    fm.blink_track = index;
+                } else {
+                    for (const auto &entry : kMoods)
+                        if (tname == entry.name) fm.mood_track[entry.mood] = index;
+                }
+                fm.tracks.push_back(std::move(tk));
+            }
+            if (ok && !spec.frames.empty() && fm.mood_track[Mood::kIdle] >= 0) {
+                specs.push_back(std::move(spec));
+                fm.enabled = true;
+                motion.frame_mode = std::move(fm);
+                ESP_LOGI("made_sprite", "[art] 整帧状态动画：%u 条轨道 / %u 帧",
+                    static_cast<unsigned>(motion.frame_mode.tracks.size()),
+                    static_cast<unsigned>(specs[0].frames.size()));
+            } else {
+                for (auto &f : spec.frames) if (f.pixels) frameFree(f.pixels);
+            }
+        }
+    }
+
+    // 整帧模式已建好唯一图层，不再解析 layers（老素材没有 frames 表，照旧）
+    if (!motion.frame_mode.enabled) for (const auto &entry : pending) {
         const cJSON *layer = entry.json;
         std::vector<std::string> files;
         const cJSON *frames = cJSON_GetObjectItemCaseSensitive(layer, "frames");
@@ -1519,7 +1685,13 @@ bool applyArtwork(lv_obj_t *root, const std::string &manifest_json, const std::s
     const cJSON *canvas_w = cJSON_GetObjectItemCaseSensitive(canvas, "w");
     const cJSON *canvas_h = cJSON_GetObjectItemCaseSensitive(canvas, "h");
     const cJSON *layers = cJSON_GetObjectItemCaseSensitive(manifest, "layers");
-    if (!cJSON_IsNumber(canvas_w) || !cJSON_IsNumber(canvas_h) || !cJSON_IsArray(layers) ||
+    // 与 buildSpecsFromManifest 同一套判据：layers（老分层素材）或 frames
+    // （整帧状态动画）二选一。这里漏放行 frames 会让整帧素材永远在入口被
+    // 拒（bad_input），上层 purge+redownload 也修不好（2026-10-24 雪球
+    // 白屏死循环实锤：预取路径直达 buildSpecs 能显示，主台走这里全灭）。
+    const cJSON *frames_table = cJSON_GetObjectItemCaseSensitive(manifest, "frames");
+    if (!cJSON_IsNumber(canvas_w) || !cJSON_IsNumber(canvas_h) ||
+        (!cJSON_IsArray(layers) && !cJSON_IsObject(frames_table)) ||
         canvas_w->valueint <= 0 || canvas_h->valueint <= 0) {
         cJSON_Delete(manifest);
         t_last_apply_fail = ApplyFail::bad_input;

@@ -173,22 +173,24 @@ bool ensureImpl(const std::string &provider, const vibe_provider::SpriteInfo &sp
     // manifest 重拉比对：manifest 是信任根但自身无哈希可验，且曾在崩溃时代
     // 被截断过（头部 version/layers 完整、actions/commands 丢失，而版本号
     // 一致导致残缺 manifest 被永久信任，动作名单恒空）。这里每次多花一个小
-    // 请求重拉与缓存比对，内容漂移就地重写；拉不到（网络抖动）则退回信任
-    // 缓存的旧行为。
+    // 请求重拉与缓存比对；拉不到（网络抖动）则退回信任缓存的旧行为。
+    // 2026-10-24 实锤（雪球 v19 撞号重发）：漂移时绝不能提前落盘——manifest
+    // 一落盘，下方快路径就「版本一致 + 文件存在」秒回 ok，旧像素被标记成
+    // 新版本，设备永远不再重下。漂移只置位，落盘统一交给慢路径末尾的
+    // 「最后拉、最后写」（那一写才是整套素材就绪的版本闸）。
     std::string cached;
     const bool have_cached = readIfPresent(manifest_path, cached);
+    bool manifest_drift = false;
     {
         std::string fresh;
         int status = 0;
         if (fetch(fileAsPath(provider, "manifest.json"), fresh, status) &&
             status == 200 && !fresh.empty() && fresh.size() <= 20 * 1024) {
             if (!have_cached || fresh != cached) {
-                if (writeAtomic(manifest_path, fresh)) {
-                    cached = fresh;
-                    if (manifest_changed) *manifest_changed = true;
-                    ESP_LOGI(kTag, "[sprite] manifest_refreshed provider=%s bytes=%u",
-                        provider.c_str(), static_cast<unsigned>(fresh.size()));
-                }
+                manifest_drift = true;
+                if (manifest_changed) *manifest_changed = true;
+                ESP_LOGI(kTag, "[sprite] manifest_drift provider=%s bytes=%u -> slow path",
+                    provider.c_str(), static_cast<unsigned>(fresh.size()));
             }
         }
     }
@@ -200,8 +202,10 @@ bool ensureImpl(const std::string &provider, const vibe_provider::SpriteInfo &sp
     // 前提是文件齐：purge / 下载中断会留下「manifest 在、帧文件缺」的残缺
     // 缓存，此时快路径秒回 ok 而文件永远不补（2026-10-20 冒烟实锤：解码
     // 连败 → purge → ensure 快路径又 ok → already_attempted 拦截重下 →
-    // 死循环打崩 PSRAM）。逐文件 stat 一次（无 SHA，开销可忽略）。
-    if (have_cached) {
+    // 死循环打崩 PSRAM）。逐文件 stat 一次（无 SHA，开销可忽略）；
+    // 2026-10-24 起连大小一起核对（stat 本来就回了 st_size）：历史撞号/
+    // 半写残留的同名旧文件，大小对不上就地走慢路径补下。
+    if (have_cached && !manifest_drift) {
         bool same_version = false;
         if (cJSON *root = cJSON_Parse(cached.c_str())) {
             const auto *version = cJSON_GetObjectItemCaseSensitive(root, "version");
@@ -213,7 +217,8 @@ bool ensureImpl(const std::string &provider, const vibe_provider::SpriteInfo &sp
             bool files_present = true;
             for (const auto &file : sprite.files) {
                 struct stat st {};
-                if (stat(pathFor(prefix, file.file).c_str(), &st) != 0) {
+                if (stat(pathFor(prefix, file.file).c_str(), &st) != 0 ||
+                    static_cast<size_t>(st.st_size) != file.bytes) {
                     files_present = false;
                     break;
                 }

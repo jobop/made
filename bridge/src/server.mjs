@@ -967,6 +967,9 @@ export function createApp(config, { run, transcribe, tunnel: providedTunnel, ena
           deviceSend(res, 200, {
             version: plugin.sprite.version, canvas: plugin.sprite.canvas,
             layers: plugin.sprite.layers, ...(plugin.sprite.motion ? { motion: plugin.sprite.motion } : {}),
+            // 整帧状态动画（声明式，固件照表播）；老素材没有这两项，照旧走分层叠加
+            ...(plugin.sprite.frames ? { frames: plugin.sprite.frames } : {}),
+            ...(plugin.sprite.frame_ms ? { frame_ms: plugin.sprite.frame_ms } : {}),
             ...(plugin.sprite.emotions ? { emotions: plugin.sprite.emotions } : {}),
             ...(plugin.sprite.actions ? { actions: plugin.sprite.actions } : {}),
             ...(plugin.sprite.commands ? { commands: plugin.sprite.commands } : {}),

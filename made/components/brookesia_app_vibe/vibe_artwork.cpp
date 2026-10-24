@@ -733,6 +733,13 @@ void VibeCoding::maybeApplyArtwork(const std::string &selected_provider)
         artwork_applied_ = selected_provider;
         artwork_applied_version_ = spriteVersionOf(selected_provider);
         ESP_LOGI(BUTTON_TAG, "[sprite] applied provider=%s", selected_provider.c_str());
+        {   // 同 tryApplyCachedArtwork：应用成功即撤销本 provider 的陈旧 purge
+            std::lock_guard<std::mutex> lock(artwork_mutex_);
+            if (artwork_purge_provider_ == selected_provider) {
+                artwork_purge_provider_.clear();
+                artwork_purge_pending_.store(false);
+            }
+        }
     } else {
         made_sprite::clearArtwork(sprite_stage_);
         artwork_applied_.clear();
@@ -818,6 +825,14 @@ bool VibeCoding::tryApplyCachedArtwork(const std::string &provider)
         cached_apply_provider_.clear();  // 成功即清：切走再切回仍可秒换
         cached_apply_version_ = 0;
         cached_apply_attempts_ = 0;
+        // 成功即撤销本 provider 待执行的 purge：purge 决策来自下载窗口期的
+        // 陈旧失败（manifest 先到、PNG 未齐被判缓存坏），现在缓存已被证明
+        // 是好的，再 purge 就是误删刚下好的整套素材（2026-10-24 雪球实锤：
+        // 应用成功 4s 后陈旧 purge 把新缓存删掉，设备又白屏一轮）。
+        if (artwork_purge_provider_ == provider) {
+            artwork_purge_provider_.clear();
+            artwork_purge_pending_.store(false);
+        }
     }
     ESP_LOGI(BUTTON_TAG, "[sprite] cached_applied provider=%s version=%u",
         provider.c_str(), static_cast<unsigned>(version));

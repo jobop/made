@@ -52,24 +52,81 @@ function readManifestFile(dir) {
   }
 }
 
+/**
+ * 整帧状态动画表（可选）。素材明说「每个状态播哪几帧、多快、眨眼怎么插」，
+ * 固件照表播放，不推断素材结构。有这张表时 layers 可以省略。
+ * 返回归一化的 { [state]: { frames: [...], ms } } 或 null（没声明）。
+ */
+function validateFramesTable(raw) {
+  if (raw.frames === undefined) return null;
+  const table = raw.frames;
+  if (!table || typeof table !== 'object' || Array.isArray(table)) {
+    throw new SpriteError('manifest.frames 必须是对象');
+  }
+  const allowed = new Set([...MOOD_NAMES, 'blink']);
+  const out = {};
+  let total = 0;
+  for (const [state, entry] of Object.entries(table)) {
+    if (!allowed.has(state)) throw new SpriteError(`frames 含未知状态：${state}`);
+    let files = null;
+    const extra = {};
+    if (Array.isArray(entry)) {
+      files = entry;
+    } else if (entry && typeof entry === 'object') {
+      const keys = Object.keys(entry);
+      if (keys.some((key) => !['frames', 'ms', 'period_ms', 'hold_ms'].includes(key))) {
+        throw new SpriteError(`frames.${state} 含不支持的字段`);
+      }
+      if (!Array.isArray(entry.frames)) throw new SpriteError(`frames.${state}.frames 必须是数组`);
+      files = entry.frames;
+      if (entry.ms !== undefined && !isInt(entry.ms, 30, 2000)) throw new SpriteError(`frames.${state}.ms 范围 30–2000`);
+      if (entry.ms !== undefined) extra.ms = entry.ms;
+      if (entry.period_ms !== undefined && !isInt(entry.period_ms, 500, 60000)) throw new SpriteError(`frames.${state}.period_ms 范围 500–60000`);
+      if (entry.period_ms !== undefined) extra.period_ms = entry.period_ms;
+      if (entry.hold_ms !== undefined && !isInt(entry.hold_ms, 30, 2000)) throw new SpriteError(`frames.${state}.hold_ms 范围 30–2000`);
+      if (entry.hold_ms !== undefined) extra.hold_ms = entry.hold_ms;
+    } else {
+      throw new SpriteError(`frames.${state} 必须是数组或对象`);
+    }
+    if (files.length < 1 || files.length > MAX_FRAMES ||
+        files.some((file) => typeof file !== 'string' || !FILE_NAME.test(file))) {
+      throw new SpriteError(`frames.${state} 需要 1–${MAX_FRAMES} 个 PNG 文件名`);
+    }
+    total += files.length;
+    if (total > 12) throw new SpriteError('frames 总帧数超过 12（设备内存上限）');
+    out[state] = { frames: [...files], ...extra };
+  }
+  if (Object.keys(out).length < 1 || !out.idle) throw new SpriteError('frames 至少要声明 idle 轨道');
+  if (raw.frame_ms !== undefined && !isInt(raw.frame_ms, 30, 2000)) {
+    throw new SpriteError('manifest.frame_ms 范围 30–2000');
+  }
+  return out;
+}
+
 function validateManifest(raw) {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new SpriteError('manifest 必须是对象');
-  if (Object.keys(raw).some((key) => !['version', 'canvas', 'layers', 'motion', 'emotions', 'actions', 'commands'].includes(key))) {
+  if (Object.keys(raw).some((key) => !['version', 'canvas', 'layers', 'frames', 'frame_ms', 'motion', 'emotions', 'actions', 'commands'].includes(key))) {
     throw new SpriteError('manifest 包含不支持的字段');
   }
   if (!isInt(raw.version, 1, 2147483647)) throw new SpriteError('manifest.version 必须是正整数');
+  // 整帧状态动画（声明式）：有 frames 表就不再需要 layers。固件只照表播放，
+  // 不去推断素材结构；老素材（layers 分层叠加）行为不变。
+  const frameTracks = validateFramesTable(raw);
   const canvas = raw.canvas;
   if (!canvas || typeof canvas !== 'object' || Array.isArray(canvas) ||
       !isInt(canvas.w, 1, 512) || !isInt(canvas.h, 1, 512) ||
       Object.keys(canvas).some((key) => !['w', 'h'].includes(key))) {
     throw new SpriteError('manifest.canvas 必须是 {w, h}（各 1–512）');
   }
-  if (!Array.isArray(raw.layers) || raw.layers.length < 1 || raw.layers.length > MAX_LAYERS) {
-    throw new SpriteError(`manifest.layers 需要 1–${MAX_LAYERS} 层`);
+  // 整帧模式（frames 表）不需要 layers；分层模式 layers 必填。
+  if (!frameTracks) {
+    if (!Array.isArray(raw.layers) || raw.layers.length < 1 || raw.layers.length > MAX_LAYERS) {
+      throw new SpriteError(`manifest.layers 需要 1–${MAX_LAYERS} 层`);
+    }
   }
   const seen = new Set();
   const referenced = new Set();
-  for (const layer of raw.layers) {
+  if (Array.isArray(raw.layers)) for (const layer of raw.layers) {
     if (!layer || typeof layer !== 'object' || Array.isArray(layer)) throw new SpriteError('layers 条目必须是对象');
     const keys = Object.keys(layer);
     if (keys.some((key) => !['id', 'file', 'frames', 'x', 'y', 'z', 'blink', 'talk', 'alert'].includes(key))) {
@@ -225,6 +282,7 @@ function validateManifest(raw) {
   return {
     version: raw.version, canvas: canvas, layers: raw.layers, motion: raw.motion ?? null,
     emotions: raw.emotions ?? null, actions: raw.actions ?? null, commands: raw.commands ?? null,
+    frames: frameTracks ?? null, frame_ms: raw.frame_ms ?? null,
   };
 }
 
@@ -269,11 +327,19 @@ export function readSprite(packageDir) {
       if (action && typeof action.gif === 'string') gifReferencedHint.add(action.gif);
     }
   }
+  const declaredNames = new Set();
+  if (Array.isArray(manifest.layers)) {
+    for (const layer of manifest.layers) {
+      for (const file of layer.frames !== undefined ? layer.frames : [layer.file]) declaredNames.add(file);
+    }
+  }
+  if (manifest.frames) {
+    for (const track of Object.values(manifest.frames)) for (const file of track.frames) declaredNames.add(file);
+  }
   for (const name of fs.readdirSync(spriteDir)) {
     const lower = name.toLowerCase();
     if (lower.endsWith('.png')) {
-      const referenced = manifest.layers.some((layer) =>
-        (layer.frames !== undefined ? layer.frames : [layer.file]).includes(name));
+      const referenced = declaredNames.has(name);
       if (!referenced) {
         console.error(`[plugins] sprite 提示：${path.basename(spriteDir)}/${name} 未被 manifest 引用，不会被下发（建议删除旧素材省空间）`);
       }
@@ -283,8 +349,7 @@ export function readSprite(packageDir) {
   }
   let total = 0;
   const files = [];
-  for (const layer of manifest.layers) {
-    for (const file of layer.frames !== undefined ? layer.frames : [layer.file]) {
+  for (const file of declaredNames) {
       const target = path.join(spriteDir, file);
       let bytes;
       try {
@@ -297,7 +362,6 @@ export function readSprite(packageDir) {
       if (total > SPRITE_MAX_TOTAL_BYTES) throw new SpriteError(`sprite/ 整包超过 512 KB`);
       const data = fs.readFileSync(target);
       files.push({ file, bytes, sha256: createHash('sha256').update(data).digest('hex') });
-    }
   }
   // GIF 动作引用的动画文件（多个动作共用同一文件只下发一份）
   if (manifest.actions) {
@@ -321,6 +385,7 @@ export function readSprite(packageDir) {
   const value = Object.freeze({
     dir: spriteDir, version: manifest.version, canvas: manifest.canvas,
     layers: manifest.layers, motion: manifest.motion, emotions: manifest.emotions,
+    frames: manifest.frames, frame_ms: manifest.frame_ms,
     actions: manifest.actions, commands: manifest.commands,
     files: Object.freeze(files.map((file) => Object.freeze(file))),
   });

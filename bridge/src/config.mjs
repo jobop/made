@@ -149,7 +149,11 @@ export function loadConfig(env = process.env) {
   }
   // 卡死自愈：任务连续 N 分钟没有任何输出（进度/流式/stderr 都算）视为卡死，
   // 桥接器杀掉编程工具进程并自动重跑，最多 maxAutoRetries 次。
-  const stuckIdleMinutes = Number(env.VIBE_STUCK_IDLE_MINUTES ?? raw.stuckIdleMinutes ?? 5);
+  // 默认 15 分钟而不是 5 分钟：素材管线里一次外部生图是「提交异步任务 + 每 6s
+  // 轮询」，单张最长 300s（body 240s + sheet 300s ≈ 9 分钟），且轮询期间工具
+  // 不吐字。5 分钟会把一条正在正常跑的长任务当成卡死杀掉（2026-10-24 雪球
+  // jojo 任务被自己的看门狗反复打断实锤）。
+  const stuckIdleMinutes = Number(env.VIBE_STUCK_IDLE_MINUTES ?? raw.stuckIdleMinutes ?? 15);
   if (!Number.isInteger(stuckIdleMinutes) || stuckIdleMinutes < 1 || stuckIdleMinutes > 60) {
     throw new Error('卡死判定时长必须是 1 到 60 之间的整数（分钟）');
   }

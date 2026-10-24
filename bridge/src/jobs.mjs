@@ -383,6 +383,34 @@ export class JobStore {
         job.updatedAt = now();
         this.save();
         this.hooks?.notify('started', job);
+        // —— 插件型助手的卡死看门狗 ——
+        // CLI 型插件由 agents/shared.mjs 的子进程 idle 看门狗覆盖；插件型（自带
+        // run() 与工具环的助手）此前完全没有超时：模型请求/工具调用不返回就永久
+        // 挂着，任务永远停在 running（2026-10-24 雪球 jojo 任务挂 15 分钟零输出
+        // 零产物实锤）。这里按「多久没有任何进展」判定，中止后交给车道自动重跑。
+        // 阈值必须大于素材管线的合法最长静默时长：外部生图是异步任务轮询，单张
+        // 上限 300s（body 240s + sheet 300s ≈ 9 分钟），期间完全没有文本进度。
+        // 默认 15 分钟（见 config.mjs）。
+        let lastActivity = Date.now();
+        const touchActivity = () => { lastActivity = Date.now(); };
+        const stallMs = Math.max(1, Number(this.stuckIdleMinutes) || 15) * 60_000;
+        let stalled = false;
+        const stallTimer = setInterval(() => {
+          if (job.status !== 'running') return;
+          const idle = Date.now() - lastActivity;
+          if (idle < stallMs) return;
+          stalled = true;
+          controller.abort(new Error(`任务 ${Math.round(idle / 60_000)} 分钟没有任何进展，疑似卡死`));
+        }, 15_000);
+        if (stallTimer.unref) stallTimer.unref();
+        // 单轮硬上限 30 分钟：素材管线一次从零生成（body + sheet）最坏约 10 分钟，
+        // 加上模型侧重试仍有余量。
+        const hardTimer = setTimeout(() => {
+          if (job.status !== 'running') return;
+          stalled = true;
+          controller.abort(new Error('任务单轮运行超过 30 分钟，已停止'));
+        }, 30 * 60_000);
+        if (hardTimer.unref) hardTimer.unref();
         try {
           this.ensureWorkspace(job.vibeSessionId);
           const project = this.projectFor(job);
@@ -395,6 +423,7 @@ export class JobStore {
               if (!progress || progress === job.progress) return;
               job.progress = progress;
               job.progressAt = now();
+              touchActivity();
               job.updatedAt = job.progressAt;
               const current = Date.now();
               if (current - (this.progressSavedAt.get(job.id) || 0) >= 750) {
@@ -435,6 +464,7 @@ export class JobStore {
               calls.push(entry);
             }
             job.toolCalls = calls.slice(-40);
+            touchActivity();
             const current = Date.now();
             if (current - (this.progressSavedAt.get(job.id) || 0) >= 750) {
               this.progressSavedAt.set(job.id, current);
@@ -461,6 +491,13 @@ export class JobStore {
             this.hooks?.notify(job.status, job);
           }
         } catch (error) {
+          if (stalled && job.status === 'running') {
+            // 看门狗中止（插件型助手）：按 CLI 型同样的语义交给车道自动重跑。
+            error = Object.assign(
+              new Error(`任务 ${Math.round(stallMs / 60_000)} 分钟没有任何进展，疑似卡死：已终止`),
+              { retryable: true, autoRetry: true },
+            );
+          }
           if (job.status === 'running') {
             // 卡死自愈：看门狗杀掉无输出的编程工具进程后，同车道自动重跑，
             // 最多 maxAutoRetries 次；重跑的是同一条指令（native 会话会 resume 同一 CLI 线程）。
@@ -489,6 +526,8 @@ export class JobStore {
             this.hooks?.notify('failed', job);
           }
         } finally {
+          clearInterval(stallTimer);
+          clearTimeout(hardTimer);
           this.controllers.delete(job.id);
           this.progressSavedAt.delete(job.id);
         }
