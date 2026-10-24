@@ -1,0 +1,13 @@
+# 构建产物
+build/
+.gradle/
+app/build/
+app/.cxx/
+local.properties
+*.apk
+
+# 第三方依赖（由 ./setup.sh 下载，不进仓库）
+deps/
+
+# SDL2 源码（由 ./setup.sh 解压并软链到这里）
+app/jni/SDL

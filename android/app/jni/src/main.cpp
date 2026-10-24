@@ -11,6 +11,13 @@
 #include "bsp/display.h"
 #include "esp_brookesia_app_vibe.hpp"
 
+// aligned_alloc 自 Android API 28 才有，我们 minSdk 21，用 posix_memalign 补一个。
+#include <stdlib.h>
+extern "C" void *aligned_alloc(size_t alignment, size_t size) {
+    void *p = nullptr;
+    return posix_memalign(&p, alignment, size) == 0 ? p : nullptr;
+}
+
 using esp_brookesia::apps::VibeCoding;
 
 int main(int argc, char **argv)
