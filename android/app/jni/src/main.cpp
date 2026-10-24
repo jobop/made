@@ -8,6 +8,7 @@
 
 #include "lvgl.h"
 #include <SDL2/SDL.h>
+#include <jni.h>
 #include "bsp/display.h"
 #include "esp_brookesia_app_vibe.hpp"
 
@@ -30,10 +31,11 @@ int main(int argc, char **argv)
     }
 
     lv_init();
-    // SDL2-Android 全屏；尺寸先按 BSP 定义，真实窗口由 SDL 托管，
-    // made_layout.hpp 会按实际屏幕短边自适应。
-    lv_display_t *disp = lv_sdl_window_create(BSP_LCD_H_RES, BSP_LCD_V_RES);
+    int lv_w = 480, lv_h = 1055;
+    SDL_Log("lvgl logical %dx%d", lv_w, lv_h);
+    lv_display_t *disp = lv_sdl_window_create(lv_w, lv_h);
     if (!disp) { SDL_Log("lv_sdl_window_create failed"); return 1; }
+
     lv_display_set_render_mode(disp, LV_DISPLAY_RENDER_MODE_FULL);
     lv_sdl_mouse_create();   // 安卓触屏 → LVGL 指针设备
 
