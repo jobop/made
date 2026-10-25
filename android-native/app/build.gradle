@@ -1,0 +1,30 @@
+apply plugin: 'com.android.application'
+
+android {
+    namespace 'com.made.app'
+    compileSdk 34
+
+    defaultConfig {
+        applicationId 'com.made.app'
+        minSdk 26
+        targetSdk 34
+        versionCode 1
+        versionName '1.0'
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+}
+
+// 零第三方依赖：只用 android framework（HttpURLConnection / org.json /
+// javax.crypto / AudioRecord），保证在任何环境可离线构建。
+dependencies {
+}

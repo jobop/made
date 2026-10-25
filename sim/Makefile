@@ -73,6 +73,8 @@ APP_SRCS  := \
   made/components/brookesia_app_vibe/vibe_settings_pages.cpp \
   made/components/brookesia_app_vibe/vibe_artwork.cpp \
   made/components/brookesia_app_vibe/vibe_backend.cpp \
+  made/components/vibe_pairing/vibe_pairing.cpp \
+  made/components/vibe_voice_capture/vibe_voice_capture.cpp \
   made/components/brookesia_app_vibe/made_sprite.cpp \
   made/components/brookesia_app_vibe/made_sprite_cache.cpp \
   made/components/brookesia_app_vibe/made_gif.cpp \

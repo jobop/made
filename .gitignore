@@ -49,3 +49,10 @@ outputs/
 
 # AI 生图草稿（本地产物，非源码）
 generated-images/
+
+# APK 构建产物，不入库
+dist/
+# Android 构建缓存与产物
+android-native/.gradle/
+android-native/app/build/
+android-native/local.properties

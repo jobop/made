@@ -18,12 +18,33 @@
 #include <vector>
 
 namespace made_sprite_cache {
-namespace {
 
+namespace {
+// 真机挂载点固定 /spiffs；sim / 安卓是普通目录，由宿主入口经 set_mount()
+// 注入（安卓为应用私有目录，PC sim 可用 MADE_SIM_SPIFFS_DIR），运行时生效。
+// 对象名长度上限 31 字节是 SPIFFS 的约束，目录化存储沿用同一命名规则。
+std::string &mount()
+{
+    static std::string mount_path = "/spiffs";
+    return mount_path;
+}
+} // namespace
+
+// 公开接口：覆盖缓存根目录。必须在 ensure/load 系列之前调用，空串拒绝。
+void set_mount(const std::string &dir)
+{
+    if (!dir.empty()) mount() = dir;
+}
+
+namespace {
 constexpr const char *kTag = "made_sprite";
-constexpr const char *kMount = "/spiffs";
 constexpr size_t kChunkBytes = 192 * 1024;   // 单请求上限，兼容 USB 帧转发 256KB
 constexpr size_t kResponseLimit = 200 * 1024;
+
+std::string pathFor(const std::string &prefix, const std::string &name)
+{
+    return mount() + "/" + prefix + name;
+}
 
 // SPIFFS 的对象名长度上限是 SPIFFS_OBJ_NAME_LEN-1 = 31 字节，且算的是
 // VFS 交给 SPIFFS_open 的整串（含前导 '/'）。缓存名 = '/' + 前缀 + 文件名 + 临时后缀，
@@ -45,11 +66,6 @@ std::string prefixFor(const std::string &provider)
     return text;
 }
 
-std::string pathFor(const std::string &prefix, const std::string &name)
-{
-    return std::string(kMount) + "/" + prefix + name;
-}
-
 // 文件完整性策略（2026-10-19 简化）：不再做任何哈希（整文件/流式/分区都
 // 不要）。理由：①曾把 ~500KB PNG 整读进 std::string 算哈希，PSRAM 紧张时
 // 抛 bad_alloc 致 worker abort 重启循环；②PNG/GIF 格式自带逐块 CRC，坏
@@ -59,7 +75,7 @@ std::string pathFor(const std::string &prefix, const std::string &name)
 bool writeAtomic(const std::string &path, const std::string &data)
 {
     // VFS 交给 SPIFFS_open 的是「去掉挂载点、保留前导 '/'」的路径，长度限制算的是它。
-    const std::string relative = path.substr(std::strlen(kMount));
+    const std::string relative = path.substr(mount().size());
     const std::string temporary = path + kTempSuffix;
     // 名字超限是 SPIFFS 最沉默的一类失败：open 直接拿不到句柄。提前判掉并留痕。
     if (relative.size() + 1 > kObjectNameLimit) {
@@ -126,7 +142,7 @@ std::string fileAsPath(const std::string &provider, const std::string &name)
 std::vector<std::string> listPrefixed(const std::string &prefix)
 {
     std::vector<std::string> names;
-    DIR *dir = opendir(kMount);
+    DIR *dir = opendir(mount().c_str());
     if (!dir) return names;
     while (const dirent *entry = readdir(dir)) {
         const std::string name = entry->d_name;
@@ -160,7 +176,7 @@ void purge(const std::string &provider)
 
 std::string baseDir(const std::string &provider)
 {
-    return std::string(kMount) + "/" + prefixFor(provider);
+    return mount() + "/" + prefixFor(provider);
 }
 
 bool ensureImpl(const std::string &provider, const vibe_provider::SpriteInfo &sprite,
@@ -241,7 +257,7 @@ bool ensureImpl(const std::string &provider, const vibe_provider::SpriteInfo &sp
             continue;
         }
         // 流式落盘：分片边下边写临时文件，不再把整文件攒进内存。
-        const std::string relative = target.substr(std::strlen(kMount));
+        const std::string relative = target.substr(mount().size());
         const std::string temporary = target + kTempSuffix;
         if (relative.size() + 1 > kObjectNameLimit) {
             ESP_LOGE(kTag, "[sprite] write_name_too_long object_len=%u limit=%u name='%s'",

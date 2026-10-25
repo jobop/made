@@ -80,7 +80,7 @@ export function gitState(cwd) {
   };
 }
 
-function repositorySnapshot(cwd) {
+function repositorySnapshot(cwd, { autoInitNestedRepo = false } = {}) {
   if (!fs.existsSync(cwd)) fs.mkdirSync(cwd, { recursive: true });
   if (!fs.statSync(cwd).isDirectory()) {
     throw new Error(`代码目录不存在：${cwd}`);
@@ -88,7 +88,13 @@ function repositorySnapshot(cwd) {
   let repo = spawnSync('git', ['rev-parse', '--show-toplevel'], {
     cwd, encoding: 'utf8', timeout: 5000,
   });
-  if (repo.status !== 0) {
+  // 会话沙箱常被放在某个更大的 Git 仓库里面（比如 bridge/ 本身就在项目仓库里），
+  // 这时 rev-parse 会「成功」返回外层仓库根。沙箱目录是桥接器自建自管的，
+  // 这种情况同样走 git init，否则任务永远报「路径不是仓库根」。
+  // 用户自己配置的真实项目目录不算沙箱，保持原来的报错提示改用仓库根。
+  const insideOtherRepo = autoInitNestedRepo && repo.status === 0 &&
+    path.resolve(repo.stdout.trim()) !== path.resolve(cwd);
+  if (repo.status !== 0 || insideOtherRepo) {
     spawnSync('git', ['init'], { cwd, encoding: 'utf8', timeout: 15000 });
     repo = spawnSync('git', ['rev-parse', '--show-toplevel'], {
       cwd, encoding: 'utf8', timeout: 5000,
@@ -110,7 +116,9 @@ function changeFooter(state, message) {
 }
 
 export function runCli({ job, project, signal, onProgress, onSession, onTool, config, model }, adapter) {
-  const startingGitSnapshot = repositorySnapshot(project.path);
+  const startingGitSnapshot = repositorySnapshot(project.path, {
+    autoInitNestedRepo: project.originPath !== undefined,
+  });
   const message = (value) => translateKnownMessage(value, config.locale);
   // 每轮都拼上权限边界：用户原文一字不改，边界文案按界面语言翻译。
   const prompt = `${job.instruction}\n\n${message(GUARD_INSTRUCTION)}`;

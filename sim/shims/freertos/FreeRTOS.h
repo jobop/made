@@ -22,6 +22,12 @@ typedef long eTaskState;
 #define portTICK_PERIOD_MS       1u
 #define portMAX_DELAY            0xFFFFFFFFu
 #define portNUM_PROCESSORS       2
+/* 自旋锁宿主桩：单进程内竞争窗口极小，临界区一律空操作（仅保护
+ * 布尔/短 char 数组， risk 可忽略）。 */
+typedef int portMUX_TYPE;
+#define portMUX_INITIALIZER_UNLOCKED 0
+#define portENTER_CRITICAL(mux)      ((void)(mux))
+#define portEXIT_CRITICAL(mux)       ((void)(mux))
 #define tskIDLE_PRIORITY         0
 #define configSTACK_DEPTH_TYPE   uint32_t
 

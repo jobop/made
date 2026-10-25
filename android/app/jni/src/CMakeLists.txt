@@ -89,6 +89,8 @@ set(APP_SRCS
   ${COMP}/brookesia_app_vibe/vibe_settings_pages.cpp
   ${COMP}/brookesia_app_vibe/vibe_artwork.cpp
   ${COMP}/brookesia_app_vibe/vibe_backend.cpp
+  ${COMP}/vibe_pairing/vibe_pairing.cpp
+  ${COMP}/vibe_voice_capture/vibe_voice_capture.cpp
   ${COMP}/brookesia_app_vibe/made_sprite.cpp
   ${COMP}/brookesia_app_vibe/made_sprite_cache.cpp
   ${COMP}/brookesia_app_vibe/made_gif.cpp
@@ -123,6 +125,8 @@ set(CPP_SRCS
   ${COMP}/brookesia_app_vibe/vibe_settings_pages.cpp
   ${COMP}/brookesia_app_vibe/vibe_artwork.cpp
   ${COMP}/brookesia_app_vibe/vibe_backend.cpp
+  ${COMP}/vibe_pairing/vibe_pairing.cpp
+  ${COMP}/vibe_voice_capture/vibe_voice_capture.cpp
   ${COMP}/brookesia_app_vibe/made_sprite.cpp
   ${COMP}/brookesia_app_vibe/made_sprite_cache.cpp
   ${COMP}/brookesia_app_vibe/made_gif.cpp

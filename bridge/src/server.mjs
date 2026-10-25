@@ -894,6 +894,24 @@ export function createApp(config, { run, transcribe, tunnel: providedTunnel, ena
         });
         return;
       }
+      if (req.method === 'POST' && url.pathname === '/device/tasks') {
+        // 设备端文字任务入口（安卓原生应用）：与 /device/voice 同级，用设备
+        // token 鉴权。指令文本来自手机输入法，长度上限与桌面 UI 对齐。
+        const payload = await body(req);
+        const instruction = String(payload.instruction || '').trim();
+        if (!instruction) throw new Error('请输入任务内容');
+        if (Buffer.byteLength(instruction) > 4000) throw new Error('任务内容过长');
+        const sessionId = payload.sessionId;
+        if (!VIBE_SESSION_ID.test(sessionId || '') || !store.sessions.get(sessionId)) {
+          throw new Error('请先新建任务');
+        }
+        const session = store.sessions.get(sessionId);
+        deviceSend(res, 201, publicJob(store.submit({
+          instruction, sessionId, provider: session.provider,
+          projectId: session.projectId, source: 'device_text',
+        }), deviceLocale));
+        return;
+      }
       if (req.method === 'GET' && url.pathname === '/device/sessions') {
         const provider = url.searchParams.get('provider');
         if (provider && !config.pluginsRuntime.hasAgent(provider)) throw new Error('未知编程工具');

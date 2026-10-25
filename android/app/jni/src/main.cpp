@@ -19,6 +19,7 @@
 #include "bsp/display.h"
 #include "esp_brookesia_app_vibe.hpp"
 #include "made_layout.hpp"
+#include "made_sprite_cache.hpp"
 
 #if defined(MADE_USE_FREETYPE)
 #include <android/asset_manager.h>
@@ -236,6 +237,19 @@ int main(int argc, char **argv)
 
     lv_init();
 
+    // ---- 宿主环境接线（真机由 BSP/驱动承担的部分）----
+    // 1) 网络：Android 的 Wi-Fi 由系统管理，应用层只关心「有网可用」。
+    //    vibe_wifi 的宿主桩用 MADE_SIM_WIFI 门控「已连接」，这里打开它。
+    setenv("MADE_SIM_WIFI", "1", 1);
+    // 2) 存储：精灵素材缓存需要可写目录。真机挂在 /spiffs（SPIFFS），
+    //    安卓映射到应用私有目录下的 spiffs/。
+    if (const char *base = SDL_AndroidGetInternalStoragePath()) {
+        std::string cache_dir = std::string(base) + "/spiffs";
+        mkdir(cache_dir.c_str(), 0755);
+        made_sprite_cache::set_mount(cache_dir);
+        SDL_Log("made: sprite cache mount %s", cache_dir.c_str());
+    }
+
 #if defined(MADE_USE_FREETYPE)
     // 矢量字体必须在 UI 构建（startOnDisplay → made_fonts_init）前就位；
     // 释放失败直接拒绝启动，不静默回落到默认字体掩盖打包问题。
@@ -257,6 +271,11 @@ int main(int argc, char **argv)
 
     lv_display_set_render_mode(disp, LV_DISPLAY_RENDER_MODE_FULL);
     lv_sdl_mouse_create();   // 安卓触屏 → LVGL 指针设备
+    // 键盘 indev + 默认 group：宿主侧 adb input text / 外接蓝牙键盘可直接
+    // 输入（事件经 SDL KEYDOWN → group 焦点 textarea）。触屏用户无感。
+    if (!lv_group_get_default()) lv_group_set_default(lv_group_create());
+    lv_indev_t *kb_indev = lv_sdl_keyboard_create();
+    if (kb_indev && lv_group_get_default()) lv_indev_set_group(kb_indev, lv_group_get_default());
 
     if (!VibeCoding::startOnDisplay()) {
         SDL_Log("VibeCoding::startOnDisplay failed");

@@ -48,6 +48,12 @@
     <!-- Allow access to the vibrator -->
     <uses-permission android:name="android.permission.VIBRATE" />
 
+    <!-- 连桥接器 / 配对 / 对话 / 素材下载全部走 HTTP socket，没有它 socket() 直接 EPERM -->
+    <uses-permission android:name="android.permission.INTERNET" />
+
+    <!-- 语音对话要用麦克风采集（P2b），运行时还需动态申请 -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+
     <!-- if you want to capture audio, uncomment this. -->
     <!-- <uses-permission android:name="android.permission.RECORD_AUDIO" /> -->
 

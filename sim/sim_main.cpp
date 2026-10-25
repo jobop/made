@@ -11,6 +11,7 @@
 #include "bsp/display.h"
 #include "esp_brookesia_app_vibe.hpp"
 #include "made_sprite.hpp"
+#include "made_sprite_cache.hpp"
 
 #include <cstdint>
 #include <cstdio>
@@ -376,6 +377,15 @@ int main(int argc, char **argv)
     }
 
     lv_init();
+
+    // 精灵素材缓存根目录：默认 /spiffs（真机 SPIFFS 挂载点，宿主上不可写）。
+    // 设 MADE_SIM_SPIFFS_DIR 后 sim 也能走「桥接下发→HTTP 下载→缓存」的
+    // 完整网络链路，与安卓同一机制。
+    if (const char *spiffs_dir = getenv("MADE_SIM_SPIFFS_DIR"); spiffs_dir && *spiffs_dir) {
+        made_sprite_cache::set_mount(spiffs_dir);
+        fprintf(stderr, "sim: sprite cache mount %s\n", spiffs_dir);
+    }
+
     lv_display_t *disp = lv_sdl_window_create(BSP_LCD_H_RES, BSP_LCD_V_RES);
     if (!disp) { fprintf(stderr, "lv_sdl_window_create failed\n"); return 1; }
     lv_display_set_render_mode(disp, LV_DISPLAY_RENDER_MODE_FULL);

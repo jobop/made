@@ -15,7 +15,9 @@
 
 namespace esp_brookesia::systems::phone {
 
-constexpr Display::Data STYLESHEET_360_360_DARK_DISPLAY_DATA = {
+// 桌面网格数据随运行时屏幕形状推导（见 app_launcher_data.hpp），
+// 因此显示层与 Stylesheet 只能是运行期常量，不再 constexpr。
+const Display::Data STYLESHEET_360_360_DARK_DISPLAY_DATA = {
     .status_bar = {
         .data = STYLESHEET_360_360_DARK_STATUS_BAR_DATA,
         .visual_mode = StatusBar::VisualMode::HIDE,
@@ -25,7 +27,7 @@ constexpr Display::Data STYLESHEET_360_360_DARK_DISPLAY_DATA = {
         .visual_mode = NavigationBar::VisualMode::HIDE,
     },
     .app_launcher = {
-        .data = STYLESHEET_360_360_DARK_APP_LAUNCHER_DATA,
+        .data = made_launcher_data(),
         .default_image = gui::StyleImage::IMAGE(&esp_brookesia_image_small_app_launcher_default_98_98),
     },
     .recents_screen = {
@@ -59,7 +61,7 @@ constexpr Manager::Data STYLESHEET_360_360_DARK_MANAGER_DATA = {
     },
 };
 
-constexpr Stylesheet STYLESHEET_360_360_DARK = {
+const Stylesheet STYLESHEET_360_360_DARK = {
     .core = STYLESHEET_360_360_DARK_CORE_DATA,
     .display = STYLESHEET_360_360_DARK_DISPLAY_DATA,
     .manager = STYLESHEET_360_360_DARK_MANAGER_DATA,

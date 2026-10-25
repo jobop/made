@@ -9,6 +9,9 @@
 #include "esp_http_client.h"
 #include "esp_crt_bundle.h"
 #include "esp_ota_ops.h"
+#include "esp_mac.h"
+#include "esp_netif_sntp.h"
+#include "esp_random.h"
 #include "mbedtls/md.h"
 #include "nvs.h"
 #include "nvs_flash.h"
@@ -27,6 +30,9 @@
 #include <thread>
 #include <vector>
 #include <unistd.h>
+#include <sys/stat.h>
+#include <sys/time.h>
+#include <stdlib.h>
 
 #ifdef __ANDROID__
 #include <SDL2/SDL.h>
@@ -41,10 +47,13 @@ static std::mutex nvs_mutex;
 // 安卓上把 NVS 落到私有目录，重启不丢；PC sim 保持纯内存。
 #ifdef __ANDROID__
 static std::string nvs_file_path() {
-    char *base = SDL_GetPrefPath("made", "made");
-    std::string p = std::string(base ? base : ".") + "nvs.bin";
-    SDL_free(base);
-    return p;
+    // 不能用 SDL_GetPrefPath：NVS 读写大多发生在 worker 线程（无 JNI env），
+    // 它在安卓上会失败并静默回落 "."，写入 "/" 无权限 → 所有保存悄悄丢失。
+    // SDL_AndroidGetInternalStoragePath 的值在主线程初始化后缓存，线程安全。
+    const char *base = SDL_AndroidGetInternalStoragePath();
+    const std::string dir = base ? base : "/data/local/tmp";
+    if (base) mkdir(dir.c_str(), 0755);
+    return dir + "/nvs.bin";
 }
 static void nvs_load_locked() {
     std::ifstream f(nvs_file_path(), std::ios::binary);
@@ -66,7 +75,8 @@ static void nvs_load_locked() {
     }
 }
 static void nvs_save_locked() {
-    std::ofstream f(nvs_file_path(), std::ios::binary | std::ios::trunc);
+    const std::string save_path = nvs_file_path();
+    std::ofstream f(save_path, std::ios::binary | std::ios::trunc);
     if (!f) return;
     f.write("NVS1", 4);
     for (const auto &[k, v] : nvs_store) {
@@ -126,6 +136,34 @@ void esp_restart(void) { fprintf(stderr, "sim: esp_restart() called\n"); exit(0)
 uint32_t esp_get_free_heap_size(void) { return 200 * 1024; }
 uint32_t esp_get_minimum_free_heap_size(void) { return 180 * 1024; }
 uint32_t esp_random(void) { return (uint32_t)arc4random(); }
+
+/* ---------------- esp_mac / esp_random / sntp（真机配对路径用） ---------------- */
+esp_err_t esp_read_mac(uint8_t *mac, esp_mac_type_t type)
+{
+    if (!mac) return ESP_ERR_INVALID_ARG;
+    // 固定本地管理位 MAC（02 = locally administered），"MADE" + 槽位号。
+    // 同一台机器设备编号稳定，桥接器据此区分设备；不同 type 偏移避免串号。
+    mac[0] = 0x02; mac[1] = 'M'; mac[2] = 'A'; mac[3] = 'D'; mac[4] = 'E';
+    mac[5] = (uint8_t)(0x10 + (int)type);
+    return ESP_OK;
+}
+
+void esp_fill_random(void *buf, size_t len)
+{
+    if (buf && len) arc4random_buf(buf, len);
+}
+
+esp_err_t esp_netif_sntp_init(const esp_sntp_config_t *config)
+{
+    // 宿主系统时钟本身可信（macOS/Android 维护），init 即视为同步完成。
+    // 配置了 sync_cb 就同步回调一次，让 clock_synced 置位（HTTPS 证书时间校验放行）。
+    if (config && config->sync_cb) {
+        struct timeval now = {};
+        gettimeofday(&now, nullptr);
+        config->sync_cb(&now);
+    }
+    return ESP_OK;
+}
 
 /* ---------------- esp_timer ---------------- */
 int64_t esp_timer_get_time(void)
@@ -390,7 +428,13 @@ esp_http_client_handle_t esp_http_client_init(const esp_http_client_config_t *co
 {
     if (!config || !config->url) return nullptr;
     // config.url 指向调用方临时 string，这里拷贝一份。
-    return new esp_http_client{/*.url=*/std::string(config->url), /*.method=*/"GET",
+    // method 必须读 config.method（真机 IDF 行为）：vibe_voice 上传只设
+    // config.method=HTTP_METHOD_POST，从不调 set_method，桩若硬编码 GET
+    // 桥接器会回 404 未找到接口。
+    static const char *kMethodNames[] = {"GET", "POST", "PUT", "DELETE", "HEAD", "PATCH"};
+    const auto m = static_cast<esp_http_client_method_t>(
+        config->method < HTTP_METHOD_PATCH ? config->method : HTTP_METHOD_GET);
+    return new esp_http_client{/*.url=*/std::string(config->url), /*.method=*/kMethodNames[m],
                                /*.body=*/{}, /*.headers=*/{}, /*.conf=*/config,
                                /*.status=*/0, /*.resp_body=*/{}, /*.read_pos=*/0,
                                /*.content_length=*/-1, /*.opened=*/false};
@@ -453,19 +497,40 @@ static bool sim_http_exchange(esp_http_client_handle_t client)
     close(fd);
 
     const size_t head_end = raw.find("\r\n\r\n");
+    std::string lower_head = head_end == std::string::npos ? raw : raw.substr(0, head_end);
+    for (auto &ch : lower_head) ch = (char)tolower((unsigned char)ch);
+    const bool chunked = lower_head.find("transfer-encoding: chunked") != std::string::npos;
     const std::string head = head_end == std::string::npos ? raw : raw.substr(0, head_end);
-    client->resp_body = head_end == std::string::npos ? std::string() : raw.substr(head_end + 4);
+    std::string body_raw = head_end == std::string::npos ? std::string() : raw.substr(head_end + 4);
     // 状态码
     if (head.rfind("HTTP/", 0) == 0) {
         const size_t sp = head.find(' ');
         client->status = sp == std::string::npos ? 0 : atoi(head.c_str() + sp + 1);
     }
-    // Content-Length（分块编码就不裁了，桩服务器不会用）
-    if (head.find("Transfer-Encoding: chunked") == std::string::npos) {
+    if (chunked) {
+        // Node 侧常用 chunked；真机 esp_http_client 会自动解帧，这里必须同样
+        // 解掉 hex 长度行，否则响应体带 "92\r\n" 前缀，cJSON 直接解析失败。
+        std::string decoded;
+        size_t pos = 0;
+        while (pos < body_raw.size()) {
+            const size_t line_end = body_raw.find("\r\n", pos);
+            if (line_end == std::string::npos) break;
+            const long chunk_size = strtol(body_raw.c_str() + pos, nullptr, 16);
+            if (chunk_size <= 0) break;
+            const size_t data_start = line_end + 2;
+            if (data_start + (size_t)chunk_size > body_raw.size()) {
+                decoded.append(body_raw, data_start, std::string::npos);
+                break;
+            }
+            decoded.append(body_raw, data_start, (size_t)chunk_size);
+            pos = data_start + (size_t)chunk_size + 2; // 跳过数据后的 CRLF
+        }
+        client->resp_body = std::move(decoded);
+        client->content_length = -1;
+    } else {
+        client->resp_body = std::move(body_raw);
         const size_t cl = head.find("Content-Length:");
         if (cl != std::string::npos) client->content_length = atoll(head.c_str() + cl + 15);
-    } else {
-        client->content_length = -1;
     }
     return client->status > 0;
 }
@@ -526,7 +591,21 @@ esp_err_t esp_crt_bundle_attach(void *conf) { (void)conf; return ESP_OK; }
 
 /* ---------------- GPIO（BOOT 按钮永远松开） ---------------- */
 esp_err_t gpio_config(const gpio_config_t *config) { (void)config; return ESP_OK; }
-int gpio_get_level(gpio_num_t gpio_num) { (void)gpio_num; return 1; }
+int gpio_get_level(gpio_num_t gpio_num)
+{
+    // 宿主 BOOT 键：marker 文件存在 = 按下。桌面端 /tmp/vibe_boot，
+    // Android 端 /data/local/tmp/vibe_boot（adb touch/rm 控制按住与松开）。
+    if (gpio_num == GPIO_NUM_0) {
+#ifdef __ANDROID__
+        static const char *marker = "/data/local/tmp/vibe_boot";
+#else
+        static const char *marker = "/tmp/vibe_boot";
+#endif
+        struct stat st;
+        return stat(marker, &st) == 0 ? 0 : 1;
+    }
+    return 1;
+}
 esp_err_t gpio_set_level(gpio_num_t gpio_num, uint32_t level) { (void)gpio_num; (void)level; return ESP_OK; }
 esp_err_t gpio_reset_pin(gpio_num_t gpio_num) { (void)gpio_num; return ESP_OK; }
 esp_err_t gpio_install_isr_service(int flags) { (void)flags; return ESP_OK; }
@@ -553,6 +632,133 @@ int mbedtls_md_update(mbedtls_md_context_t *, const unsigned char *, size_t) { r
 int mbedtls_md_finish(mbedtls_md_context_t *, unsigned char *output)
 {
     if (output) memset(output, 0, 32);
+    return 0;
+}
+
+/* ---------------- SHA-256 / HMAC-SHA256（真实实现） ----------------
+ * /pair/verify 的 HMAC 回签与配对应答签名都依赖 mbedtls_md_hmac，
+ * 假桩会让握手永远失败，这里给出独立的 SHA-256 实现。 */
+namespace {
+
+struct Sha256Ctx {
+    uint32_t state[8];
+    uint64_t bitlen;
+    uint8_t buffer[64];
+    size_t buflen;
+};
+
+constexpr uint32_t kSha256K[64] = {
+    0x428a2f98,0x71374491,0xb5c0fbcf,0xe9b5dba5,0x3956c25b,0x59f111f1,0x923f82a4,0xab1c5ed5,
+    0xd807aa98,0x12835b01,0x243185be,0x550c7dc3,0x72be5d74,0x80deb1fe,0x9bdc06a7,0xc19bf174,
+    0xe49b69c1,0xefbe4786,0x0fc19dc6,0x240ca1cc,0x2de92c6f,0x4a7484aa,0x5cb0a9dc,0x76f988da,
+    0x983e5152,0xa831c66d,0xb00327c8,0xbf597fc7,0xc6e00bf3,0xd5a79147,0x06ca6351,0x14292967,
+    0x27b70a85,0x2e1b2138,0x4d2c6dfc,0x53380d13,0x650a7354,0x766a0abb,0x81c2c92e,0x92722c85,
+    0xa2bfe8a1,0xa81a664b,0xc24b8b70,0xc76c51a3,0xd192e819,0xd6990624,0xf40e3585,0x106aa070,
+    0x19a4c116,0x1e376c08,0x2748774c,0x34b0bcb5,0x391c0cb3,0x4ed8aa4a,0x5b9cca4f,0x682e6ff3,
+    0x748f82ee,0x78a5636f,0x84c87814,0x8cc70208,0x90befffa,0xa4506ceb,0xbef9a3f7,0xc67178f2};
+
+inline uint32_t rotr32(uint32_t v, int n) { return (v >> n) | (v << (32 - n)); }
+
+void sha256_init(Sha256Ctx &c)
+{
+    static const uint32_t init[8] = {0x6a09e667,0xbb67ae85,0x3c6ef372,0xa54ff53a,
+                                     0x510e527f,0x9b05688c,0x1f83d9ab,0x5be0cd19};
+    memcpy(c.state, init, sizeof(init));
+    c.bitlen = 0;
+    c.buflen = 0;
+}
+
+void sha256_block(Sha256Ctx &c, const uint8_t *p)
+{
+    uint32_t w[64];
+    for (int i = 0; i < 16; ++i)
+        w[i] = (uint32_t)p[i*4] << 24 | (uint32_t)p[i*4+1] << 16 |
+               (uint32_t)p[i*4+2] << 8 | (uint32_t)p[i*4+3];
+    for (int i = 16; i < 64; ++i) {
+        uint32_t s0 = rotr32(w[i-15],7) ^ rotr32(w[i-15],18) ^ (w[i-15] >> 3);
+        uint32_t s1 = rotr32(w[i-2],17) ^ rotr32(w[i-2],19) ^ (w[i-2] >> 10);
+        w[i] = w[i-16] + s0 + w[i-7] + s1;
+    }
+    uint32_t a=c.state[0],b=c.state[1],d=c.state[3],e=c.state[4];
+    uint32_t cc=c.state[2],f=c.state[5],g=c.state[6],h=c.state[7];
+    for (int i = 0; i < 64; ++i) {
+        uint32_t S1 = rotr32(e,6) ^ rotr32(e,11) ^ rotr32(e,25);
+        uint32_t ch = (e & f) ^ (~e & g);
+        uint32_t t1 = h + S1 + ch + kSha256K[i] + w[i];
+        uint32_t S0 = rotr32(a,2) ^ rotr32(a,13) ^ rotr32(a,22);
+        uint32_t maj = (a & b) ^ (a & cc) ^ (b & cc);
+        uint32_t t2 = S0 + maj;
+        h=g; g=f; f=e; e=d+t1; d=cc; cc=b; b=a; a=t1+t2;
+    }
+    c.state[0]+=a; c.state[1]+=b; c.state[2]+=cc; c.state[3]+=d;
+    c.state[4]+=e; c.state[5]+=f; c.state[6]+=g; c.state[7]+=h;
+}
+
+void sha256_update(Sha256Ctx &c, const uint8_t *data, size_t len)
+{
+    c.bitlen += (uint64_t)len * 8;
+    while (len > 0) {
+        size_t take = 64 - c.buflen;
+        if (take > len) take = len;
+        memcpy(c.buffer + c.buflen, data, take);
+        c.buflen += take; data += take; len -= take;
+        if (c.buflen == 64) { sha256_block(c, c.buffer); c.buflen = 0; }
+    }
+}
+
+void sha256_final(Sha256Ctx &c, uint8_t out[32])
+{
+    uint64_t bitlen = c.bitlen;
+    uint8_t pad = 0x80;
+    sha256_update(c, &pad, 1);
+    uint8_t zero = 0;
+    while (c.buflen != 56) sha256_update(c, &zero, 1);
+    uint8_t lenbuf[8];
+    for (int i = 0; i < 8; ++i) lenbuf[i] = (uint8_t)(bitlen >> (56 - i * 8));
+    // bitlen 已在 update 里累加，改用局部状态写长度避免二次计数。
+    memcpy(c.buffer + 56, lenbuf, 8);
+    sha256_block(c, c.buffer);
+    for (int i = 0; i < 8; ++i) {
+        out[i*4]   = (uint8_t)(c.state[i] >> 24);
+        out[i*4+1] = (uint8_t)(c.state[i] >> 16);
+        out[i*4+2] = (uint8_t)(c.state[i] >> 8);
+        out[i*4+3] = (uint8_t)(c.state[i]);
+    }
+}
+
+void sha256(const uint8_t *data, size_t len, uint8_t out[32])
+{
+    Sha256Ctx c;
+    sha256_init(c);
+    sha256_update(c, data, len);
+    sha256_final(c, out);
+}
+
+} // namespace
+
+int mbedtls_md_hmac(const mbedtls_md_info_t *, const unsigned char *key, size_t keylen,
+                    const unsigned char *input, size_t ilen, unsigned char *output)
+{
+    if (!key || !input || !output) return MBEDTLS_ERR_MD_BAD_INPUT_DATA;
+    uint8_t key_block[64] = {};
+    if (keylen > 64) sha256(key, keylen, key_block);
+    else memcpy(key_block, key, keylen);
+
+    uint8_t ipad[64], opad[64];
+    for (int i = 0; i < 64; ++i) {
+        ipad[i] = key_block[i] ^ 0x36;
+        opad[i] = key_block[i] ^ 0x5c;
+    }
+    uint8_t inner[32];
+    Sha256Ctx c;
+    sha256_init(c);
+    sha256_update(c, ipad, 64);
+    sha256_update(c, input, ilen);
+    sha256_final(c, inner);
+    sha256_init(c);
+    sha256_update(c, opad, 64);
+    sha256_update(c, inner, 32);
+    sha256_final(c, output);
     return 0;
 }
 

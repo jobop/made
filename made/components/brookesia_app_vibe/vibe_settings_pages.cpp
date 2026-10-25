@@ -16,6 +16,7 @@
 #include "vibe_motion.hpp"
 #include "cJSON.h"
 #include "bsp/display.h"
+#include "bsp/esp-bsp.h"
 #include "driver/gpio.h"
 #include "driver/rtc_io.h"
 #include "esp_crt_bundle.h"
@@ -202,11 +203,9 @@ void VibeCoding::shutdownDevice()
     (void)bsp_display_backlight_off();
     // BOOT 是按住说话，不能拿来开机。触摸中断脚平时被上拉为高，
     // 点屏幕时被拉低。等手指离开后再睡，避免这一下立刻把机器唤醒。
-#if CONFIG_BSP_BOARD_LCD_2_8
-    constexpr gpio_num_t wake_pin = GPIO_NUM_17;
-#else
-    constexpr gpio_num_t wake_pin = GPIO_NUM_4;
-#endif
+    // 唤醒脚即触摸中断脚，板级差异（方屏 GPIO4 / 2.8 寸矩形 GPIO17）由 BSP
+    // 头定义，UI 只引用宏，不做编译期分支；sim/安卓由 shim 提供占位值。
+    constexpr gpio_num_t wake_pin = (gpio_num_t)BSP_LCD_TOUCH_INT;
     for (int i = 0; i < 100 && gpio_get_level(wake_pin) == 0; ++i)
         vTaskDelay(pdMS_TO_TICKS(20));
     vTaskDelay(pdMS_TO_TICKS(40));

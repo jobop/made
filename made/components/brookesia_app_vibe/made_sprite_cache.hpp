@@ -17,6 +17,11 @@ namespace made_sprite_cache {
 // 拉取函数：由 VibeCoding::request 注入（自动走 LAN/USB/接收器三条链路）。
 using Fetch = std::function<bool(const std::string &path, std::string &out, int &status)>;
 
+// 覆盖缓存根目录：真机固定 /spiffs（SPIFFS 挂载点）；sim/安卓是普通目录，
+// 由宿主入口注入（安卓应用私有目录 / PC sim 用 MADE_SIM_SPIFFS_DIR）。
+// 必须在 ensure/load 系列之前调用；空串拒绝不生效。
+void set_mount(const std::string &dir);
+
 // 该助手素材的缓存目录前缀（"/spiffs/s<hash6>_"），供 LVGL 侧拼 PNG 路径。
 std::string baseDir(const std::string &provider);
 

@@ -17,10 +17,84 @@
 #include <cstdlib>
 #include <cstring>
 #include <string>
+#include <chrono>
+#include <thread>
+#include <vector>
+#include <cstdio>
+
+/* ---------------- board_voice_audio 宿主麦克风 ----------------
+ * 设 MADE_SIM_MIC_WAV 指向 16k/单声道/s16 WAV 文件，bsp_extra_i2s_read 就按
+ * 实时节奏把文件内容当成麦克风流（循环播放，封成 ES7210 的 4 槽 TDM 帧，
+ * 槽 0/2 同音）。不设则维持「无麦克风」。sim 与 Android 共用这一份实现。 */
+namespace {
+struct HostMic {
+    bool tried = false;
+    bool ok = false;
+    std::vector<int16_t> samples;
+    size_t delivered = 0;
+    std::chrono::steady_clock::time_point start{};
+
+    void ensure()
+    {
+        if (tried) return;
+        tried = true;
+        const char *path = getenv("MADE_SIM_MIC_WAV");
+#ifdef __ANDROID__
+        // Android 上没有 adb 可设的进程环境，约定固定路径：文件存在即麦克风源。
+        const char *android_default = "/data/user/0/org.libsdl.app/files/mic.wav";
+        if (!path || !path[0]) path = android_default;
+#endif
+        if (!path || !path[0]) return;
+        FILE *f = fopen(path, "rb");
+        if (!f) { fprintf(stderr, "sim-mic: cannot open %s\n", path); return; }
+        std::vector<uint8_t> bytes;
+        uint8_t buf[8192]; size_t n;
+        while ((n = fread(buf, 1, sizeof(buf), f)) > 0) bytes.insert(bytes.end(), buf, buf + n);
+        fclose(f);
+        // 最小 RIFF 解析：找 fmt 与 data 块，只收 PCM 16-bit。
+        if (bytes.size() < 44 || memcmp(bytes.data(), "RIFF", 4) != 0 ||
+            memcmp(bytes.data() + 8, "WAVE", 4) != 0) {
+            fprintf(stderr, "sim-mic: %s is not a WAV file\n", path); return;
+        }
+        uint32_t rate = 0; bool pcm16 = false; int channels = 1; size_t data_off = 0, data_len = 0;
+        size_t p = 12;
+        while (p + 8 <= bytes.size()) {
+            const char *id = reinterpret_cast<const char *>(bytes.data() + p);
+            const uint32_t size = (uint32_t)bytes[p+4] | (uint32_t)bytes[p+5] << 8 |
+                                  (uint32_t)bytes[p+6] << 16 | (uint32_t)bytes[p+7] << 24;
+            if (!memcmp(id, "fmt ", 4) && size >= 16) {
+                const uint16_t fmt = (uint16_t)bytes[p+8] | (uint16_t)bytes[p+9] << 8;
+                rate = (uint32_t)bytes[p+12] | (uint32_t)bytes[p+13] << 8 |
+                       (uint32_t)bytes[p+14] << 16 | (uint32_t)bytes[p+15] << 24;
+                pcm16 = fmt == 1;
+                channels = (int)bytes[p+10] | (int)bytes[p+11] << 8;
+                if (channels < 1) channels = 1;
+            } else if (!memcmp(id, "data", 4)) {
+                data_off = p + 8;
+                data_len = size && p + 8 + size <= bytes.size() ? size : bytes.size() - p - 8;
+            }
+            p += 8 + size + (size & 1);
+        }
+        if (!pcm16 || rate != 16000 || data_len < 2) {
+            fprintf(stderr, "sim-mic: %s must be PCM16/16kHz (rate=%u pcm=%d)\n", path, rate, (int)pcm16);
+            return;
+        }
+        const size_t frame_bytes = 2 * (size_t)channels;
+        const size_t frame_count = data_len / frame_bytes;
+        samples.resize(frame_count);  // 立体声取左声道
+        for (size_t i = 0; i < frame_count; ++i) {
+            const uint8_t *s = bytes.data() + data_off + i * frame_bytes;
+            samples[i] = (int16_t)((uint16_t)s[0] | (uint16_t)s[1] << 8);
+        }
+        ok = true;
+        fprintf(stderr, "sim-mic: %u samples from %s\n", (unsigned)samples.size(), path);
+    }
+};
+HostMic &host_mic() { static HostMic m; return m; }
+} // namespace
 
 extern "C" {
 
-/* ---------------- board_voice_audio ---------------- */
 esp_err_t bsp_extra_audio_session_acquire(bsp_extra_audio_owner_t owner) { (void)owner; return ESP_OK; }
 esp_err_t bsp_extra_audio_session_release(bsp_extra_audio_owner_t owner) { (void)owner; return ESP_OK; }
 bsp_extra_audio_owner_t bsp_extra_audio_session_get_owner(void) { return BSP_EXTRA_AUDIO_OWNER_NONE; }
@@ -34,7 +108,7 @@ const char *bsp_extra_audio_owner_name(bsp_extra_audio_owner_t owner)
 }
 esp_err_t bsp_extra_codec_set_voice_fs(uint32_t rate, uint32_t bits, uint8_t channels,
                                        uint16_t slot_mask, uint16_t gain_mask)
-{ (void)rate; (void)bits; (void)channels; (void)slot_mask; (void)gain_mask; return ESP_ERR_NOT_SUPPORTED; }
+{ (void)rate; (void)bits; (void)channels; (void)slot_mask; (void)gain_mask; return ESP_OK; }
 esp_err_t bsp_extra_codec_set_fs(uint32_t rate, uint32_t bits, i2s_slot_mode_t channels)
 { (void)rate; (void)bits; (void)channels; return ESP_ERR_NOT_SUPPORTED; }
 int bsp_extra_out_volume_get(void) { return 50; }
@@ -42,7 +116,30 @@ esp_err_t bsp_extra_out_volume_set(int volume) { (void)volume; return ESP_OK; }
 esp_err_t bsp_extra_codec_dev_stop(void) { return ESP_OK; }
 esp_err_t bsp_extra_codec_mute_set(bool muted) { (void)muted; return ESP_OK; }
 esp_err_t bsp_extra_i2s_read(void *buffer, size_t length, size_t *bytes_read, uint32_t timeout_ms)
-{ (void)buffer; (void)length; (void)timeout_ms; *bytes_read = 0; return ESP_ERR_INVALID_STATE; }
+{
+    (void)timeout_ms;
+    if (!buffer || !bytes_read) return ESP_ERR_INVALID_ARG;
+    HostMic &m = host_mic();
+    m.ensure();
+    if (!m.ok || m.samples.empty()) { *bytes_read = 0; return ESP_ERR_INVALID_STATE; }
+    const size_t frames = length / (4 * sizeof(int16_t));
+    if (frames == 0) { *bytes_read = 0; return ESP_ERR_INVALID_ARG; }
+    // 实时节奏：每毫秒 16 帧。首块启动计时，领先就睡到点。
+    if (m.delivered == 0) m.start = std::chrono::steady_clock::now();
+    const auto due = m.start + std::chrono::milliseconds((m.delivered + frames) / 16);
+    std::this_thread::sleep_until(due);
+    auto *out = static_cast<int16_t *>(buffer);
+    for (size_t i = 0; i < frames; ++i) {
+        const int16_t s = m.samples[m.delivered % m.samples.size()];
+        out[i * 4 + 0] = s;  // 槽 0
+        out[i * 4 + 1] = 0;
+        out[i * 4 + 2] = s;  // 槽 2
+        out[i * 4 + 3] = 0;
+        ++m.delivered;
+    }
+    *bytes_read = frames * 4 * sizeof(int16_t);
+    return ESP_OK;
+}
 esp_err_t bsp_extra_i2s_write(void *buffer, size_t length, size_t *bytes_written, uint32_t timeout_ms)
 { (void)buffer; (void)length; (void)timeout_ms; *bytes_written = 0; return ESP_ERR_INVALID_STATE; }
 
@@ -101,50 +198,9 @@ void begin_high_throughput() {}
 void end_high_throughput() {}
 } // namespace vibe_wifi
 
-/* ---------------- vibe_pairing ---------------- */
-namespace vibe_pairing {
-namespace {
-bool paired_mode() { return getenv("MADE_SIM_PAIRING") && strcmp(getenv("MADE_SIM_PAIRING"), "paired") == 0; }
-Snapshot &state()
-{
-    static Snapshot snap = [] {
-        Snapshot s;
-        if (paired_mode()) {
-            s.phase = Phase::Paired;
-            s.url = "http://127.0.0.1:8788";
-            s.token = "sim-token";
-            s.bridge_id = "sim-bridge";
-            s.message = "";
-            s.access_mode = AccessMode::Automatic;
-            s.revision = 1;
-        }
-        return s;
-    }();
-    return snap;
-}
-}
-
-void initialize() {}
-void apply_pending_access() {}
-void begin_foreground_connection() {}
-void suspend_foreground() {}
-void suspend_receiver() {}
-bool authorized_for_foreground() { return paired_mode(); }
-void tick() {}
-Snapshot snapshot() { return state(); }
-void reconnect() {}
-void forget() {}
-void retry() {}
-bool set_manual_endpoint(const std::string &host, uint16_t port, bool https, std::string &error)
-{ (void)host; (void)port; (void)https; (void)error; return true; }
-bool use_automatic_discovery() { return true; }
-void scan_bridges() {}
-bool select_bridge(const std::string &id, const std::string &url) { (void)id; (void)url; return true; }
-bool use_receiver() { return false; }
-bool use_usb_direct() { return false; }
-bool tls_time_ready() { return true; }
-bool tls_time_failed() { return false; }
-} // namespace vibe_pairing
+/* vibe_pairing 不再桩化：真实实现 made/components/vibe_pairing/vibe_pairing.cpp
+ * 直接参与宿主构建（配对、NVS 持久化、HMAC 握手全部真跑），
+ * 其依赖（esp_mac/esp_random/sntp/mbedtls_md_hmac）由 esp_stubs.cpp 提供。 */
 
 /* ---------------- vibe_phone_setup ---------------- */
 namespace vibe_phone_setup {
@@ -184,17 +240,8 @@ esp_err_t receiver_request(const std::string &path, bool post, const std::string
   status = 0; return ESP_ERR_INVALID_STATE; }
 } // namespace vibe_usb
 
-/* ---------------- vibe_voice ---------------- */
-namespace vibe_voice {
-bool start(const std::string &bridge_url, const std::string &token, const std::string &provider,
-           const std::string &project_id, const std::string &session_id, bool hold_mode)
-{ (void)bridge_url; (void)token; (void)provider; (void)project_id; (void)session_id;
-  (void)hold_mode; return false; }
-void finish() {}
-void cancel() {}
-Status status() { return Status{Phase::Idle, "", "", false}; }
-} // namespace vibe_voice
-
+// vibe_voice 不在这里桩了：真实现 vibe_voice_capture.cpp 已直接进
+// sim/Makefile 与 Android CMakeLists（录音走 HostMic WAV 桩 + marker BOOT 键）。
 /* ---------------- vibe_motion（host 无 IMU，摇晃感知不启动） ---------------- */
 #include "vibe_motion.hpp"
 namespace vibe_motion {
