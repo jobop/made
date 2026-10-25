@@ -567,4 +567,8 @@ esp_err_t rtc_gpio_pulldown_dis(gpio_num_t) { return ESP_OK; }
 int bsp_display_backlight_on(void) { printf("sim: backlight on\n"); return 0; }
 int bsp_display_backlight_off(void) { printf("sim: backlight off\n"); return 0; }
 
+// 运行时屏幕尺寸（安卓 main() 启动时设置）
+int g_made_screen_w = 0;
+int g_made_screen_h = 0;
+
 } // extern "C"

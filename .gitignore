@@ -41,7 +41,11 @@ receiver/build*/
 
 # UI 模拟器（host 构建产物与截图）
 sim/build/
+sim/build-*/
+sim/build_old/
+
+# 安卓/本地交付产物（APK、截图）
+outputs/
 
 # AI 生图草稿（本地产物，非源码）
 generated-images/
-sim/build_old/
