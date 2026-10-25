@@ -102,8 +102,9 @@ int main(int argc, char **argv)
     // 先探测真实物理尺寸，再用它创建窗口——SDL_CreateWindow 传入的尺寸会被
     // SDL2-Android 当作渲染目标尺寸，事后 set_resolution 不一定能让 surface 回到
     // 全屏；所以必须在 create 之前拿到真实尺寸。
-    // 优先级：JNI getRealSize（原生、最权威）> SDL_GetCurrentDisplayMode >
-    // SDL_GetDisplayBounds > 编译期兜底。
+    // 来源依次尝试：JNI getRealSize（原生、最权威）> SDL_GetCurrentDisplayMode >
+    // SDL_GetDisplayBounds。拿不到就直接失败退出，绝不使用编译期默认值静默兜底
+    // （否则 UI 会按错误尺寸渲染，问题被掩盖）。
     int real_w = 0, real_h = 0;
     int jw = 0, jh = 0;
     if (jniGetRealSize(jw, jh)) {
@@ -118,10 +119,13 @@ int main(int argc, char **argv)
         } else if (n > 0 && SDL_GetDisplayBounds(0, &b) == 0 && b.w > 0 && b.h > 0) {
             real_w = b.w; real_h = b.h;
             SDL_Log("made: use DisplayBounds %dx%d", real_w, real_h);
-        } else {
-            real_w = BSP_LCD_H_RES; real_h = BSP_LCD_V_RES;
-            SDL_Log("made: display query failed, fallback compile-time %dx%d", real_w, real_h);
         }
+    }
+    if (real_w <= 0 || real_h <= 0) {
+        SDL_Log("FATAL: made cannot determine physical screen size; refusing to start "
+                "(JNI/SDL display queries all returned invalid)");
+        SDL_Quit();
+        return 1;
     }
     // 竖屏统一为 w<=h（UI 按竖屏设计）。
     if (real_w > real_h) { int t = real_w; real_w = real_h; real_h = t; }
