@@ -7,6 +7,14 @@
 #include "vibe_ui_shared.hpp"
 
 #include <cstdio>
+#include <cstdarg>
+
+// 跨平台调试日志通道：安卓由 main.cpp 强定义走 SDL_Log（裸 printf 不进 logcat），
+// 其它平台用 weak 版本走 printf。
+extern "C" __attribute__((weak)) void made_dbg(const char *s) {
+    printf("%s\n", s);
+    fflush(stdout);
+}
 
 #include "esp_log.h"
 #include "esp_timer.h"
@@ -92,7 +100,7 @@ void VibeCoding::buildHomeStage()
     lv_obj_set_width(page_label_, made_s(60));
     lv_obj_set_style_text_align(page_label_, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_set_style_text_color(page_label_, lv_color_hex(VT(text_hint)), 0);
-    lv_obj_set_style_text_font(page_label_, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_font(page_label_, made_icon_font(12), 0);
 
     // Creating a conversation is explicit. This touch target is large enough
     // for the small round screen and never doubles as the record button.
@@ -114,7 +122,7 @@ void VibeCoding::buildHomeStage()
     lv_obj_t *new_session_mark = lv_label_create(new_session_button_);
     lv_label_set_text(new_session_mark, LV_SYMBOL_PLUS);
     lv_obj_set_style_text_color(new_session_mark, lv_color_hex(VT(text_on_accent)), 0);
-    lv_obj_set_style_text_font(new_session_mark, &lv_font_montserrat_26, 0);
+    lv_obj_set_style_text_font(new_session_mark, made_icon_font(26), 0);
     lv_obj_remove_flag(new_session_mark, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_center(new_session_mark);
 
@@ -134,7 +142,7 @@ void VibeCoding::buildHomeStage()
     lv_obj_t *delete_session_mark = lv_label_create(delete_session_button_);
     lv_label_set_text(delete_session_mark, LV_SYMBOL_MINUS);
     lv_obj_set_style_text_color(delete_session_mark, lv_color_hex(VT(text_secondary)), 0);
-    lv_obj_set_style_text_font(delete_session_mark, &lv_font_montserrat_26, 0);
+    lv_obj_set_style_text_font(delete_session_mark, made_icon_font(26), 0);
     lv_obj_remove_flag(delete_session_mark, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_center(delete_session_mark);
     lv_obj_add_flag(delete_session_button_, LV_OBJ_FLAG_HIDDEN);
@@ -153,7 +161,7 @@ void VibeCoding::buildSettingsHome()
     lv_obj_t *gear_icon = lv_label_create(settings_button_);
     lv_label_set_text(gear_icon, LV_SYMBOL_SETTINGS);
     lv_obj_set_style_text_color(gear_icon, lv_color_hex(VT(text_primary)), 0);
-    lv_obj_set_style_text_font(gear_icon, &lv_font_montserrat_26, 0);
+    lv_obj_set_style_text_font(gear_icon, made_icon_font(26), 0);
     lv_obj_remove_flag(gear_icon, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_center(gear_icon);
 
@@ -187,7 +195,7 @@ void VibeCoding::buildSettingsHome()
     lv_obj_t *settings_back_icon = lv_label_create(settings_back);
     lv_label_set_text(settings_back_icon, LV_SYMBOL_LEFT);
     lv_obj_set_style_text_color(settings_back_icon, lv_color_hex(VT(text_secondary)), 0);
-    lv_obj_set_style_text_font(settings_back_icon, &lv_font_montserrat_16, 0);
+    lv_obj_set_style_text_font(settings_back_icon, made_icon_font(16), 0);
     lv_obj_center(settings_back_icon);
     lv_obj_remove_flag(settings_back_icon, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_t *settings_rows = lv_obj_create(settings_home_);
@@ -220,14 +228,14 @@ void VibeCoding::buildSettingsHome()
         lv_obj_set_style_bg_opa(row, LV_OPA_COVER, LV_STATE_PRESSED);
         lv_obj_set_style_radius(row, 0, 0);
         lv_obj_set_style_border_color(row, lv_color_hex(VT(border)), 0);
-        lv_obj_set_style_border_width(row, 1, 0);
+        lv_obj_set_style_border_width(row, made_s(1), 0);
         lv_obj_set_style_border_side(row, LV_BORDER_SIDE_BOTTOM, 0);
         lv_obj_set_style_pad_all(row, 0, 0);
         // 裸图标：直接用 tint 色线性图标，去掉 icon_box 色块。
         lv_obj_t *icon = lv_label_create(row);
         lv_label_set_text(icon, symbol);
         lv_obj_set_style_text_color(icon, lv_color_hex(VT(text_accent)), 0);
-        lv_obj_set_style_text_font(icon, &lv_font_montserrat_16, 0);
+        lv_obj_set_style_text_font(icon, made_icon_font(16), 0);
         lv_obj_align(icon, LV_ALIGN_LEFT_MID, made_s(10), 0);
         lv_obj_remove_flag(icon, LV_OBJ_FLAG_CLICKABLE);
         lv_obj_t *name = lv_label_create(row);
@@ -240,7 +248,7 @@ void VibeCoding::buildSettingsHome()
         lv_obj_t *chevron = lv_label_create(row);
         lv_label_set_text(chevron, LV_SYMBOL_RIGHT);
         lv_obj_set_style_text_color(chevron, lv_color_hex(VT(text_hint)), 0);
-        lv_obj_set_style_text_font(chevron, &lv_font_montserrat_14, 0);
+        lv_obj_set_style_text_font(chevron, made_icon_font(14), 0);
         lv_obj_align(chevron, LV_ALIGN_RIGHT_MID, -made_s(12), 0);
         lv_obj_remove_flag(chevron, LV_OBJ_FLAG_CLICKABLE);
     };
@@ -511,7 +519,7 @@ void VibeCoding::buildNetworkAndEditorPanels()
         lv_obj_set_style_text_color(field, lv_color_hex(VT(text_primary)), LV_PART_MAIN);
         lv_obj_set_style_text_color(field, lv_color_hex(VT(text_hint)), LV_PART_TEXTAREA_PLACEHOLDER);
         lv_obj_set_style_border_color(field, lv_color_hex(VT(border)), LV_PART_MAIN);
-        lv_obj_set_style_border_width(field, 1, LV_PART_MAIN);
+        lv_obj_set_style_border_width(field, made_s(1), LV_PART_MAIN);
     }
     lv_obj_add_flag(access_editor_panel_, LV_OBJ_FLAG_HIDDEN);
     lv_obj_add_flag(access_panel_, LV_OBJ_FLAG_HIDDEN);
@@ -552,7 +560,7 @@ void VibeCoding::buildStatusWidgets()
     lv_obj_set_pos(provider_label_, made_x(70), made_home_y(302));
     lv_obj_set_style_text_align(provider_label_, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_set_style_text_color(provider_label_, lv_color_hex(VT(text_primary)), 0);
-    lv_obj_set_style_text_font(provider_label_, &lv_font_montserrat_26, 0);
+    lv_obj_set_style_text_font(provider_label_, made_icon_font(26), 0);
     made_text(provider_label_, 220, false);
 
     // 素材页顶部状态图标（单一位置换图标，设计稿 2026-10-19）：48×48
@@ -583,7 +591,7 @@ void VibeCoding::buildStatusWidgets()
     lv_obj_set_style_radius(status_dot_, LV_RADIUS_CIRCLE, 0);
     lv_obj_set_style_bg_opa(status_dot_, LV_OPA_COVER, 0);
     lv_obj_set_style_bg_color(status_dot_, lv_color_hex(VT(success)), 0);
-    lv_obj_set_style_border_width(status_dot_, 2, 0);
+    lv_obj_set_style_border_width(status_dot_, made_s(2), 0);
     lv_obj_set_style_border_color(status_dot_, lv_color_hex(VT(bg_page)), 0);
     lv_obj_clear_flag(status_dot_, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_add_flag(status_dot_, LV_OBJ_FLAG_HIDDEN);
@@ -591,7 +599,7 @@ void VibeCoding::buildStatusWidgets()
     unread_mark_ = lv_label_create(screen);
     lv_label_set_text(unread_mark_, LV_SYMBOL_BELL);
     lv_obj_set_pos(unread_mark_, made_x(320), made_y(10));
-    lv_obj_set_style_text_font(unread_mark_, &lv_font_montserrat_16, 0);
+    lv_obj_set_style_text_font(unread_mark_, made_icon_font(16), 0);
     lv_obj_set_style_text_color(unread_mark_, lv_color_hex(VT(accent)), 0);
     lv_obj_clear_flag(unread_mark_, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_add_flag(unread_mark_, LV_OBJ_FLAG_HIDDEN);
@@ -627,7 +635,7 @@ void VibeCoding::buildAnswerArea()
     lv_obj_set_pos(meta_label_, made_x(65), made_y(202));
     lv_obj_set_style_text_align(meta_label_, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_set_style_text_color(meta_label_, lv_color_hex(VT(text_primary)), 0);
-    lv_obj_set_style_text_font(meta_label_, &lv_font_montserrat_26, 0);
+    lv_obj_set_style_text_font(meta_label_, made_icon_font(26), 0);
     made_text(meta_label_, 230, false);
     lv_obj_add_flag(meta_label_, LV_OBJ_FLAG_HIDDEN);
 
@@ -646,7 +654,7 @@ void VibeCoding::buildAnswerArea()
     lv_obj_set_size(answer_area_, made_s(232), made_s(127));
     lv_obj_set_style_bg_opa(answer_area_, LV_OPA_TRANSP, 0);
     lv_obj_set_style_border_width(answer_area_, 0, 0);
-    lv_obj_set_style_pad_all(answer_area_, 5, 0);
+    lv_obj_set_style_pad_all(answer_area_, made_s(5), 0);
     lv_obj_set_overflow_visible(answer_area_, true);
     lv_obj_set_scroll_dir(answer_area_, LV_DIR_VER);
     lv_obj_set_scrollbar_mode(answer_area_, LV_SCROLLBAR_MODE_AUTO);
@@ -678,7 +686,7 @@ void VibeCoding::buildAnswerArea()
         };
         // provider_label_ 是主页精灵脚下的名字，不进这套抽屉控件堆叠
         // （旧版曾把它排到精灵身上，长屏上直接压脸）。字体仍适配小屏。
-        lv_obj_set_style_text_font(provider_label_, &lv_font_montserrat_20, 0);
+        lv_obj_set_style_text_font(provider_label_, made_icon_font(20), 0);
         place(position_label_, text_font, 2);
         lv_obj_set_height(position_label_, lv_font_get_line_height(text_font) + 2);
         lv_obj_set_pos(session_title_tap_, margin, y - lv_font_get_line_height(text_font) - 2);
@@ -691,7 +699,7 @@ void VibeCoding::buildAnswerArea()
         const int answer_h = bottom > y + line * 2 ? bottom - y : line * 3;
         lv_obj_set_pos(answer_area_, margin, y);
         lv_obj_set_size(answer_area_, width, answer_h);
-        lv_obj_set_style_pad_all(answer_area_, 2, 0);
+        lv_obj_set_style_pad_all(answer_area_, made_s(2), 0);
         lv_obj_set_overflow_visible(answer_area_, false);
         lv_obj_set_pos(result_label_, 0, 0);
         lv_obj_set_width(result_label_, width - 4);
@@ -699,7 +707,7 @@ void VibeCoding::buildAnswerArea()
         lv_obj_set_style_transform_scale_y(result_label_, 256, 0);
         lv_obj_set_pos(meta_label_, margin, y);
         lv_obj_set_width(meta_label_, width);
-        lv_obj_set_style_text_font(meta_label_, &lv_font_montserrat_16, 0);
+        lv_obj_set_style_text_font(meta_label_, made_icon_font(16), 0);
         lv_obj_set_style_transform_scale_x(meta_label_, 256, 0);
         lv_obj_set_style_transform_scale_y(meta_label_, 256, 0);
     }

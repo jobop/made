@@ -114,8 +114,10 @@ bool VibeCoding::run()
         display_diag_registered_ = true;
     }
     vibe_i18n::initialize();
-    text_font = &font_puhui_16_4;
-    drawer_text_font = &font_puhui_14_4;
+    // 运行时按当前屏幕尺寸选字体：freetype 平台矢量随屏放大，固件走点阵。
+    made_fonts_init();
+    text_font = made_font(16);
+    drawer_text_font = made_font(14);
     active_ = true;
     exit_requested_ = false;
     invalidateCatalog(true);
@@ -1301,7 +1303,7 @@ void VibeCoding::renderBridgeChoices(const vibe_pairing::Snapshot &pairing)
         const size_t scheme = bridge.url.find("://");
         const std::string address = bridge.url.substr(scheme == std::string::npos ? 0 : scheme + 3);
         lv_obj_t *host = settingsLabel(button, address.c_str(), 12, 28, 230, VT(text_secondary), false);
-        lv_obj_set_style_text_font(host, &lv_font_montserrat_14, 0);
+        lv_obj_set_style_text_font(host, made_icon_font(14), 0);
         lv_obj_set_height(host, made_s(16));
         lv_obj_set_style_text_align(host, LV_TEXT_ALIGN_LEFT, 0);
         lv_label_set_long_mode(host, LV_LABEL_LONG_DOT);
@@ -1470,7 +1472,7 @@ void VibeCoding::render()
     const bool ascii_label = std::all_of(ctx.provider.label.begin(), ctx.provider.label.end(),
         [](unsigned char c) { return c < 128; });
     lv_obj_set_style_text_font(provider_label_, ascii_label ?
-        (made_fit() < made_design ? &lv_font_montserrat_16 : &lv_font_montserrat_26) : text_font, 0);
+        made_icon_font(made_fit() < made_design ? 16 : 26) : text_font, 0);
     lv_label_set_long_mode(provider_label_, LV_LABEL_LONG_DOT);
     lv_label_set_text(provider_label_, ctx.provider.label.c_str());
     const std::string page_number = std::to_string(ctx.provider_count ? ctx.provider_index + 1 : 0) + " / " + std::to_string(ctx.provider_count);
@@ -1587,7 +1589,7 @@ void VibeCoding::applyDrawerAnswerLayout()
     lv_obj_set_style_bg_color(answer_area_, lv_color_hex(VT(bg_panel)), 0);
     lv_obj_set_style_bg_opa(answer_area_, LV_OPA_COVER, 0);
     lv_obj_set_style_border_color(answer_area_, lv_color_hex(VT(border)), 0);
-    lv_obj_set_style_border_width(answer_area_, 1, 0);
+    lv_obj_set_style_border_width(answer_area_, made_s(1), 0);
     lv_obj_set_style_radius(answer_area_, made_radius(16), 0);
     lv_obj_set_style_pad_all(answer_area_, made_s(12), 0);
     // 内容内缩交给 pad，result_label_ 归位到内容区原点；宽度必须显式钉在

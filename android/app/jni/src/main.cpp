@@ -18,6 +18,17 @@
 #include <jni.h>
 #include "bsp/display.h"
 #include "esp_brookesia_app_vibe.hpp"
+#include "made_layout.hpp"
+
+#if defined(MADE_USE_FREETYPE)
+#include <android/asset_manager.h>
+#include <android/asset_manager_jni.h>
+#include <sys/stat.h>
+#include <sys/types.h>
+#include <cstdio>
+#include <cstring>
+#include <string>
+#endif
 
 // aligned_alloc 自 Android API 28 才有，我们 minSdk 21，用 posix_memalign 补一个。
 #include <stdlib.h>
@@ -27,6 +38,30 @@ extern "C" void *aligned_alloc(size_t alignment, size_t size) {
 }
 
 using esp_brookesia::apps::VibeCoding;
+
+// 跨平台调试日志通道：安卓上裸 printf 不进 logcat，UI 层通过 made_dbg 走
+// SDL_Log 输出；其他平台由 UI 层的 weak 定义回退到 printf。
+extern "C" void made_dbg(const char *s) { SDL_Log("made: %s", s); }
+
+// LVGL 的 SDL 窗口内部有一个 5ms 定时器 sdl_event_handler 自己 SDL_PollEvent
+// 消费鼠标/键盘/窗口事件。所以主循环绝不能再用 SDL_PollEvent 抢事件（否则
+// 鼠标/触摸被我们取走，LVGL 收不到，按钮点不动）。这里用 SDL_AddEventWatch
+// 只「观察」事件（不消费），捕获退出与运行期尺寸变化。
+static bool g_sdl_quit = false;
+static int sdlEventWatch(void * /*userdata*/, SDL_Event *ev)
+{
+    if (ev->type == SDL_QUIT) {
+        g_sdl_quit = true;
+    }
+    if (ev->type == SDL_WINDOWEVENT &&
+        (ev->window.event == SDL_WINDOWEVENT_RESIZED ||
+         ev->window.event == SDL_WINDOWEVENT_SIZE_CHANGED) &&
+        ev->window.data1 > 0 && ev->window.data2 > 0) {
+        g_made_screen_w = ev->window.data1;
+        g_made_screen_h = ev->window.data2;
+    }
+    return 0;
+}
 
 // 最权威的物理尺寸来源：直接调 Android 原生 API，不经过 SDL，避免被游戏助手 /
 // 兼容模式（会给 SDL 一个被改写的显示模式）影响。
@@ -77,6 +112,70 @@ static bool jniGetRealSize(int &outW, int &outH)
     return ok;
 }
 
+#if defined(MADE_USE_FREETYPE)
+// 把 APK assets/fonts 下的 TTF 释放到应用内部存储。FreeType 走 stdio fopen，
+// 读不到 APK 里的 asset，所以先落地成真实文件，再把目录交给 made_fonts_set_dir。
+// 返回释放后的目录；任一字体缺失/写失败都返回空串（交由上层 fail-fast）。
+static std::string madeExtractFonts()
+{
+    JNIEnv *env = (JNIEnv *)SDL_AndroidGetJNIEnv();
+    jobject activity = (jobject)SDL_AndroidGetActivity();
+    if (!env || !activity) {
+        SDL_Log("made: fonts: no jni env/activity");
+        return "";
+    }
+    jclass cls = env->GetObjectClass(activity);
+    jmethodID getAssets = env->GetMethodID(
+        cls, "getAssets", "()Landroid/content/res/AssetManager;");
+    jobject amObj = getAssets ? env->CallObjectMethod(activity, getAssets) : nullptr;
+    if (!amObj) {
+        SDL_Log("made: fonts: activity.getAssets() failed");
+        return "";
+    }
+    AAssetManager *am = AAssetManager_fromJava(env, amObj);
+    if (!am) {
+        SDL_Log("made: fonts: AAssetManager_fromJava failed");
+        return "";
+    }
+
+    const char *base = SDL_AndroidGetInternalStoragePath();
+    if (!base) {
+        SDL_Log("made: fonts: no internal storage path");
+        return "";
+    }
+    std::string dir = std::string(base) + "/fonts";
+    mkdir(dir.c_str(), 0755);
+
+    static const char *kFonts[] = {"puhui-common.ttf", "fontawesome.ttf"};
+    for (const char *name : kFonts) {
+        std::string assetPath = std::string("fonts/") + name;
+        std::string outPath = dir + "/" + name;
+        AAsset *a = AAssetManager_open(am, assetPath.c_str(), AASSET_MODE_BUFFER);
+        if (!a) {
+            SDL_Log("made: fonts: missing asset %s", assetPath.c_str());
+            return "";
+        }
+        off_t len = AAsset_getLength(a);
+        const void *buf = AAsset_getBuffer(a);
+        bool ok = false;
+        FILE *f = fopen(outPath.c_str(), "wb");
+        if (f) {
+            ok = (len > 0) &&
+                 (fwrite(buf, 1, (size_t)len, f) == (size_t)len);
+            fclose(f);
+        }
+        AAsset_close(a);
+        if (!ok) {
+            SDL_Log("made: fonts: write %s failed", outPath.c_str());
+            return "";
+        }
+        SDL_Log("made: fonts: extracted %s (%lld bytes)", outPath.c_str(),
+                (long long)len);
+    }
+    return dir;
+}
+#endif
+
 int main(int argc, char **argv)
 {
     (void)argc; (void)argv;
@@ -85,6 +184,7 @@ int main(int argc, char **argv)
         SDL_Log("SDL init failed: %s", SDL_GetError());
         return 1;
     }
+    SDL_AddEventWatch(sdlEventWatch, nullptr);
 
     // 诊断：SDL 视角下的显示器信息（真机曾被游戏助手/兼容模式干扰）。
     int n = SDL_GetNumVideoDisplays();
@@ -135,6 +235,19 @@ int main(int argc, char **argv)
     g_made_screen_h = real_h;
 
     lv_init();
+
+#if defined(MADE_USE_FREETYPE)
+    // 矢量字体必须在 UI 构建（startOnDisplay → made_fonts_init）前就位；
+    // 释放失败直接拒绝启动，不静默回落到默认字体掩盖打包问题。
+    std::string fontDir = madeExtractFonts();
+    if (fontDir.empty()) {
+        SDL_Log("FATAL: made font assets could not be prepared; refusing to start");
+        SDL_Quit();
+        return 1;
+    }
+    made_fonts_set_dir(fontDir.c_str());
+#endif
+
     lv_display_t *disp = lv_sdl_window_create(real_w, real_h);
     if (!disp) { SDL_Log("lv_sdl_window_create failed"); return 1; }
     SDL_Log("made: canvas created %dx%d", real_w, real_h);
@@ -152,22 +265,11 @@ int main(int argc, char **argv)
 
     SDL_Log("made: UI started on %dx%d", g_made_screen_w, g_made_screen_h);
 
-    bool quit = false;
-    while (!quit) {
-        SDL_Event ev;
-        while (SDL_PollEvent(&ev)) {
-            if (ev.type == SDL_QUIT) quit = true;
-            // 运行期尺寸变化（横竖屏切换/折叠）：同步画布与布局变量。
-            if (ev.type == SDL_WINDOWEVENT &&
-                (ev.window.event == SDL_WINDOWEVENT_RESIZED ||
-                 ev.window.event == SDL_WINDOWEVENT_SIZE_CHANGED) &&
-                ev.window.data1 > 0 && ev.window.data2 > 0) {
-                g_made_screen_w = ev.window.data1;
-                g_made_screen_h = ev.window.data2;
-                SDL_Log("made: window resized to %dx%d (re-layout needed)",
-                        g_made_screen_w, g_made_screen_h);
-            }
-        }
+    while (!g_sdl_quit) {
+        // 仅把系统事件泵入队列，不消费：鼠标/触摸/键盘由 LVGL 的
+        // sdl_event_handler 自行 PollEvent 处理；退出与 resize 由上面的
+        // event watch 观察。若这里再 PollEvent 会抢占事件导致按钮点不动。
+        SDL_PumpEvents();
         lv_tick_inc(16);
         lv_timer_handler();
         SDL_Delay(16);

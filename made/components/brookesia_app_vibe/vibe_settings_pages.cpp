@@ -1225,13 +1225,13 @@ void VibeCoding::renderReceiverScan()
         lv_obj_add_event_cb(button, receiverSelectCallback, LV_EVENT_PRESSED, this);
         lv_obj_add_event_cb(button, receiverSelectCallback, LV_EVENT_PRESSING, this);
         lv_obj_t *name = settingsLabel(button, network.ssid.c_str(), 10, 7, 234, VT(text_primary), false);
-        lv_obj_set_style_text_font(name, &lv_font_montserrat_16, 0);
+        lv_obj_set_style_text_font(name, made_icon_font(16), 0);
         lv_obj_set_height(name, made_s(20));
         lv_label_set_long_mode(name, LV_LABEL_LONG_DOT);
         lv_obj_remove_flag(name, LV_OBJ_FLAG_CLICKABLE);
         const std::string strength = std::to_string(network.rssi) + " dBm";
         lv_obj_t *signal = settingsLabel(button, strength.c_str(), 10, 31, 234, VT(text_secondary), false);
-        lv_obj_set_style_text_font(signal, &lv_font_montserrat_14, 0);
+        lv_obj_set_style_text_font(signal, made_icon_font(14), 0);
         lv_obj_remove_flag(signal, LV_OBJ_FLAG_CLICKABLE);
         if (scanning) lv_obj_add_state(button, LV_STATE_DISABLED);
         receiver_rows_.push_back({button, network.ssid});

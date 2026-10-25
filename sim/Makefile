@@ -13,6 +13,7 @@ LVGL  := $(MADE)/managed_components/lvgl__lvgl
 COMP  := $(MADE)/components
 CJSON := $(MADE)/managed_components/espressif__cjson/cJSON
 FONTS := $(MADE)/managed_components/78__xiaozhi-fonts/src
+TTF_DIR := $(COMP)/brookesia_app_vibe/fonts/ttf
 
 # 屏幕尺寸：SCREEN=宽x高，默认对齐真机方屏 360x360；矩形屏传 SCREEN=240x320。
 # 尺寸经 MADE_SIM_H_RES / MADE_SIM_V_RES 传给 shims 与 sim_main，单一数据源。
@@ -33,6 +34,8 @@ PNG_LIBS   := $(shell pkg-config --libs libpng 2>/dev/null || echo "-L/opt/homeb
 PNG_CFLAGS := $(shell pkg-config --cflags libpng 2>/dev/null || echo "")
 PNG_LIBS   := $(shell pkg-config --libs libpng 2>/dev/null || echo "-L/opt/homebrew/lib -lpng")
 SDL_LIBS   := $(shell pkg-config --libs sdl2 2>/dev/null || echo "-L/opt/homebrew/lib -lSDL2")
+FREETYPE_CFLAGS := $(shell pkg-config --cflags freetype2 2>/dev/null || echo "-I/opt/homebrew/include/freetype2")
+FREETYPE_LIBS   := $(shell pkg-config --libs freetype2 2>/dev/null || echo "-L/opt/homebrew/lib -lfreetype")
 
 WARN := -w
 COMMON_INC := -I. -Ishims \
@@ -52,7 +55,7 @@ COMMON_INC := -I. -Ishims \
   -I$(CJSON) \
   -I$(FONTS)
 
-CFLAGS   := $(WARN) -isysroot $(SYSROOT) -O1 -g -DLV_CONF_INCLUDE_SIMPLE -DLV_LVGL_H_INCLUDE_SIMPLE -DLV_FONT_FMT_TXT_LARGE=1 -DMADE_SIM_H_RES=$(SCR_W) -DMADE_SIM_V_RES=$(SCR_H) $(COMMON_INC) $(SDL_CFLAGS) $(PNG_CFLAGS) $(PNG_CFLAGS)
+CFLAGS   := $(WARN) -isysroot $(SYSROOT) -O1 -g -DLV_CONF_INCLUDE_SIMPLE -DLV_LVGL_H_INCLUDE_SIMPLE -DLV_FONT_FMT_TXT_LARGE=1 -DMADE_SIM_H_RES=$(SCR_W) -DMADE_SIM_V_RES=$(SCR_H) -DMADE_USE_FREETYPE=1 -DMADE_TTF_DIR='"$(abspath $(TTF_DIR))"' $(COMMON_INC) $(SDL_CFLAGS) $(PNG_CFLAGS) $(FREETYPE_CFLAGS)
 CXXFLAGS := $(CFLAGS) -std=gnu++2b -fpermissive -include lv_compat.h
 # 所有源码都用「仓库根相对路径」表达，目标文件平移到 build/obj/ 下，
 # 避免目标路径里出现 ".."（沙箱/增量构建都不友好）。
@@ -94,7 +97,7 @@ all: $(BIN)
 
 $(BIN): $(OBJS)
 	@mkdir -p $(dir $@)
-	$(CXX) $(CXXFLAGS) $^ -o $@ $(SDL_LIBS) $(PNG_LIBS) $(PNG_LIBS)
+	$(CXX) $(CXXFLAGS) $^ -o $@ $(SDL_LIBS) $(PNG_LIBS) $(FREETYPE_LIBS)
 
 $(BUILD)/obj/%.c.o: $(ROOT)/%.c
 	@mkdir -p $(dir $@)

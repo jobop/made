@@ -32,6 +32,13 @@
 #define LV_FONT_MONTSERRAT_26 1
 #define LV_FONT_DEFAULT &lv_font_montserrat_18
 
+/* ----------------FreeType 矢量字（sim/安卓运行时按屏幕等比缩放）----------------
+ * 真机固件走点阵字（见 sdkconfig），这里只在宿主/安卓用 TTF 渲染任意字号。
+ * USE_LVGL_PORT=0：直接用平台 stdio 读 TTF 文件路径，不接 LVGL FS 抽象。 */
+#define LV_USE_FREETYPE 1
+#define LV_FREETYPE_USE_LVGL_PORT 0
+#define LV_FREETYPE_CACHE_FT_GLYPH_CNT 256
+
 /* ----------------调试---------------- */
 #define LV_USE_LOG 0
 #define LV_USE_PERF_MONITOR 0

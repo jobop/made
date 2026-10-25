@@ -95,3 +95,19 @@ inline void made_text(lv_obj_t *label, int design_width, bool center)
     lv_obj_set_style_transform_scale_x(label, 256, 0);
     lv_obj_set_style_transform_scale_y(label, 256, 0);
 }
+
+// ---- 运行时字体适配：控件大小随屏幕等比缩放 -----------------------------
+// 设计字号（14/16/20/26…）是 360 画布上的像素。
+//  - 真机固件（k=1）：用编译进 flash 的点阵字，1:1 最清晰，零回归。
+//  - sim / 安卓（MADE_USE_FREETYPE）：用 FreeType 矢量字，物理字号取
+//    round(design*k)，k=短边/360；任意分辨率都清晰，且字号与容器宽度同比例
+//    放大，换行/行高/点击区域天然保持设计稿比例。
+// made_fonts_init() 幂等，必须在 UI 构建前调用一次。
+// made_fonts_set_dir() 仅 FreeType 平台需要：把 TTF 所在目录传进来（安卓在
+// 运行时把 assets 里的 TTF 释放到内部存储后调用）；桌面 sim 用编译期
+// MADE_TTF_DIR，无需调用。
+void made_fonts_set_dir(const char *dir);
+void made_fonts_init();
+const lv_font_t * made_font(int design_px);
+const lv_font_t * made_icon_font(int design_px);
+

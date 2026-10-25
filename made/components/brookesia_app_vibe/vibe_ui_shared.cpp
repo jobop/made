@@ -46,6 +46,10 @@ using esp_brookesia::systems::phone::App;
 LV_IMG_DECLARE(img_app_vibe);
 LV_FONT_DECLARE(font_puhui_16_4);
 LV_FONT_DECLARE(font_puhui_14_4);
+#if defined(MADE_USE_FREETYPE)
+#include <map>
+#include <string>
+#endif
 #include "vibe_ui_shared.hpp"
 
 namespace esp_brookesia::apps {
@@ -74,6 +78,109 @@ const lv_font_t *text_font = &font_puhui_16_4;
 // 14px 必须用 4bpp 版（fonts/font_puhui_14_4.c 由 ttf/puhui-common.ttf 生成）：
 // 字库组件自带的 font_puhui_14_1 是 1bpp 单色版，浅色底上无抗锯齿会发糊。
 const lv_font_t *drawer_text_font = &font_puhui_14_4;
+
+} // namespace esp_brookesia::apps
+
+// ---------------- 运行时字体适配（控件大小随屏幕等比缩放）----------------
+// 声明在全局头 made_layout.hpp，实现也必须位于全局命名空间（各页面按
+// made_font(...) / made_icon_font(...) 直接调用）。
+#if defined(MADE_USE_FREETYPE)
+namespace {
+std::map<int, lv_font_t *> g_made_text_fonts;
+std::map<int, lv_font_t *> g_made_icon_fonts;
+bool g_freetype_ready = false;
+// TTF 所在目录，运行时可设置（安卓把 APK assets 里的 TTF 释放到内部存储后
+// 传入真实路径）；桌面 sim 不设置时回落到编译期 MADE_TTF_DIR。
+std::string g_made_ttf_dir;
+
+// 360 设计字号 → 当前屏幕物理字号（k=短边/360，四舍五入）。
+int made_phys_px(int design)
+{
+    const int px = (design * made_fit() + made_design / 2) / made_design;
+    return px > 0 ? px : design;
+}
+std::string made_ttf_path(const char *name)
+{
+    std::string dir = g_made_ttf_dir;
+#ifdef MADE_TTF_DIR
+    if (dir.empty()) dir = MADE_TTF_DIR;
+#endif
+    if (dir.empty()) return std::string(name);
+    return dir + "/" + name;
+}
+} // namespace
+
+void made_fonts_set_dir(const char *dir)
+{
+    if (dir && *dir) g_made_ttf_dir = dir;
+}
+
+void made_fonts_init()
+{
+    if (g_freetype_ready) return;
+    lv_freetype_init(1024);
+    g_freetype_ready = true;
+}
+
+// 正文/数字/中文用普惠矢量；混排的 LV_SYMBOL 走同号 FontAwesome fallback。
+const lv_font_t *made_font(int design)
+{
+    auto it = g_made_text_fonts.find(design);
+    if (it != g_made_text_fonts.end()) return it->second;
+    lv_font_t *f = lv_freetype_font_create(
+        made_ttf_path("puhui-common.ttf").c_str(),
+        LV_FREETYPE_FONT_RENDER_MODE_BITMAP, made_phys_px(design),
+        LV_FREETYPE_FONT_STYLE_NORMAL);
+    if (f) {
+        // 同号 FontAwesome 矢量作为图标 fallback：纯图标 label 普惠查不到
+        // 字形时自动落到这里，数字/中文照常走普惠，一个字体覆盖全部。
+        auto ic = g_made_icon_fonts.find(design);
+        lv_font_t *icon;
+        if (ic != g_made_icon_fonts.end()) {
+            icon = ic->second;
+        } else {
+            icon = lv_freetype_font_create(
+                made_ttf_path("fontawesome.ttf").c_str(),
+                LV_FREETYPE_FONT_RENDER_MODE_BITMAP, made_phys_px(design),
+                LV_FREETYPE_FONT_STYLE_NORMAL);
+            if (!icon) icon = const_cast<lv_font_t *>(LV_FONT_DEFAULT);
+            g_made_icon_fonts[design] = icon;
+        }
+        f->fallback = icon;
+    } else {
+        f = const_cast<lv_font_t *>(LV_FONT_DEFAULT);
+    }
+    g_made_text_fonts[design] = f;
+    return f;
+}
+
+// 图标/数字/页码统一走万能字体（普惠+图标 fallback）；纯图标自动落到
+// FontAwesome，数字/名称走普惠。
+const lv_font_t *made_icon_font(int design)
+{
+    return made_font(design);
+}
+#else
+// 真机固件：点阵字 k=1，1:1 最清晰，保持原视觉零回归。
+void made_fonts_init() {}
+
+const lv_font_t *made_icon_font(int design)
+{
+    if (design >= 24) return &lv_font_montserrat_26;
+    if (design >= 19) return &lv_font_montserrat_20;
+    if (design >= 15) return &lv_font_montserrat_16;
+    if (design >= 13) return &lv_font_montserrat_14;
+    return &lv_font_montserrat_12;
+}
+
+const lv_font_t *made_font(int design)
+{
+    if (design >= 15) return &font_puhui_16_4;
+    return &font_puhui_14_4;
+}
+#endif
+
+namespace esp_brookesia::apps {
 
 // 主题风格半径：made_s(设计像素) 后再乘主题包的圆角缩放。
 int made_radius(int design_radius)
@@ -211,7 +318,7 @@ lv_obj_t *touchButton(lv_obj_t *parent, int x, int y, int width, int height,
         // 去掉实底色块与投影，界面立刻轻下来；主操作才允许实底。
         lv_obj_set_style_bg_opa(button, LV_OPA_TRANSP, 0);
         lv_obj_set_style_border_color(button, lv_color_hex(VT(border)), 0);
-        lv_obj_set_style_border_width(button, 1, 0);
+        lv_obj_set_style_border_width(button, made_s(1), 0);
         lv_obj_set_style_bg_color(button, lv_color_hex(VT(bg_row)), LV_STATE_PRESSED);
         lv_obj_set_style_bg_opa(button, LV_OPA_COVER, LV_STATE_PRESSED);
         lv_obj_set_style_shadow_width(button, 0, 0);

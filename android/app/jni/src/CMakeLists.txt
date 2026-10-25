@@ -27,11 +27,28 @@ set(STUBS "${ROOT}/sim/stubs")
 set(CJSON "${MADE}/managed_components/espressif__cjson/cJSON")
 set(FONTS "${MADE}/managed_components/78__xiaozhi-fonts/src")
 
+# FreeType 矢量字体：同一套 UI 代码在不同物理分辨率上运行时按 k=短边/360
+# 动态生成任意字号（清晰、不糊、换行天然正确）。复用 ESP-IDF 组件里那份
+# 完整的上游 freetype 源码交叉编译；关掉 zlib/bzip2/png/harfbuzz/brotli
+# 等可选依赖，只保留纯 TTF 光栅化核心（我们只渲染 TTF，用不到压缩格式）。
+set(FREETYPE_DIR "${MADE}/managed_components/espressif__freetype/freetype")
+set(FT_DISABLE_ZLIB     TRUE CACHE BOOL "" FORCE)
+set(FT_DISABLE_BZIP2    TRUE CACHE BOOL "" FORCE)
+set(FT_DISABLE_PNG      TRUE CACHE BOOL "" FORCE)
+set(FT_DISABLE_HARFBUZZ TRUE CACHE BOOL "" FORCE)
+set(FT_DISABLE_BROTLI   TRUE CACHE BOOL "" FORCE)
+# 上面为 libpng 设的 ZLIB_FOUND=ON CACHE 会泄漏进 freetype 子目录，使它误以为
+# 找到了 zlib 而去链接并不存在的 ZLIB::ZLIB imported target；freetype 已禁用
+# zlib，用普通变量遮蔽掉这个 cache 值。
+set(ZLIB_FOUND OFF)
+add_subdirectory(${FREETYPE_DIR} ${CMAKE_BINARY_DIR}/freetype)
+
 add_definitions(
   -DLV_CONF_INCLUDE_SIMPLE
   -DLV_LVGL_H_INCLUDE_SIMPLE
   -DLV_FONT_FMT_TXT_LARGE=1
   -DSO_NOSIGPIPE=0
+  -DMADE_USE_FREETYPE=1
 )
 
 include_directories(
@@ -122,6 +139,7 @@ target_link_libraries(main
   SDL2
   png_static
   zlib
+  freetype
   android
   log
   GLESv2
