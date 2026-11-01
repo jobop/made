@@ -147,25 +147,36 @@ export function watchPlugins(config, { onReload } = {}) {
     if (closed) return;
     if (reloading) { pending = true; return; }
     reloading = true;
+    let guard = null;
     let timedOut = false;
-    const guard = setTimeout(() => {
-      timedOut = true;
-      console.error(`[plugins] 热加载超过 ${RELOAD_TIMEOUT_MS}ms 未返回，强制解锁`
-        + '（保留上一份插件；下一轮变更会再试）');
-    }, RELOAD_TIMEOUT_MS);
     try {
-      await reloadConfiguredPlugins(config);
-      const ids = config.pluginsRuntime?.agents?.().map((plugin) => plugin.id) ?? [];
-      console.error(`[plugins] 已热加载${ids.length ? `：${ids.join(', ')}` : ''}`);
-      onReload?.(null);
-    } catch (error) {
-      console.error(`[plugins] 热加载失败，继续使用上一份：${error.message}`);
-      onReload?.(error);
+      try {
+        // 超时必须真解锁：挂起的 reload 无法 abort，这里 race 出去后 reloading
+        // 照常复位（曾因只置标志不解锁，挂起一次后热加载永久哑火——10-24 实锤）。
+        // 挂起的加载若稍后自行完成，其结果会被下一次变更的重载覆盖。
+        await Promise.race([
+          reloadConfiguredPlugins(config),
+          new Promise((_, reject) => {
+            guard = setTimeout(() => {
+              timedOut = true;
+              reject(new Error(`超过 ${RELOAD_TIMEOUT_MS}ms 未返回`));
+            }, RELOAD_TIMEOUT_MS);
+            if (guard.unref) guard.unref();
+          }),
+        ]);
+        const ids = config.pluginsRuntime?.agents?.().map((plugin) => plugin.id) ?? [];
+        console.error(`[plugins] 已热加载${ids.length ? `：${ids.join(', ')}` : ''}`);
+        onReload?.(null);
+      } catch (error) {
+        console.error(`[plugins] 热加载${timedOut ? '超时，已强制解锁' : '失败'}，继续使用上一份：${error.message}`);
+        onReload?.(error);
+      }
     } finally {
-      clearTimeout(guard);
+      if (guard) clearTimeout(guard);
       reloading = false;
       // 无论成败都刷新快照：否则轮询兜底会把同一次改动再触发一遍
-      // （fs.watch 与轮询双通道各来一次）。
+      // （fs.watch 与轮询双通道各来一次）。超时也刷新——重试交给下一轮变更，
+      // 不对同一次挂起无限重试。
       snapshotMtimes();
       if (pending && !closed) {
         pending = false;

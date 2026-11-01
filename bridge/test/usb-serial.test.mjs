@@ -161,7 +161,7 @@ test('圆屏安静超过握手超时后释放串口，冷却结束后再探测�
     let ticks = 0;
     const timer = setInterval(() => { ticks += 1; }, 50);
     t.after(() => clearInterval(timer));
-    await until(() => receiver.summary().error === '未握手，已暂时释放串口，马上会再试', 9000);
+    await until(() => /未握手（连续 \d+ 次），已暂时释放串口/.test(receiver.summary().error), 9000);
     assert.equal(receiver.link, null);
     assert.equal(receiver.summary().status, 'disconnected');
     assert.equal(receiver.summary().password, '');

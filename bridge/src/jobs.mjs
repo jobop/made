@@ -53,7 +53,7 @@ function mergeAttachments(result, explicit) {
 }
 
 export class JobStore {
-  constructor({ file, projects, defaultProject, defaultProvider, workspaceRoot, maxParallel, maxAutoRetries, run, providerAvailable, pluginsRuntime, hooks }) {
+  constructor({ file, projects, defaultProject, defaultProvider, workspaceRoot, maxParallel, maxAutoRetries, stuckIdleMinutes, run, providerAvailable, pluginsRuntime, hooks }) {
     // 允许传入 () => config.pluginsRuntime，热加载替换注册表后这里读到的是新插件。
     this.agent = pluginsRuntime
       ? (id) => {
@@ -75,6 +75,9 @@ export class JobStore {
     // 卡死自愈：看门狗杀掉无输出的编程工具进程后，同车道自动重跑的次数上限。
     const retries = Number(maxAutoRetries);
     this.maxAutoRetries = Number.isFinite(retries) ? Math.min(Math.max(Math.trunc(retries), 0), 3) : 1;
+    // 卡死判定阈值（分钟）。config.mjs 校验过 1–60；不传时回退 15（既有语义）。
+    const idleMinutes = Number(stuckIdleMinutes);
+    this.stuckIdleMinutes = Number.isFinite(idleMinutes) ? Math.min(Math.max(Math.trunc(idleMinutes), 1), 60) : 15;
     // 正在占用车道的会话 ID。一个会话同时只会有一条指令在跑，所以按会话占位即可。
     this.lanes = new Set();
     this.sessions = new SessionStore({
@@ -420,10 +423,13 @@ export class JobStore {
           const outcome = await this.run(effectiveJob, project, controller.signal, (text) => {
             if (job.status === 'running' && this.agent(job.provider)?.capabilities.progress) {
               const progress = String(text || '').replace(/[\x00-\x1f\x7f]+/g, ' ').trim().slice(0, 80);
+              // 看门狗只认 lastActivity：重复/空进度文本只跳过字段写入，
+              // 必须照样摸活——否则长操作刷同一段进度会被当成卡死误杀
+              // （「jojo 被看门狗反复打断」的真正病根，2026-11-01 审计）。
+              touchActivity();
               if (!progress || progress === job.progress) return;
               job.progress = progress;
               job.progressAt = now();
-              touchActivity();
               job.updatedAt = job.progressAt;
               const current = Date.now();
               if (current - (this.progressSavedAt.get(job.id) || 0) >= 750) {

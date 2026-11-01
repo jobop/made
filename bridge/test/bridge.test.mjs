@@ -159,14 +159,15 @@ test('卡死自愈：一直沉默的假 CLI 触发看门狗，杀进程重跑后
   assert.equal(job.retryPending, true);
 });
 
-test('卡死自愈配置：默认 5 分钟 / 重跑 1 次，环境变量可覆盖，越界报错', async (t) => {
+test('卡死自愈配置：默认 15 分钟 / 重跑 1 次，环境变量可覆盖，越界报错', async (t) => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'vibe-selfheal-'));
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
   const configPath = path.join(directory, 'config.json');
   fs.writeFileSync(configPath, JSON.stringify({ projects: [{ id: 'demo', path: directory }] }));
   const env = { VIBE_CONFIG: configPath, VIBE_STATE_DIR: directory };
   const config = loadConfig(env);
-  assert.equal(config.stuckIdleMinutes, 5);
+  // 默认 15：素材管线单张外部生图最长约 9 分钟且轮询期间不吐字（见 config.mjs）。
+  assert.equal(config.stuckIdleMinutes, 15);
   assert.equal(config.maxAutoRetries, 1);
   assert.equal(loadConfig({ ...env, VIBE_STUCK_IDLE_MINUTES: '10' }).stuckIdleMinutes, 10);
   assert.equal(loadConfig({ ...env, VIBE_MAX_AUTO_RETRIES: '0' }).maxAutoRetries, 0);

@@ -1097,10 +1097,19 @@ public class MainActivity extends Activity {
                 ui.post(() -> {
                     agentQuotaText.setText(quota);
                     boolean running = "running".equals(st) || "starting".equals(st);
+                    // 云端沙箱闲置 10 分钟自动暂停（paused），之后被回收站停掉（stopped）。
+                    // 这两种都不是「未生成」：paused 秒级恢复，stopped 全新拉起并回灌
+                    // 云侧备份。以前一律显示「智能体未生成」，用户误以为要重新生成。
+                    boolean paused = "paused".equals(st);
+                    boolean stopped = "stopped".equals(st);
                     agentStatusText.setText(running ? "智能体运行中 · 闲置 10 分钟自动回收，下次连接自动拉起"
-                            : "error".equals(st) ? "智能体异常，可重新生成" : "智能体未生成 · 生成后自动配对到设备");
+                            : "error".equals(st) ? "智能体异常，可重新生成"
+                            : paused ? "智能体已闲置暂停 · 点下方按钮恢复（秒级，余额照常）"
+                            : stopped ? "智能体已闲置回收 · 点下方按钮重新拉起（自动恢复你的数据）"
+                            : "智能体未生成 · 生成后自动配对到设备");
                     agentStatusText.setTextColor(Ui.SUB);
-                    agentActionBtn.setText(running ? "进入配对" : "生成云端智能体");
+                    agentActionBtn.setText(running ? "进入配对"
+                            : paused || stopped ? "恢复云端智能体" : "生成云端智能体");
                     agentActionBtn.setOnClickListener(v -> agentGo(url));
                     agentActionBtn.setEnabled(true);
                     agentActionBtn.setAlpha(1f);

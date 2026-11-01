@@ -27,6 +27,10 @@ public final class SpritePager extends FrameLayout {
     private float drag = 0f;
     private boolean snapping = false;
     private boolean dragging = false;
+    // n==2 时邻页在中心的哪一侧（+1 右 / -1 左）。两只宠物成环只有一页邻页，
+    // 不能同时在两侧——按拖动方向动态放边，否则一半方向的滑动露空屏、
+    // 松手后宠物从反方向横扫全屏（三只及以上无此问题，走 wrappedOffset）。
+    private int neighborSide = 1;
     private SpriteView.ActionsListener actionsListener;
 
     public SpritePager(Context c, Bridge b) {
@@ -67,6 +71,11 @@ public final class SpritePager extends FrameLayout {
         dragging = true;
         float lim = 1.15f * Math.max(1, getWidth());
         drag = Math.max(-lim, Math.min(lim, px));
+        if (providers.size() == 2 && drag != 0) {
+            // 往左滑邻页放右侧、往右滑放左侧；反向拖动时换边（跳一次，松手即正）。
+            int side = drag < 0 ? 1 : -1;
+            if (side != neighborSide) neighborSide = side;
+        }
         positionChildren();
     }
 
@@ -82,7 +91,13 @@ public final class SpritePager extends FrameLayout {
         int target = providers.isEmpty() ? center : wrapIdx(targetRaw);
         final int dest = target;
         float start = drag;
-        float end = -wrappedOffset(dest) * Math.max(1, getWidth());
+        // n==2 时 wrappedOffset 表达不了方向（center±1 归一后是同一页），按
+        // neighborSide 锁定吸附侧：setDrag 已让 neighborSide 跟随拖动方向，
+        // end 与 positionChildren 的邻页偏移同源，dest 页才能滑到 0 不跳边。
+        boolean two = providers.size() == 2 && dest != center;
+        float end = two
+                ? -neighborSide * Math.max(1, getWidth())
+                : -wrappedOffset(dest) * Math.max(1, getWidth());
         dragging = false;
         snapping = true;
         ValueAnimator a = ValueAnimator.ofFloat(start, end);
@@ -173,11 +188,15 @@ public final class SpritePager extends FrameLayout {
 
     private void positionChildren() {
         int w = Math.max(1, getWidth());
-        for (int i = 0; i < providers.size(); i++) {
+        int n = providers.size();
+        for (int i = 0; i < n; i++) {
             SpriteView v = pages.get(providers.get(i).id);
             if (v == null) continue;
-            // 环形：最短环绕距离定位（首尾互为邻居），边界不再需要橡皮筋
-            v.setTranslationX(wrappedOffset(i) * w + drag);
+            // 环形：最短环绕距离定位（首尾互为邻居），边界不再需要橡皮筋。
+            // n==2 的邻页成环退化，改按拖动方向放边（见 neighborSide 注释）。
+            int offset = wrappedOffset(i);
+            if (n == 2 && offset != 0) offset = neighborSide;
+            v.setTranslationX(offset * w + drag);
             // 始终 VISIBLE：可见性翻转会在跟手拖动时造成首帧闪动
         }
     }

@@ -27,6 +27,18 @@ const DISCOVERY_INTERVAL_MS = 2_000;
 const REJECTED_PORT_COOLDOWN_MS = 60_000;
 // 没握手的端口（码得平时只把 USB 当日志口）不能一直占着，否则烧录和串口监视都打不开。
 const IDLE_PORT_COOLDOWN_MS = 3_000;
+// —— 握手失败升级恢复 ——
+// 健康设备在 USB 功能关闭（设置页 / 离开前台 vibe_backend set_active(false)）时
+// 也不发 hello，所以「连续没握手」不能直接复位。真正的死机特征是「线上完全
+// 静默」：连固件控制台日志都没有。此时（仅限原生 ESP 口 303a:1001——它的
+// USB-Serial/JTAG 外设里 DTR/RTS 连着芯片复位，跑 stty 即触发复位，本项目
+// 实测行为，见 configureSerial 注释）用 stty 做自动硬复位，把「必须手动
+// esptool chip_id 硬复位」的场景收敛为桥接器自愈。每 HELLO_FAILURES_BEFORE_RESET
+// 次静默超时复位一次（复位后留启动窗口），HELLO_FAILURES_GIVE_UP 次后放弃
+// 并提示重新上电——对误判成静默的设备，最坏也只复位 3 次就收手。
+const HELLO_FAILURES_BEFORE_RESET = 3;
+const HELLO_FAILURES_GIVE_UP = 12;
+const RESET_COOLDOWN_MS = 8_000;
 const BASE64 = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/;
 // Probe only the native ESP USB device and the WCH bridge verified on the
 // supported C3 receiver. A matching USB ID is a candidate, not a ready peer:
@@ -121,7 +133,10 @@ export function linuxUsbSerialPorts(options) {
 export async function discoverUsbSerialDevices(platform = process.platform) {
   if (platform === 'darwin') {
     try {
-      const result = await execFileAsync('ioreg', ['-p', 'IOService', '-r', '-c', 'IOUSBHostDevice', '-l', '-t', '-w0'], {
+      // ioreg 在 /usr/sbin，不在很多精简 PATH（/usr/bin:/bin）里。用绝对路径
+      // 找，找不到再退回裸命令名——发现不该依赖启动方的环境变量。
+      const ioreg = fs.existsSync('/usr/sbin/ioreg') ? '/usr/sbin/ioreg' : 'ioreg';
+      const result = await execFileAsync(ioreg, ['-p', 'IOService', '-r', '-c', 'IOUSBHostDevice', '-l', '-t', '-w0'], {
         encoding: 'utf8', timeout: 3000, maxBuffer: 8 * 1024 * 1024,
       });
       return parseMacUsbSerialDevices(result.stdout).filter((device) => fs.existsSync(device.path));
@@ -184,6 +199,12 @@ export function forwardUsbRequest(request, { devicePort, authority, forwardSecre
     outgoing.on('error', reject);
     outgoing.end(request.body);
   });
+}
+
+export function helloEscalation(failures, { native = false, silent = true } = {}) {
+  if (!native || !silent || failures <= 0) return 'release';
+  if (failures % HELLO_FAILURES_BEFORE_RESET !== 0) return 'release';
+  return failures < HELLO_FAILURES_GIVE_UP ? 'reset' : 'giveup';
 }
 
 export class UsbReceiverProtocol {
@@ -569,6 +590,8 @@ export class UsbReceiver {
     this.polling = false;
     this.stopped = true;
     this.cooldown = new Map();
+    // 每端口的连续握手超时计数（跨重连累计，hello 成功后清零）：驱动升级复位。
+    this.helloFailures = new Map();
     this.timer = null;
     this.state = {
       status: process.platform === 'darwin' || process.platform === 'linux' || portPath ? 'disconnected' : 'disabled',
@@ -625,7 +648,8 @@ export class UsbReceiver {
           // 码得自己的口跳过这一步，避免插入 USB 时把 Wi-Fi 连接复位掉。
           if (lineCoding) await configureSerial(port);
           if (this.stopped) break;
-          const link = { fd, port, helloTimer: null, inputTimer: null,
+          const link = { fd, port, usbId: device.id, sawInput: false,
+            helloTimer: null, inputTimer: null,
             protocol: null, writeQueue: Promise.resolve() };
           this.links.set(port, link);
           openedLink = link;
@@ -667,6 +691,7 @@ export class UsbReceiver {
             onHello: (peer) => {
               if (this.links.get(port) !== link || (this.state.active && this.link !== link)) return false;
               this.link = link;
+              this.helloFailures.delete(port);
               clearTimeout(link.helloTimer);
               this.state = { status: 'connected', active: true, port, ...peer,
                 lastSeen: new Date().toISOString(), error: '' };
@@ -696,6 +721,7 @@ export class UsbReceiver {
                 const length = fs.readSync(fd, inputBuffer, 0, inputBuffer.length, null);
                 if (length > 0) {
                   link.zeroReads = 0;
+                  link.sawInput = true;
                   link.protocol.feed(inputBuffer.subarray(0, length));
                 } else if (this.links.get(port) === link && ++link.zeroReads >= ZERO_READ_LIMIT) {
                   this.disconnect(link, 'USB 设备已断开');
@@ -714,13 +740,7 @@ export class UsbReceiver {
           };
           link.inputTimer = setTimeout(readAvailable, 20);
           link.inputTimer.unref?.();
-          link.helloTimer = setTimeout(() => {
-            if (this.links.get(port) !== link || this.state.status === 'connected') return;
-            // 没握手就先放开串口，烧录可以插空占用。冷却只有几秒，板子每 3 秒
-            // 发一次 hello，下一轮打开就能接上，不用对准打开的时刻。
-            this.cooldown.set(port, Date.now() + IDLE_PORT_COOLDOWN_MS);
-            this.disconnect(link, '未握手，已暂时释放串口，马上会再试');
-          }, HELLO_TIMEOUT_MS);
+          link.helloTimer = setTimeout(() => this.handleHelloTimeout(link, port), HELLO_TIMEOUT_MS);
           link.helloTimer.unref?.();
         } catch {
           if (openedLink) this.disconnect(openedLink);
@@ -735,6 +755,41 @@ export class UsbReceiver {
         }
       }
     } finally { this.polling = false; }
+  }
+
+  // 握手窗口到期仍未收到 hello。失败计数跨重连累计；原生 ESP 口且线上完全
+  // 静默（连日志都没有）时按 HELLO_FAILURES_BEFORE_RESET 节奏升级自动复位。
+  handleHelloTimeout(link, port) {
+    if (this.links.get(port) !== link || this.state.status === 'connected') return;
+    const failures = (this.helloFailures.get(port) || 0) + 1;
+    this.helloFailures.set(port, failures);
+    const action = helloEscalation(failures, {
+      native: link.usbId === '303a:1001', silent: !link.sawInput,
+    });
+    if (action === 'reset') {
+      console.error(`[usb-link] auto-reset port=${port} silentFailures=${failures} ${new Date().toISOString()}`);
+      this.cooldown.set(port, Date.now() + RESET_COOLDOWN_MS);
+      this.disconnect(link, `未握手 ${failures} 次（线上无任何数据），已自动复位设备，几秒后重连`);
+      void this.resetDevice(port);
+      return;
+    }
+    if (action === 'giveup' && !this.state.active) {
+      this.state.error = '设备 USB 持续无响应，自动复位未能恢复；请重新给设备上电';
+    }
+    // 没握手就先放开串口，烧录可以插空占用。冷却只有几秒，板子每 3 秒
+    // 发一次 hello，下一轮打开就能接上，不用对准打开的时刻。
+    this.cooldown.set(port, Date.now() + IDLE_PORT_COOLDOWN_MS);
+    this.disconnect(link, `未握手（连续 ${failures} 次），已暂时释放串口，马上会再试`);
+  }
+
+  async resetDevice(port) {
+    // stty 打开并配置端口即切换 DTR/RTS → ESP32-S3 USB-Serial/JTAG 复位。
+    // 参数与 configureSerial 完全一致，保证复位行为与实测 incident 相同。
+    const settings = ['921600', 'raw', '-echo', 'cs8', '-parenb', '-cstopb',
+      '-crtscts', 'clocal', '-hupcl'];
+    const args = process.platform === 'darwin' ? ['-f', port, ...settings] : ['-F', port, ...settings];
+    try { await execFileAsync('stty', args, { encoding: 'utf8', timeout: 3000 }); }
+    catch (error) { console.error(`[usb-link] auto-reset stty failed port=${port} ${error?.message || error}`); }
   }
 
   disconnect(link, error = '') {

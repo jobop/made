@@ -322,6 +322,7 @@ export function createApp(config, { run, transcribe, tunnel: providedTunnel, ena
     defaultProvider: config.defaultProvider,
     maxParallel: config.maxParallelJobs,
     maxAutoRetries: config.maxAutoRetries,
+    stuckIdleMinutes: config.stuckIdleMinutes,
     pluginsRuntime: () => config.pluginsRuntime,
     run: run || createRunner(config),
     hooks: enhance,
