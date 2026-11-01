@@ -25,6 +25,7 @@ import java.util.HashMap;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
+import java.nio.charset.StandardCharsets;
 
 /**
  * 精灵显示，两种 manifest 形态都支持（docs/SPRITES.md，语义对齐固件
@@ -107,6 +108,14 @@ public final class SpriteView extends View {
     private String provider = "";
     private long blinkPeriodMs = 0, blinkHoldMs = 120;
 
+    // 加载失败态：失败后允许同 key 重触发 setProvider/loadManifest，并用退避重试拉起。
+    // 没有它，首次拉取超时后 loadedKey 去重会把重试永远挡在门外 → 素材区永久转圈。
+    private boolean lastLoadFailed = false;
+    private int loadAttempts = 0;
+    private final Runnable retryLoad = new Runnable() {
+        @Override public void run() { loadManifest(); }
+    };
+
     private String status = "idle";
     private int frameIndex = 0;
     private long frameStart = 0;
@@ -174,23 +183,34 @@ public final class SpriteView extends View {
 
     /** 切换到某 provider 的素材（version 变化触发重下）。 */
     public void setProvider(String providerId, String spriteVersion) {
-        String key = providerId + "@" + spriteVersion;
-        if (key.equals(loadedKey)) return;
+        String version = spriteVersion == null ? "" : spriteVersion;
+        // 云端目录不可达（沙箱已回收/弱网）：用上次成功拉取时的版本号渲染本地缓存
+        if (version.isEmpty()) version = cachedVersionOf(providerId);
+        String key = providerId + "@" + version;
+        if (key.equals(loadedKey) && !lastLoadFailed) return;
+        final boolean providerChanged = !providerId.equals(provider);
+        if (!key.equals(loadedKey)) { loadAttempts = 0; lastLoadFailed = false; }
         loadedKey = key;
         provider = providerId;
-        bitmaps.clear();
-        movies.clear();
-        statusFrames.clear();
-        frameInterval.clear();
-        layers.clear();
-        emotions.clear();
-        actions.clear();
-        commandMap.clear();
-        activeAction = "";
-        layeredMode = false;
-        blinkPeriodMs = 0;
+        if (!version.isEmpty()) saveCachedVersion(providerId, version);
+        if (providerChanged) {
+            // 换了助手：解码缓存与显示状态整体重置（文件名可能同名不同图，不能复用）。
+            bitmaps.clear();
+            movies.clear();
+            statusFrames.clear();
+            frameInterval.clear();
+            layers.clear();
+            emotions.clear();
+            actions.clear();
+            commandMap.clear();
+            activeAction = "";
+            layeredMode = false;
+            blinkPeriodMs = 0;
+        }
+        // 同一助手：不清空在显示的素材——等新 manifest 解析成功后在 ui.post
+        // 里整体换装；拉取失败（沙箱回收/弱网）回落本地缓存的 manifest，形象不消失。
         setStatus("idle");
-        if (bridge != null && !providerId.isEmpty() && !spriteVersion.isEmpty()) {
+        if (bridge != null && !providerId.isEmpty() && !version.isEmpty()) {
             loadManifest();
         } else {
             invalidate();
@@ -230,13 +250,46 @@ public final class SpriteView extends View {
         loading = true;
         new Thread(() -> {
             try {
-                Bridge.Resp r = bridge.get("/device/sprite/" + provider + "/manifest.json");
-                if (!r.ok()) {
-                    Log.w(TAG, "manifest http=" + r.code);
-                    loading = false;
-                    return;
+                // stale-while-revalidate：本地缓存的 manifest 先渲染（文件都在磁盘上），
+                // 沙箱唤醒/弱网时形象秒现不白屏；远端 manifest 拉到后整体换装。
+                String cached = readCachedManifest();
+                if (cached != null) {
+                    try {
+                        applyManifest(new JSONObject(cached));
+                    } catch (Exception e) {
+                        Log.w(TAG, "cached render", e);
+                    }
                 }
-                JSONObject m = new JSONObject(r.body);
+                Bridge.Resp r = bridge.get("/device/sprite/" + provider + "/manifest.json");
+                if (r.ok()) {
+                    JSONObject m = new JSONObject(r.body);
+                    // manifest 落盘：下次冷启动/离线时用它兜底渲染
+                    try {
+                        FileOutputStream mf = new FileOutputStream(new File(cacheDir(), "manifest.json"));
+                        mf.write(r.body.getBytes(StandardCharsets.UTF_8));
+                        mf.close();
+                    } catch (Exception ignored) { }
+                    applyManifest(m);
+                    downloadAssets(m);
+                    lastLoadFailed = false;
+                    loadAttempts = 0;
+                    ui.removeCallbacks(retryLoad);
+                } else {
+                    Log.w(TAG, "manifest http=" + r.code + " -> "
+                            + (cached == null ? "无本地缓存" : "已用本地缓存渲染") + "，退避重试");
+                    markLoadFailed();
+                }
+            } catch (Exception e) {
+                Log.w(TAG, "manifest load", e);
+                markLoadFailed();
+            } finally {
+                loading = false;
+            }
+        }, "made-sprite").start();
+    }
+
+    /** 解析 manifest 并整体换装（UI 线程应用）；不碰网络与重试账本。 */
+    private void applyManifest(JSONObject m) throws Exception {
                 Map<String, List<String>> frames = new HashMap<>();
                 Map<String, Long> intervals = new HashMap<>();
                 long defMs = m.optLong("frame_ms", 160);
@@ -404,16 +457,7 @@ public final class SpriteView extends View {
                     long swayP = motion.optLong("sway_period_ms", 0);
                     if (swayP >= 200 && swayP <= 10000) sp = swayP;
                 }
-                // 预下载全部引用文件（去重；GIF 动作文件一并）。
-                List<String> wanted = new ArrayList<>();
-                for (List<String> fs : frames.values()) {
-                    for (String f : fs) if (!wanted.contains(f)) wanted.add(f);
-                }
-                for (Layer l : ly) {
-                    for (String f : l.frames) if (!wanted.contains(f)) wanted.add(f);
-                }
-                for (String f : gifFiles) if (!wanted.contains(f)) wanted.add(f);
-                for (String f : wanted) ensureFile(f);
+                // 应用换装；素材下载拆到 downloadAssets（只在新文件缺失时才打网络）。
                 final boolean useLayers = !ly.isEmpty() && framesObj == null;
                 final int fCw = cw, fCh = ch;
                 final long fDef = defMs, fBlinkP = blinkPeriod, fBlinkH = blinkHold;
@@ -446,58 +490,239 @@ public final class SpriteView extends View {
                     swayAmp = fSa;
                     bounceAmp = fBo;
                     activeAction = "";
-                    loading = false;
                     frameIndex = 0;
                     frameStart = System.currentTimeMillis();
                     motionStart = System.currentTimeMillis();
                     invalidate();
                     announceActions();
                 });
-            } catch (Exception e) {
-                Log.w(TAG, "manifest load", e);
-                loading = false;
-            }
-        }, "made-sprite").start();
     }
 
-    /** 桥接器素材接口按 ≤4KB 分片（X-Sprite-Total 给全长），循环续拉。 */
-    private void ensureFile(String name) {
-        try {
-            File out = new File(cacheDir(), name);
-            if (out.exists() && out.length() > 0) return;
-            File tmp = new File(cacheDir(), name + ".tmp");
-            FileOutputStream fos = new FileOutputStream(tmp);
-            int offset = 0;
-            while (true) {
-                Bridge.Resp r = bridge.get("/device/sprite/" + provider + "/" + name
-                        + "?offset=" + offset + "&len=4096");
-                if (!r.ok() || r.bytes.length == 0) break;
-                fos.write(r.bytes);
-                offset += r.bytes.length;
-                long total = -1;
-                if (r.headers != null && r.headers.get("X-Sprite-Total") != null) {
-                    try {
-                        total = Long.parseLong(r.headers.get("X-Sprite-Total").get(0).trim());
-                    } catch (NumberFormatException ignored) { }
+    /** 按 manifest 下载缺失素材（整包优先、分片兜底）；已在磁盘的文件全部跳过。 */
+    private void downloadAssets(JSONObject m) {
+        List<String> wanted = new ArrayList<>();
+        JSONObject framesObj = m.optJSONObject("frames");
+        if (framesObj != null) {
+            Iterator<String> keys = framesObj.keys();
+            while (keys.hasNext()) {
+                Object v = framesObj.opt(keys.next());
+                if (v instanceof JSONArray) {
+                    JSONArray arr = (JSONArray) v;
+                    for (int i = 0; i < arr.length(); i++) {
+                        String f = arr.optString(i);
+                        if (!f.isEmpty() && !wanted.contains(f)) wanted.add(f);
+                    }
+                } else if (v instanceof JSONObject) {
+                    JSONArray arr = ((JSONObject) v).optJSONArray("frames");
+                    if (arr != null) {
+                        for (int i = 0; i < arr.length(); i++) {
+                            String f = arr.optString(i);
+                            if (!f.isEmpty() && !wanted.contains(f)) wanted.add(f);
+                        }
+                    }
                 }
-                if (total <= 0 || offset >= total) break;
             }
-            fos.close();
-            if (offset > 0 && !tmp.renameTo(out)) {
-                Log.w(TAG, "rename failed " + name);
-                tmp.delete();
-            } else if (offset == 0) {
-                tmp.delete();
+        }
+        JSONArray layersArr = m.optJSONArray("layers");
+        if (layersArr != null) {
+            for (int i = 0; i < layersArr.length(); i++) {
+                JSONObject o = layersArr.optJSONObject(i);
+                if (o == null) continue;
+                JSONArray fr = o.optJSONArray("frames");
+                if (fr != null) {
+                    for (int j = 0; j < fr.length(); j++) {
+                        String f = fr.optString(j);
+                        if (!f.isEmpty() && !wanted.contains(f)) wanted.add(f);
+                    }
+                }
+                String single = o.optString("file");
+                if (!single.isEmpty() && !wanted.contains(single)) wanted.add(single);
             }
-        } catch (Exception e) {
-            Log.w(TAG, "fetch " + name, e);
+        }
+        JSONObject actionsObj = m.optJSONObject("actions");
+        if (actionsObj != null) {
+            Iterator<String> an = actionsObj.keys();
+            while (an.hasNext()) {
+                JSONObject o = actionsObj.optJSONObject(an.next());
+                if (o == null) continue;
+                String gif = o.optString("gif");
+                if (!gif.isEmpty() && !wanted.contains(gif)) wanted.add(gif);
+            }
+        }
+        if (allFilesExist(wanted)) return; // 全部已在磁盘（缓存命中）：不打网络
+        // 弱网优先整包：一次请求带回全部素材（桥接器 ≥0.3.16）；老桥接器 404 回落分片。
+        // 整包带重试：大响应在慢链路易被掐断，一次失败就掉进几十个分片请求的深坑。
+        int bundled = -1;
+        for (int b = 0; b < 2 && bundled < 0; b++) {
+            bundled = ensureBundle();
+            if (bundled < 0 && lastBundleRespCode == 404) break; // 老桥接器无此端点，别空转
+            if (bundled < 0 && b == 0) {
+                try { Thread.sleep(2000); } catch (InterruptedException ie) { return; }
+            }
+        }
+        if (bundled >= 0) {
+            Log.i(TAG, "sprite bundle files=" + bundled);
+        }
+        // 整包可能不含未被 manifest 引用的文件，逐个补拉（已存在的直接跳过）
+        for (String f : wanted) ensureFile(f);
+    }
+
+    private boolean allFilesExist(List<String> wanted) {
+        for (String f : wanted) {
+            File out = new File(cacheDir(), f);
+            if (!out.exists() || out.length() == 0) return false;
+        }
+        return true;
+    }
+
+    /** 拉取失败：置失败标记（允许重触发）+ 退避重试（5s 起、最长 30s，最多 6 轮）。 */
+    private void markLoadFailed() {
+        lastLoadFailed = true;
+        if (loadAttempts >= 6) return; // 预算用尽：等下次 setProvider（版本变化/页面切换）再拉
+        loadAttempts++;
+        ui.removeCallbacks(retryLoad);
+        ui.postDelayed(retryLoad, Math.min(30000, 5000L * loadAttempts));
+    }
+
+    /**
+     * 桥接器素材接口按 ≤4KB 分片（X-Sprite-Total 给全长），循环续拉。
+     * 弱网铁律：任何一次分片失败都不能把半截文件当成品——只有拉满 X-Sprite-Total 才允许改名，
+     * 否则删 tmp 重试（最多 3 轮）；残缺文件一旦缓存，body 解码失败就只剩眼睛且永不自愈。
+     */
+    private void ensureFile(String name) {
+        for (int attempt = 0; attempt < 3; attempt++) {
+            File out = new File(cacheDir(), name);
+            File tmp = new File(cacheDir(), name + ".tmp");
+            try {
+                if (out.exists() && out.length() > 0) return;
+                if (tmp.exists()) tmp.delete();
+                FileOutputStream fos = new FileOutputStream(tmp);
+                long total = -1;
+                int offset = 0;
+                boolean failed = false;
+                while (true) {
+                    // 分片回退路径（桥接器 <0.3.17 或无 bundle 时才走到）：请求 128KB，
+                    // 新桥接器会一次给整文件（cap 192KB），慢链路把往返数从几十个压到 1-2 个。
+                    Bridge.Resp r = bridge.get("/device/sprite/" + provider + "/" + name
+                            + "?offset=" + offset + "&len=131072");
+                    if (!r.ok() || r.bytes.length == 0) { failed = true; break; }
+                    fos.write(r.bytes);
+                    offset += r.bytes.length;
+                    if (r.headers != null && r.headers.get("X-Sprite-Total") != null) {
+                        try {
+                            total = Long.parseLong(r.headers.get("X-Sprite-Total").get(0).trim());
+                        } catch (NumberFormatException ignored) { }
+                    }
+                    if (total > 0 && offset >= total) break;
+                    if (total <= 0) break; // 桥接器没给全长：按旧语义单分片处理
+                }
+                fos.close();
+                if (!failed && total > 0 && offset < total) failed = true; // 不完整
+                if (!failed && offset > 0 && tmp.renameTo(out)) return;
+                if (!failed && offset > 0) { Log.w(TAG, "rename failed " + name); return; }
+                if (offset == 0 && !failed) { tmp.delete(); return; } // 空文件（无素材）
+                // 失败：删掉半截文件，退避后重试
+                tmp.delete();
+                if (attempt < 2) Thread.sleep(1500L * (attempt + 1));
+            } catch (Exception e) {
+                Log.w(TAG, "fetch " + name, e);
+                try { tmp.delete(); } catch (Exception ignored) { }
+                if (attempt >= 2) return;
+                try { Thread.sleep(1500L * (attempt + 1)); } catch (InterruptedException ie) { return; }
+            }
         }
     }
 
+    private int lastBundleRespCode = 0;
+
+    /** 整包拉取（桥接器 ≥0.3.16）：一次请求带回全部素材。返回落盘文件数，-1 表示端点不可用。 */
+    private int ensureBundle() {
+        Bridge.Resp r = bridge.get("/device/sprite/bundle?provider=" + provider);
+        lastBundleRespCode = r.code;
+        if (!r.ok() || r.bytes.length == 0) return -1;
+        File dir = cacheDir();
+        int count = 0;
+        int p = 0;
+        try {
+            while (p + 6 <= r.bytes.length) {
+                int nameLen = u16(r.bytes, p); p += 2;
+                if (nameLen <= 0 || p + nameLen + 4 > r.bytes.length) break;
+                String name = new String(r.bytes, p, nameLen, StandardCharsets.UTF_8); p += nameLen;
+                long dataLen = u32(r.bytes, p); p += 4;
+                if (dataLen < 0 || p + dataLen > r.bytes.length) break;
+                File out = new File(dir, name);
+                File tmp = new File(dir, name + ".tmp");
+                FileOutputStream fos = new FileOutputStream(tmp);
+                fos.write(r.bytes, p, (int) dataLen);
+                fos.close();
+                if (!tmp.renameTo(out)) tmp.delete();
+                p += (int) dataLen;
+                count++;
+            }
+            return count;
+        } catch (Exception e) {
+            Log.w(TAG, "bundle", e);
+            return count;
+        }
+    }
+
+    private static int u16(byte[] b, int off) { return ((b[off] & 0xff) << 8) | (b[off + 1] & 0xff); }
+
+    private static long u32(byte[] b, int off) {
+        return ((long) (b[off] & 0xff) << 24) | ((b[off + 1] & 0xff) << 16)
+                | ((b[off + 2] & 0xff) << 8) | (b[off + 3] & 0xff);
+    }
+
     private File cacheDir() {
-        File d = new File(getContext().getCacheDir(), "sprite/" + provider);
+        // filesDir（持久化，系统不清除）：沙箱回收后素材还在，离线时用它兜底渲染。
+        // v2：旧目录里可能存有旧版分片逻辑留下的截断残件（body 只剩 4KB），整体弃用
+        File d = new File(getContext().getFilesDir(), "sprite/v2/" + provider);
         if (!d.exists()) d.mkdirs();
         return d;
+    }
+
+    private String readCachedManifest() {
+        try {
+            File f = new File(cacheDir(), "manifest.json");
+            if (!f.exists()) return null;
+            FileInputStream in = new FileInputStream(f);
+            byte[] buf = new byte[(int) f.length()];
+            int n = in.read(buf);
+            in.close();
+            return n > 0 ? new String(buf, StandardCharsets.UTF_8) : null;
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    private File versionFile(String providerId) {
+        return new File(getContext().getFilesDir(), "sprite/v2/" + providerId + "/version.txt");
+    }
+
+    /** 上次成功拉取的素材版本（云端目录不可达时给 setProvider 兑底）。 */
+    private String cachedVersionOf(String providerId) {
+        try {
+            File f = versionFile(providerId);
+            if (!f.exists()) return "";
+            FileInputStream in = new FileInputStream(f);
+            byte[] buf = new byte[32];
+            int n = in.read(buf);
+            in.close();
+            return n > 0 ? new String(buf, 0, n, StandardCharsets.UTF_8).trim() : "";
+        } catch (Exception e) {
+            return "";
+        }
+    }
+
+    private void saveCachedVersion(String providerId, String version) {
+        try {
+            File f = versionFile(providerId);
+            File parent = f.getParentFile();
+            if (parent != null && !parent.exists()) parent.mkdirs();
+            FileOutputStream out = new FileOutputStream(f);
+            out.write(version.getBytes(StandardCharsets.UTF_8));
+            out.close();
+        } catch (Exception ignored) { }
     }
 
     private Bitmap bitmapFor(String name) {

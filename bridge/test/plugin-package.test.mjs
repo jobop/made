@@ -79,3 +79,77 @@ test('settings.json 里规范外的自定义项不让整张配置表失效', asy
   assert.equal(plugin.settings.imageApiKeySiliconflow, 'sk-test');
   assert.equal(plugin.settings.label, '闹钟');
 });
+
+// ---- 云端资源环境变量占位符契约（${MADE_LLM_*}） ----
+
+test('resolveSettings：default 里的 ${MADE_LLM_*} 占位符按白名单解析；非白名单变量保持原样', async () => {
+  const { resolveSettings } = await import('../src/plugin-package.mjs');
+  const fields = [
+    { key: 'endpoint', label: '端点', type: 'text', default: '${MADE_LLM_BASE_URL}' },
+    { key: 'apiKey', label: '密钥', type: 'text', default: '${MADE_LLM_TOKEN}' },
+    { key: 'model', label: '模型', type: 'text', default: '${MADE_LLM_MODEL}' },
+    { key: 'secret', label: '路径', type: 'text', default: '${HOME}/x' },
+  ];
+  const env = { MADE_LLM_BASE_URL: 'https://cloud.test/llm', MADE_LLM_TOKEN: 'tok-1', MADE_LLM_MODEL: 'm-1' };
+  const values = resolveSettings(fields, {}, env);
+  assert.deepEqual(
+    { endpoint: values.endpoint, apiKey: values.apiKey, model: values.model },
+    { endpoint: 'https://cloud.test/llm', apiKey: 'tok-1', model: 'm-1' },
+  );
+  // 白名单之外不解析（防止把沙箱环境变量泄漏进用户可见配置）
+  assert.equal(values.secret, '${HOME}/x');
+  // 云端环境缺失（本地跑）时保留占位符原样
+  const local = resolveSettings(fields, {}, {});
+  assert.equal(local.endpoint, '${MADE_LLM_BASE_URL}');
+});
+
+test('resolveSettings：用户显式值优先；显式空串回落 default；占位符解析后才校验 pattern', async () => {
+  const { resolveSettings } = await import('../src/plugin-package.mjs');
+  const fields = [
+    { key: 'endpoint', label: '端点', type: 'text', default: '${MADE_LLM_BASE_URL}', pattern: '^https://' },
+    { key: 'apiKey', label: '密钥', type: 'text', default: '${MADE_LLM_TOKEN}' },
+  ];
+  const env = { MADE_LLM_BASE_URL: 'https://cloud.test/llm', MADE_LLM_TOKEN: 'tok-1' };
+  // 用户填自己的 → 原样
+  const own = resolveSettings(fields, { endpoint: 'https://api.other.cn/v1', apiKey: 'sk-me' }, env);
+  assert.equal(own.endpoint, 'https://api.other.cn/v1');
+  // 显式空串=未填 → 回落 default 再解析
+  const blank = resolveSettings(fields, { endpoint: '', apiKey: '' }, env);
+  assert.equal(blank.endpoint, 'https://cloud.test/llm');
+  assert.equal(blank.apiKey, 'tok-1');
+  // 占位符解析后的值能过 URL pattern；解析不了的（环境缺失）回落原样也不会误伤合法 default
+  assert.doesNotThrow(() => resolveSettings(fields, {}, env));
+});
+
+test('readPackageSettings 返回 saved（用户原始保存值）；writePackageSettings 落盘提交值、返回解析视图', async (t) => {
+  const { readPackageSettings, writePackageSettings } = await import('../src/plugin-package.mjs');
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'vibe-cloudenv-'));
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  const pkg = path.join(directory, 'mimi');
+  fs.mkdirSync(pkg);
+  fs.writeFileSync(path.join(pkg, 'plugin.json'), JSON.stringify({
+    id: 'mimi',
+    settings: [
+      { key: 'endpoint', label: '端点', type: 'text', default: '${MADE_LLM_BASE_URL}' },
+      { key: 'apiKey', label: '密钥', type: 'text', default: '${MADE_LLM_TOKEN}' },
+    ],
+  }));
+  const env = { MADE_LLM_BASE_URL: 'https://cloud.test/llm', MADE_LLM_TOKEN: 'tok-1' };
+  // 无 settings.json：settings 全部来自 default 解析，saved 为空
+  const fresh = readPackageSettings(pkg, env);
+  assert.deepEqual(fresh.values, { endpoint: 'https://cloud.test/llm', apiKey: 'tok-1' });
+  assert.deepEqual(fresh.saved, {});
+  // 用户保存自己的值：values 用用户的，saved 留痕
+  fs.writeFileSync(path.join(pkg, 'settings.json'), JSON.stringify({ endpoint: 'https://api.other.cn/v1' }));
+  const savedView = readPackageSettings(pkg, env);
+  assert.equal(savedView.values.endpoint, 'https://api.other.cn/v1');
+  assert.equal(savedView.values.apiKey, 'tok-1');
+  assert.deepEqual(savedView.saved, { endpoint: 'https://api.other.cn/v1' });
+  // 保存提交（含空串=未填）：落盘提交值原样（不固化解析值），返回运行时视图
+  const resolved = writePackageSettings(pkg, { endpoint: '', apiKey: '' }, env);
+  assert.deepEqual(resolved, { endpoint: 'https://cloud.test/llm', apiKey: 'tok-1' });
+  const onDisk = JSON.parse(fs.readFileSync(path.join(pkg, 'settings.json'), 'utf8'));
+  assert.deepEqual(onDisk, { endpoint: '', apiKey: '' }, '空串保留空串，不把云端值写死进配置');
+  // 重读仍能得到云端解析值
+  assert.deepEqual(readPackageSettings(pkg, env).values, { endpoint: 'https://cloud.test/llm', apiKey: 'tok-1' });
+});

@@ -322,7 +322,8 @@ private:
     std::atomic<bool> artwork_dirty_{false};
     std::atomic<bool> artwork_request_{false};
     std::string artwork_applied_;  // 仅 LVGL 线程访问
-    uint32_t artwork_applied_version_ = 0;  // 与 artwork_applied_ 同步更新
+    uint32_t artwork_applied_version_ = 0;  // 与 artwork_applied_ 同步更新；0 = 陈旧兜底（stale-while-revalidate）
+    uint32_t stale_apply_at_ms_ = 0;  // 仅 LVGL 线程：陈旧兜底节流（1s），防缓存损坏时连环解码
     std::string artwork_seen_provider_;  // 仅 LVGL 线程访问
     // 缓存直换的记忆（tryApplyCachedArtwork，仅 LVGL 线程 + artwork_mutex_）：
     // 只在失败时记录，作为 300ms 退避（避免未就绪时每帧读 SPIFFS）；

@@ -68,7 +68,7 @@ test('显式本地模块可加载助手插件，禁用和默认助手验证有�
   const config = { configDirectory: directory, madeHome: directory, plugins: ['./extension.mjs'], disabledPlugins: ['codex', 'cursor', 'qoder', 'workbuddy'], defaultProvider: 'community_agent' };
   const loaded = await loadConfiguredPlugins(config);
   assert.deepEqual(loaded.agents().map(p => p.id), ['community_agent']);
-  assert.deepEqual(loaded.speechRecognizers().map(p => p.id), ['openai', 'whisper', 'off']);
+  assert.deepEqual(loaded.speechRecognizers().map(p => p.id), ['cloud', 'openai', 'whisper', 'off']);
   await assert.rejects(loadConfiguredPlugins({ ...config, disabledPlugins: [...config.disabledPlugins, 'community_agent'] }), /默认/);
   await assert.rejects(loadConfiguredPlugins({ ...config, plugins: ['https://example.invalid/plugin.mjs'] }), /本地模块/);
   await assert.rejects(loadConfiguredPlugins({ ...config, plugins: ['./extension.mjs', './extension.mjs'] }), /重复/);
@@ -111,7 +111,7 @@ test('外部语音插件拒绝加载，包括禁用条目，内置语音接口�
   const config = { configDirectory: directory, madeHome: directory, plugins: ['./speech.mjs'], defaultProvider: 'codex' };
   await assert.rejects(loadConfiguredPlugins(config), /外部插件仅支持 coding-agent.*URL.*API Key.*模型名/);
   await assert.rejects(loadConfiguredPlugins({ ...config, disabledPlugins: ['community_speech'] }), /外部插件仅支持 coding-agent/);
-  for (const id of ['openai', 'whisper', 'off']) {
+  for (const id of ['cloud', 'openai', 'whisper', 'off']) {
     await assert.rejects(loadConfiguredPlugins({ ...config, plugins: [], disabledPlugins: [id] }), /内置接口.*不能.*禁用/);
   }
   const loaded = await loadConfiguredPlugins({ ...config, plugins: [], disabledPlugins: ['cursor'] });

@@ -4,6 +4,7 @@ import { randomUUID } from 'node:crypto';
 import { builtinSpeechRecognizers } from './speech/index.mjs';
 import { DEFAULT_TRANSCRIBE_MODEL, DEFAULT_TRANSCRIBE_URL, saveVoiceSettings } from './voice-settings.mjs';
 import { saveOpenAIKey } from './openai-key.mjs';
+import { cloudLlmEnv } from './cloud-llm.mjs';
 
 const SETTINGS_VERSION = 1;
 const own = (object, key) => Object.prototype.hasOwnProperty.call(object || {}, key);
@@ -88,7 +89,10 @@ export function initializeSpeechSettings(config) {
   for (const plugin of speechRecognizers(config)) {
     if (own(settingsByPlugin, plugin.id)) settingsByPlugin[plugin.id] = normalizeSpeechSettings(plugin, settingsByPlugin[plugin.id]);
   }
-  config.speech = { pluginId: saved?.pluginId || config.asrMode || 'openai', settingsByPlugin };
+  // 云端码得沙箱内：没有本地语音配置可用，默认走云端语音识别
+  // （仅当用户没有显式设 VIBE_ASR_MODE 时生效；显式保存过的设置仍最优先）。
+  const cloudDefault = cloudLlmEnv() && !process.env.VIBE_ASR_MODE ? 'cloud' : null;
+  config.speech = { pluginId: saved?.pluginId || cloudDefault || config.asrMode || 'openai', settingsByPlugin };
   syncLegacyFields(config);
   return config.speech;
 }

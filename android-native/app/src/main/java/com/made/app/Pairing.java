@@ -25,6 +25,8 @@ public final class Pairing {
     private static final String K_URL = "url";
     private static final String K_TOKEN = "token";
     private static final String K_BRIDGE = "bridge_id";
+    private static final String K_CLOUD_TOKEN = "cloud_token";
+    private static final String K_CLOUD_SERVER = "cloud_server";
     private static final String MANUAL_SALT = "VIBE_BRIDGE_MANUAL_V2";
 
     public enum Phase { IDLE, REQUESTING, WAITING_APPROVAL, PAIRED, ERROR }
@@ -65,7 +67,24 @@ public final class Pairing {
         String url = p.getString(K_URL, "");
         String token = p.getString(K_TOKEN, "");
         bridgeId = p.getString(K_BRIDGE, "");
+        bridge.setCloudToken(p.getString(K_CLOUD_TOKEN, ""));
         if (!url.isEmpty() && token.length() == 64) bridge.setEndpoint(url, token);
+    }
+
+    /** 云端码得：保存 cloud 凭据（登录后、配对前调用，重启后能恢复）。 */
+    public void saveCloud(String cloudToken, String server) {
+        context.getSharedPreferences(PREFS, 0).edit()
+                .putString(K_CLOUD_TOKEN, cloudToken).putString(K_CLOUD_SERVER, server).apply();
+        bridge.setCloudToken(cloudToken);
+    }
+
+    public String cloudServer() {
+        return context.getSharedPreferences(PREFS, 0).getString(K_CLOUD_SERVER, "");
+    }
+
+    /** 已保存的 cloud 登录令牌（未登录为空串）。 */
+    public String cloudToken() {
+        return context.getSharedPreferences(PREFS, 0).getString(K_CLOUD_TOKEN, "");
     }
 
     public String savedUrl() {
@@ -75,6 +94,8 @@ public final class Pairing {
     public String savedPort() {
         String url = savedUrl();
         int s = url.lastIndexOf(':');
+        // 带路径的 URL（云端 bridgeUrl）没有「主机:端口」形式，不回填手动框
+        if (s > 0 && url.indexOf('/', s) > 0) return "";
         return s > 0 ? url.substring(s + 1) : "";
     }
 
@@ -83,13 +104,16 @@ public final class Pairing {
         int s = url.indexOf("://");
         int e = url.lastIndexOf(':');
         if (s < 0) return "";
+        if (url.indexOf('/', s + 3) > 0) return "";
         return e > s + 3 ? url.substring(s + 3, e) : url.substring(s + 3);
     }
 
     public void forget() {
         context.getSharedPreferences(PREFS, 0).edit()
-                .remove(K_URL).remove(K_TOKEN).remove(K_BRIDGE).apply();
+                .remove(K_URL).remove(K_TOKEN).remove(K_BRIDGE)
+                .remove(K_CLOUD_TOKEN).remove(K_CLOUD_SERVER).apply();
         bridge.setEndpoint("", "");
+        bridge.setCloudToken("");
         bridgeId = "";
     }
 
@@ -113,7 +137,11 @@ public final class Pairing {
 
     /** 手动地址 entry（协议约束：HTTP 只允许局域网地址，公网必须 HTTPS —— 这里交由用户自觉，桥接器 /pair/verify 会兜底校验 authority）。 */
     public void startManualPair(String host, int port, boolean https, Listener listener) {
-        String url = (https ? "https://" : "http://") + host + ":" + port;
+        startPairingUrl((https ? "https://" : "http://") + host + ":" + port, listener);
+    }
+
+    /** 完整 baseUrl（可含路径，如云端 bridgeUrl）发起配对。 */
+    public void startPairingUrl(String baseUrl, Listener listener) {
         String[] code = new String[1];
         byte[] nonceBytes = new byte[16];
         random.nextBytes(nonceBytes);
@@ -122,7 +150,8 @@ public final class Pairing {
         code[0] = String.format("%06d", (int) (Math.abs(new SecureRandom().nextInt()) % 1000000L));
         // 与固件一致：6 位等概率。nextInt 取模有轻微偏差，但仅影响显示，不影响安全。
         pairStartMs = System.currentTimeMillis();
-        final String baseUrl = url;
+        final String url = baseUrl.endsWith("/")
+                ? baseUrl.substring(0, baseUrl.length() - 1) : baseUrl;
         listener.onPairingUpdate(Phase.REQUESTING, "正在连接电脑…", "");
         new Thread(() -> {
             try {
@@ -131,7 +160,7 @@ public final class Pairing {
                 req.put("deviceName", "码得（安卓）");
                 req.put("code", code[0]);
                 req.put("nonce", pendingNonce);
-                Bridge.Resp r = bridge.exchangeNoAuth(baseUrl + "/pair/request", "POST",
+                Bridge.Resp r = bridge.exchangeNoAuth(url + "/pair/request", "POST",
                         req.toString().getBytes(java.nio.charset.StandardCharsets.UTF_8),
                         "application/json");
                 if (r.code == 202) {

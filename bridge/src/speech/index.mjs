@@ -1,5 +1,6 @@
 import openai from './openai.mjs';
 import whisper from './whisper.mjs';
+import cloud from './cloud.mjs';
 
 const off = {
   apiVersion: 1, kind: 'speech-recognizer', id: 'off', label: '关闭语音识别', fields: [],
@@ -7,4 +8,4 @@ const off = {
   transcribe: async () => '',
 };
 
-export const builtinSpeechRecognizers = [openai, whisper, off];
+export const builtinSpeechRecognizers = [cloud, openai, whisper, off];

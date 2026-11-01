@@ -73,7 +73,32 @@ export function parseSettingsSpec(raw) {
   return { id: raw.id || '', fields };
 }
 
-export function resolveSettings(fields, raw) {
+// 云端资源环境变量白名单：插件配置里只有这些变量能被 ${...} 占位符引用。
+// 语义契约：cloud 把自己的模型资源注入沙箱环境变量（MADE_LLM_BASE_URL /
+// MADE_LLM_TOKEN / MADE_LLM_MODEL），开发者在自己 plugin.json 的字段 default
+// 里显式引用（如 "${MADE_LLM_TOKEN}"）——字段语义只有开发者知道，cloud/桥接器
+// 不做任何猜测。白名单同时防止把沙箱里其他环境变量泄漏进用户可见的配置视图。
+const CLOUD_ENV_KEYS = new Set(['MADE_LLM_BASE_URL', 'MADE_LLM_TOKEN', 'MADE_LLM_MODEL']);
+const CLOUD_ENV_PATTERN = /\$\{(MADE_LLM_[A-Z_]+)\}/g;
+
+/** 解析配置值里的 ${MADE_LLM_*} 占位符；云端环境缺失（本地跑）时保留原样。 */
+export function resolveCloudPlaceholders(value, env = process.env) {
+  return String(value ?? '').replace(CLOUD_ENV_PATTERN, (whole, name) => {
+    if (!CLOUD_ENV_KEYS.has(name)) return whole;
+    const resolved = String(env[name] ?? '').trim();
+    return resolved || whole;
+  });
+}
+
+/** 字段默认值是否引用了云端资源变量（展示层据此标「☁ 云端提供」）。 */
+export function fieldUsesCloudEnv(field) {
+  for (const key of CLOUD_ENV_KEYS) {
+    if (String(field?.default || '').includes(`\${${key}}`)) return true;
+  }
+  return false;
+}
+
+export function resolveSettings(fields, raw, env = process.env) {
   if (raw === undefined || raw === null) raw = {};
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw fail('插件配置无效');
   // 表单字段以插件自己的 plugin.json 为准。settings.json 里开发者另写的键
@@ -86,7 +111,10 @@ export function resolveSettings(fields, raw) {
     if (!known.has(key)) values[key] = raw[key];
   }
   for (const field of fields) {
-    const value = Object.hasOwn(raw, field.key) ? raw[field.key] : (field.default ?? '');
+    // 空串=未填：回落插件默认值，再做云端占位符解析，然后才校验格式。
+    // （这样 default 里写 "${MADE_LLM_BASE_URL}" 这类占位符也能过 URL 类 pattern）
+    const submitted = Object.hasOwn(raw, field.key) ? String(raw[field.key] ?? '') : '';
+    const value = resolveCloudPlaceholders(submitted.trim() ? submitted : (field.default ?? ''), env);
     if (field.required && !value.trim()) throw fail('插件配置无效');
     if (field.pattern && !new RegExp(field.pattern).test(value)) throw fail('插件配置无效');
     values[field.key] = value;
@@ -94,16 +122,22 @@ export function resolveSettings(fields, raw) {
   return values;
 }
 
-export function readPackageSettings(dir) {
+export function readPackageSettings(dir, env = process.env) {
   const specFile = path.join(dir, 'plugin.json');
-  if (!fs.existsSync(specFile)) return { id: '', fields: [], values: {}, error: '' };
+  if (!fs.existsSync(specFile)) return { id: '', fields: [], values: {}, saved: {}, error: '' };
   try {
     const spec = parseSettingsSpec(readJson(specFile));
     const settingsFile = path.join(dir, 'settings.json');
     const raw = fs.existsSync(settingsFile) ? readJson(settingsFile) : {};
-    return { id: spec.id, fields: spec.fields, values: resolveSettings(spec.fields, raw), error: '' };
+    return {
+      id: spec.id,
+      fields: spec.fields,
+      values: resolveSettings(spec.fields, raw, env),
+      saved: raw,
+      error: '',
+    };
   } catch (error) {
-    return { id: '', fields: [], values: {}, error: error.preserveMessage ? error.message : '插件配置无效' };
+    return { id: '', fields: [], values: {}, saved: {}, error: error.preserveMessage ? error.message : '插件配置无效' };
   }
 }
 
@@ -123,20 +157,30 @@ export function packageDirectories(pluginsDir) {
   });
 }
 
-export function writePackageSettings(dir, values) {
-  const current = readPackageSettings(dir);
+export function writePackageSettings(dir, values, env = process.env) {
+  const current = readPackageSettings(dir, env);
   if (current.error) throw fail(current.error);
   if (!current.fields.length) throw fail('插件没有可保存的配置');
-  // 工作台只提交 plugin.json 里的字段。写回时保留开发者另外放在 settings.json 的键。
+  // 工作台只提交 plugin.json 里的字段。写回时保留开发者另外放在 settings.json 的键
+  // （kept 来自已解析视图，占位符会被固化；这些是开发者自留键，可接受）。
   const specKeys = new Set(current.fields.map((field) => field.key));
   const kept = {};
   for (const [key, value] of Object.entries(current.values)) {
     if (!specKeys.has(key)) kept[key] = value;
   }
-  const resolved = resolveSettings(current.fields, { ...kept, ...values });
+  // 落盘写用户显式提交的值（空串保留空串=未填），不落 default 回落值与
+  // 占位符解析值——否则云侧换令牌/模型后旧值固化，读盘回落机制失效。
+  const merged = { ...kept, ...values };
+  // 校验 + 运行时视图（空串回落 default + 占位符解析 + 格式校验）
+  const resolved = resolveSettings(current.fields, merged, env);
+  const disk = {};
+  for (const [key, value] of Object.entries(merged)) {
+    if (typeof value !== 'string' || Buffer.byteLength(value) > MAX_VALUE) throw fail('插件配置无效');
+    disk[key] = value;
+  }
   const file = path.join(dir, 'settings.json');
   const temporary = path.join(dir, `.settings-${process.pid}-${randomUUID()}.json`);
-  fs.writeFileSync(temporary, `${JSON.stringify(resolved, null, 2)}\n`, { mode: 0o600 });
+  fs.writeFileSync(temporary, `${JSON.stringify(disk, null, 2)}\n`, { mode: 0o600 });
   fs.renameSync(temporary, file);
   return resolved;
 }

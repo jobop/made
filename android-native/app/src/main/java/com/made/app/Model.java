@@ -41,6 +41,44 @@ public final class Model {
                 ? providers.get(selectedProvider) : null;
     }
 
+    // ---------- 目录持久化（沙箱回收/弱网时的本地兜底） ----------
+
+    /** application context，MainActivity 启动时注入。 */
+    public static android.content.Context appContext;
+
+    private static java.io.File spriteRootDir() {
+        java.io.File d = new java.io.File(appContext.getFilesDir(), "sprite");
+        if (!d.exists()) d.mkdirs();
+        return d;
+    }
+
+    /** 保存助手目录原文（/device/config 的 providers 数组）：桥接器不可达时兜底。 */
+    public static void saveCatalog(String providersJson) {
+        if (appContext == null || providersJson == null) return;
+        try {
+            java.io.FileOutputStream out = new java.io.FileOutputStream(
+                    new java.io.File(spriteRootDir(), "catalog.json"));
+            out.write(providersJson.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            out.close();
+        } catch (Exception ignored) { }
+    }
+
+    /** 上次保存的助手目录 JSON；没有返回 null。 */
+    public static String loadCatalog() {
+        if (appContext == null) return null;
+        try {
+            java.io.File f = new java.io.File(spriteRootDir(), "catalog.json");
+            if (!f.exists()) return null;
+            byte[] buf = new byte[(int) f.length()];
+            java.io.FileInputStream in = new java.io.FileInputStream(f);
+            int n = in.read(buf);
+            in.close();
+            return n > 0 ? new String(buf, java.nio.charset.StandardCharsets.UTF_8) : null;
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
     public Session session() {
         for (Session s : sessions) if (s.id.equals(selectedSessionId)) return s;
         return null;

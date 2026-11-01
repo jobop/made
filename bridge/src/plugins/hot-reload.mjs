@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url';
 import { registerHooks } from 'node:module';
 import { packageRoots } from '../config.mjs';
 import { loadConfiguredPlugins } from './registry.mjs';
+import { applyCloudLlmDefaults } from '../cloud-llm.mjs';
 
 // 钩子和热加载在同一线程，闭包里的代数对 resolve 可见。
 // 只改写插件目录内的相对导入，给它们带上同一代数，子模块才不会停在旧缓存里。
@@ -82,6 +83,7 @@ export async function reloadConfiguredPlugins(config) {
   publish(config);
   try {
     config.pluginsRuntime = await loadConfiguredPlugins(config);
+    applyCloudLlmDefaults(config);
     return config.pluginsRuntime;
   } catch (error) {
     config.pluginsRuntime = snapshot.pluginsRuntime;

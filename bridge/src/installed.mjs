@@ -5,7 +5,7 @@ import { pathToFileURL } from 'node:url';
 import { BUILTIN_ROOT, packageRoots, packagesHome } from './config.mjs';
 import { validatePlugin } from './plugins/registry.mjs';
 import { reloadConfiguredPlugins } from './plugins/hot-reload.mjs';
-import { isPackageEntry, packageDirectories, readPackageSettings, writePackageSettings } from './plugin-package.mjs';
+import { isPackageEntry, packageDirectories, readPackageSettings, writePackageSettings, fieldUsesCloudEnv } from './plugin-package.mjs';
 
 const PLUGIN_ID = /^[a-z0-9][a-z0-9_-]{0,39}$/;
 const THEME_NAME = /^[A-Za-z0-9_-]{1,64}$/;
@@ -67,15 +67,26 @@ function displayName(filename) {
   return isPackageEntry(filename) ? path.basename(path.dirname(filename)) : path.basename(filename);
 }
 
-function packageInfo(filename, pluginId) {
-  if (!isPackageEntry(filename)) return { settingsSpec: [], settings: {}, settingsError: '' };
+function packageInfo(filename, pluginId, config) {
+  if (!isPackageEntry(filename)) return { settingsSpec: [], settings: {}, settingsSources: {}, settingsError: '' };
   const pack = readPackageSettings(path.dirname(filename));
   const mismatch = pack.id && pluginId && pack.id !== pluginId;
   const error = mismatch ? '插件配置规范与插件 ID 不一致' : pack.error;
+  if (error) return { settingsSpec: [], settings: {}, settingsSources: {}, settingsError: error };
+  // 有效视图：readPackageSettings 已返回「用户保存值（空串回落 default）
+  // + ${MADE_LLM_*} 占位符解析」后的配置。settingsSources 标记哪些字段
+  // 正由云端资源环境变量提供（开发者声明了占位符且用户没显式填值），
+  // 展示层据此预填标注「什么都不填也能用」。
+  const sources = {};
+  for (const field of pack.fields) {
+    const userValue = Object.hasOwn(pack.saved, field.key) ? String(pack.saved[field.key] ?? '').trim() : '';
+    if (!userValue && fieldUsesCloudEnv(field)) sources[field.key] = 'cloud';
+  }
   return {
-    settingsSpec: error ? [] : pack.fields,
-    settings: error ? {} : pack.values,
-    settingsError: error,
+    settingsSpec: pack.fields,
+    settings: pack.values,
+    settingsSources: sources,
+    settingsError: '',
   };
 }
 
@@ -89,7 +100,7 @@ async function describeModule(filename, config) {
       if (plugin.kind !== 'coding-agent' && plugin.kind !== 'board-plugin') {
         throw new Error('外部插件仅支持助手或管控');
       }
-      const pack = packageInfo(filename, plugin.id);
+      const pack = packageInfo(filename, plugin.id, config);
       let available = false;
       try {
         const result = plugin.probe(config);
@@ -108,7 +119,7 @@ async function describeModule(filename, config) {
       };
     });
   } catch {
-    return [{ file, id: '', label: file, kind: '', available: false, enabled: false, events: [], commands: [], settingsSpec: [], settings: {}, settingsError: '', error: '插件无法加载' }];
+    return [{ file, id: '', label: file, kind: '', available: false, enabled: false, events: [], commands: [], settingsSpec: [], settings: {}, settingsSources: {}, settingsError: '', error: '插件无法加载' }];
   }
 }
 
@@ -229,6 +240,8 @@ export async function savePluginSettings(config, id, values) {
   const dir = path.dirname(filename);
   const resolved = writePackageSettings(dir, values);
   config.pluginSettings = { ...(config.pluginSettings || {}), [id]: resolved };
+  // 落盘的是用户提交值（空串=未填）；resolved 已做空串回落 default +
+  // 占位符解析，运行时与设置页展示天然一致，无需再补兑底。
   if (config.pluginPackages?.[id]) config.pluginPackages[id] = { ...config.pluginPackages[id], values: resolved, error: '' };
   return listInstalled(config);
 }

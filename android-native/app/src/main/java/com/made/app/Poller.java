@@ -64,6 +64,31 @@ public final class Poller {
         if (worker != null) worker.interrupt();
     }
 
+    /** 启动即刻用本地目录渲染列表（不等第一轮 config 往返）：沙箱唤醒要几十秒。 */
+    public void loadCatalogSync() {
+        if (!model.providers.isEmpty()) return;
+        String saved = Model.loadCatalog();
+        if (saved == null) return;
+        try {
+            Model.parseProviders(new JSONArray(saved), model.providers);
+            if (model.selectedProvider < 0 || model.selectedProvider >= model.providers.size()) {
+                model.selectedProvider = -1;
+                for (int i = 0; i < model.providers.size(); i++) {
+                    if (model.providers.get(i).available) {
+                        model.selectedProvider = i;
+                        break;
+                    }
+                }
+                if (model.selectedProvider < 0 && !model.providers.isEmpty()) {
+                    model.selectedProvider = 0;
+                }
+            }
+            Log.i(TAG, "startup catalog providers=" + model.providers.size());
+        } catch (Exception e) {
+            Log.w(TAG, "startup catalog", e);
+        }
+    }
+
     /** 立即触发一轮刷新（发任务/确认后调用）。 */
     public void kick() {
         // worker 的 sleep 被打断后立刻进入下一轮。
@@ -144,7 +169,10 @@ public final class Poller {
             if (r.ok()) {
                 try {
                     JSONObject o = new JSONObject(r.body);
-                    Model.parseProviders(o.optJSONArray("providers"), model.providers);
+                    JSONArray providersArr = o.optJSONArray("providers");
+                    Model.parseProviders(providersArr, model.providers);
+                    // 目录落盘：沙箱被回收/弱网拉不到 config 时，下次启动用它兜底
+                    Model.saveCatalog(providersArr == null ? "[]" : providersArr.toString());
                     if (model.selectedProvider >= model.providers.size()
                             || model.selectedProvider < 0) {
                         // 默认选第一个可用的。
@@ -168,6 +196,29 @@ public final class Poller {
                     model.connectionError = "";
                 } catch (Exception e) {
                     Log.w(TAG, "config parse", e);
+                }
+            } else if (model.providers.isEmpty()) {
+                // 桥接器不可达（沙箱可能已被回收）且还没有目录：用上次保存的
+                // 兜底，精灵照样能从本地缓存渲染，不至于整个助手页空白。
+                String saved = Model.loadCatalog();
+                if (saved != null) {
+                    try {
+                        Model.parseProviders(new JSONArray(saved), model.providers);
+                        model.selectedProvider = -1;
+                        for (int i = 0; i < model.providers.size(); i++) {
+                            if (model.providers.get(i).available) {
+                                model.selectedProvider = i;
+                                break;
+                            }
+                        }
+                        if (model.selectedProvider < 0 && !model.providers.isEmpty()) {
+                            model.selectedProvider = 0;
+                        }
+                        Log.i(TAG, "config unavailable, fallback catalog providers="
+                                + model.providers.size());
+                    } catch (Exception e) {
+                        Log.w(TAG, "fallback catalog parse", e);
+                    }
                 }
             } else if (r.code > 0) {
                 model.connectionError = "配置拉取失败：" + r.errorText();

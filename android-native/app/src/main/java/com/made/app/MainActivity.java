@@ -54,11 +54,18 @@ public class MainActivity extends Activity {
     private ScanRadar radar;
     private TextView scanStatus, rescanBtn;
     private LinearLayout foundList;
-    private LinearLayout scanCard, manualCard, pairingCard;
+    private LinearLayout scanCard, manualCard, pairingCard, cloudCard, cloudAgentCard;
     private EditText hostEdit, portEdit;
+    private EditText cloudServerEdit, cloudEmailEdit, cloudInviteEdit, cloudPassEdit;
+    private TextView cloudMsg, cloudActionBtn, cloudModeToggle;
+    private TextView agentStatusText, agentQuotaText, agentActionBtn, agentMsg, manualToggleLink;
+    private View cloudInviteRow, cloudServerRow;
+    private boolean cloudRegisterMode = false; // false=登录（默认），true=注册（多邀请码）
     private CheckBox httpsCheck;
-    private TextView pairName, pairCode, pairMsg, pairRetry, pairCancel;
-    private String lastHost = "", lastName = "";
+    private TextView pairName, pairCode, pairMsg, pairRetry, pairCancel, pairHint;
+    /** 当前配对是否为云端沙箱（bridgeUrl 含 /bridge/），文案与局域网配对不同。 */
+    private boolean pairingCloud;
+    private String lastHost = "", lastName = "", lastBaseUrl = "";
     private int lastPort = 8788;
     private int foundCount = 0;
 
@@ -82,6 +89,7 @@ public class MainActivity extends Activity {
     private long lastSpriteTapMs = 0;
     private float swipeDownX = 0, swipeDownY = 0;
     private String lastJobId = "";
+    private String actingJobId = "";   // 已点确认/取消待回调的任务：按钮置灰防重复点击
     private boolean suppressNextJobCard = false; // 切助手/会话后不弹旧任务卡
     private boolean emptySheetShown = false;     // 空态「暂无任务」面板已展开过一次
     private volatile boolean voiceUploading = false;
@@ -102,10 +110,12 @@ public class MainActivity extends Activity {
 
     @Override protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        if (Model.appContext == null) Model.appContext = getApplication();
         pairing = new Pairing(bridge, this);
         poller = new Poller(bridge, model);
         poller.setCommandSink(this::handleBoardCommand);
         buildUi();
+        pairingCloud = pairing.savedUrl().contains("/bridge/"); // 冷启动恢复时也要算云端模式（菜单入口依赖）
         if (bridge.isPaired()) {
             showHome();
             new Thread(() -> {
@@ -113,7 +123,7 @@ public class MainActivity extends Activity {
                 if (!valid) {
                     ui.post(() -> {
                         pairing.forget();
-                        showConnect("电脑已解除配对，重新连接一下");
+                        showConnect("连接已断开，重新连接一下");
                     });
                 }
             }, "made-verify").start();
@@ -196,17 +206,123 @@ public class MainActivity extends Activity {
         scanCard.addView(foundList, lp(-1, -2));
         page.addView(scanCard, lp(-1, -2));
 
-        // 分隔
-        TextView or = Ui.text(this, "找不到？手动添加", 12, Ui.SUB, false);
-        or.setGravity(Gravity.CENTER);
-        or.setPadding(0, dp(20), 0, dp(10));
-        page.addView(or, lp(-1, -2));
+        // 云端码得卡：登录为主流程（邮箱+密码+单按钮）；邀请码只在注册模式出现，
+        // 服务器地址折叠进「高级」，避免把所有东西铺在一起。
+        cloudCard = new LinearLayout(this);
+        cloudCard.setOrientation(LinearLayout.VERTICAL);
+        cloudCard.setBackground(Ui.card(this, Ui.SURFACE, 20, Ui.LINE, 1));
+        cloudCard.setPadding(dp(18), dp(18), dp(18), dp(18));
+
+        TextView cloudTitle = Ui.text(this, "☁  云端码得", 16, Ui.INK, true);
+        cloudCard.addView(cloudTitle, lp(-1, -2));
+        TextView cloudDesc = Ui.text(this, "在云端开一台专属桥接器，无需和电脑同一 Wi-Fi", 12, Ui.SUB, false);
+        cloudDesc.setPadding(0, dp(3), 0, dp(14));
+        cloudCard.addView(cloudDesc, lp(-1, -2));
+
+        cloudServerRow = labeledField("服务器地址", cloudServerEdit = styledEdit("https://cloud.made-world.link"));
+        String savedServer = pairing.cloudServer();
+        cloudServerEdit.setText(savedServer.isEmpty() ? "https://cloud.made-world.link" : savedServer);
+        cloudServerRow.setVisibility(View.GONE); // 高级项，默认收起
+        cloudCard.addView(cloudServerRow, lp(-1, -2));
+
+        cloudCard.addView(labeledField("邮箱", cloudEmailEdit = styledEdit("")), lp(-1, -2));
+        cloudEmailEdit.setInputType(InputType.TYPE_CLASS_TEXT
+                | InputType.TYPE_TEXT_VARIATION_EMAIL_ADDRESS);
+
+        cloudInviteRow = labeledField("邀请码", cloudInviteEdit = styledEdit(""));
+        cloudInviteEdit.setInputType(InputType.TYPE_CLASS_TEXT
+                | InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD);
+        cloudInviteEdit.setAllCaps(true);
+        cloudInviteRow.setVisibility(View.GONE); // 注册模式才显示
+        cloudCard.addView(cloudInviteRow, lp(-1, -2));
+
+        cloudCard.addView(labeledField("密码", cloudPassEdit = styledEdit("")), lp(-1, -2));
+        cloudPassEdit.setInputType(InputType.TYPE_CLASS_TEXT
+                | InputType.TYPE_TEXT_VARIATION_PASSWORD);
+
+        cloudMsg = Ui.text(this, "", 12, Ui.SUB, false);
+        cloudMsg.setPadding(0, dp(2), 0, dp(2));
+        cloudCard.addView(cloudMsg, lp(-1, -2));
+
+        cloudActionBtn = Ui.pillButton(this, "登录并连接", true);
+        cloudActionBtn.setOnClickListener(v -> cloudGo(cloudRegisterMode));
+        LinearLayout.LayoutParams cabLp = lp(-1, -2);
+        cabLp.topMargin = dp(10);
+        cloudCard.addView(cloudActionBtn, cabLp);
+
+        // 底部：模式切换（左） + 高级（右）
+        LinearLayout cloudFoot = new LinearLayout(this);
+        cloudFoot.setOrientation(LinearLayout.HORIZONTAL);
+        cloudModeToggle = Ui.text(this, "没有账号？注册", 13, Ui.PRIMARY, true);
+        cloudModeToggle.setPadding(dp(2), dp(12), 0, dp(2));
+        cloudModeToggle.setOnClickListener(v -> toggleCloudMode());
+        Ui.press(cloudModeToggle, 0.92f);
+        cloudFoot.addView(cloudModeToggle, new LinearLayout.LayoutParams(0, -2, 1f));
+        TextView cloudAdvanced = Ui.text(this, "高级 ▾", 13, Ui.SUB, false);
+        cloudAdvanced.setPadding(0, dp(12), dp(2), dp(2));
+        cloudAdvanced.setOnClickListener(v -> {
+            boolean show = cloudServerRow.getVisibility() != View.VISIBLE;
+            cloudServerRow.setVisibility(show ? View.VISIBLE : View.GONE);
+            cloudAdvanced.setText(show ? "高级 ▴" : "高级 ▾");
+        });
+        Ui.press(cloudAdvanced, 0.92f);
+        cloudFoot.addView(cloudAdvanced, lp(-2, -2));
+        cloudCard.addView(cloudFoot, lp(-1, -2));
+        page.addView(cloudCard, lp(-1, -2));
+
+        // 云端智能体卡：登录成功后替换登录表单。沙箱不随注册/登录自动拉起，
+        // 由用户点「生成云端智能体」才计费创建；运行中可直接进入配对。
+        cloudAgentCard = new LinearLayout(this);
+        cloudAgentCard.setOrientation(LinearLayout.VERTICAL);
+        cloudAgentCard.setBackground(Ui.card(this, Ui.SURFACE, 20, Ui.LINE, 1));
+        cloudAgentCard.setPadding(dp(18), dp(18), dp(18), dp(18));
+        cloudAgentCard.setVisibility(View.GONE);
+
+        TextView agentTitle = Ui.text(this, "☁  云端智能体", 16, Ui.INK, true);
+        cloudAgentCard.addView(agentTitle, lp(-1, -2));
+        agentStatusText = Ui.text(this, "", 13, Ui.SUB, false);
+        agentStatusText.setPadding(0, dp(3), 0, 0);
+        cloudAgentCard.addView(agentStatusText, lp(-1, -2));
+        agentQuotaText = Ui.text(this, "", 12, Ui.SUB, false);
+        agentQuotaText.setPadding(0, dp(4), 0, dp(10));
+        cloudAgentCard.addView(agentQuotaText, lp(-1, -2));
+
+        agentActionBtn = Ui.pillButton(this, "生成云端智能体", true);
+        agentActionBtn.setOnClickListener(v -> agentGo(null));
+        cloudAgentCard.addView(agentActionBtn, lp(-1, -2));
+
+        agentMsg = Ui.text(this, "", 12, Ui.SUB, false);
+        agentMsg.setPadding(0, dp(8), 0, 0);
+        cloudAgentCard.addView(agentMsg, lp(-1, -2));
+
+        TextView agentLogout = Ui.text(this, "退出登录", 13, Ui.SUB, false);
+        agentLogout.setPadding(dp(2), dp(12), 0, dp(2));
+        agentLogout.setOnClickListener(v -> {
+            pairing.forget();
+            showConnect("");
+        });
+        Ui.press(agentLogout, 0.92f);
+        cloudAgentCard.addView(agentLogout, lp(-1, -2));
+        page.addView(cloudAgentCard, lp(-1, -2));
+
+        // 手动添加：折叠成一行小链接，点开展开表单卡
+        manualToggleLink = Ui.text(this, "手动添加电脑 ›", 12, Ui.SUB, false);
+        manualToggleLink.setGravity(Gravity.CENTER);
+        manualToggleLink.setPadding(0, dp(18), 0, dp(2));
+        manualToggleLink.setOnClickListener(v -> {
+            boolean show = manualCard.getVisibility() != View.VISIBLE;
+            manualCard.setVisibility(show ? View.VISIBLE : View.GONE);
+            manualToggleLink.setText(show ? "收起手动添加 ▴" : "手动添加电脑 ›");
+        });
+        Ui.press(manualToggleLink, 0.92f);
+        page.addView(manualToggleLink, lp(-1, -2));
 
         // 手动卡
         manualCard = new LinearLayout(this);
         manualCard.setOrientation(LinearLayout.VERTICAL);
         manualCard.setBackground(Ui.card(this, Ui.SURFACE, 20, Ui.LINE, 1));
         manualCard.setPadding(dp(18), dp(18), dp(18), dp(18));
+        manualCard.setVisibility(View.GONE);
 
         hostEdit = styledEdit("电脑地址（IP 或域名）");
         manualCard.addView(hostEdit, lp(-1, -2));
@@ -255,11 +371,11 @@ public class MainActivity extends Activity {
         pairMsg.setGravity(Gravity.CENTER);
         pairingCard.addView(pairMsg, lp(-1, -2));
 
-        TextView hint = Ui.text(this, "在电脑工作台点「添加设备」，输入同一个配对码",
+        pairHint = Ui.text(this, "在电脑工作台点「添加设备」，输入同一个配对码",
                 12, Ui.SUB, false);
-        hint.setGravity(Gravity.CENTER);
-        hint.setPadding(0, dp(8), 0, dp(14));
-        pairingCard.addView(hint, lp(-1, -2));
+        pairHint.setGravity(Gravity.CENTER);
+        pairHint.setPadding(0, dp(8), 0, dp(14));
+        pairingCard.addView(pairHint, lp(-1, -2));
 
         LinearLayout pairBtns = new LinearLayout(this);
         pairBtns.setOrientation(LinearLayout.HORIZONTAL);
@@ -275,7 +391,7 @@ public class MainActivity extends Activity {
             pairing.cancelPending();
             showConnect("");
         });
-        pairRetry.setOnClickListener(v -> startPairing(lastHost, lastPort, lastName));
+        pairRetry.setOnClickListener(v -> startPairingAt(lastBaseUrl, lastName));
         page.addView(pairingCard, lp(-1, -2));
         return scroll;
     }
@@ -289,10 +405,30 @@ public class MainActivity extends Activity {
         e.setSingleLine();
         e.setBackground(Ui.fill(this, Ui.SOFT, 12));
         e.setPadding(dp(14), dp(11), dp(14), dp(11));
-        LinearLayout.LayoutParams p = lp(-1, -2);
-        p.bottomMargin = dp(10);
-        e.setLayoutParams(p);
         return e;
+    }
+
+    /** label 上置的输入字段：比长 hint 清爽，也避免 hint 提示被输入覆盖。 */
+    private View labeledField(String label, EditText e) {
+        LinearLayout col = new LinearLayout(this);
+        col.setOrientation(LinearLayout.VERTICAL);
+        TextView t = Ui.text(this, label, 12, Ui.SUB, true);
+        t.setPadding(0, 0, 0, dp(4));
+        col.addView(t, lp(-2, -2));
+        col.addView(e, lp(-1, -2));
+        LinearLayout.LayoutParams wrap = lp(-1, -2);
+        wrap.bottomMargin = dp(10);
+        col.setLayoutParams(wrap);
+        return col;
+    }
+
+    /** 登录 ⇄ 注册模式切换：邀请码字段显隐 + 主按钮/链接文案。 */
+    private void toggleCloudMode() {
+        cloudRegisterMode = !cloudRegisterMode;
+        cloudInviteRow.setVisibility(cloudRegisterMode ? View.VISIBLE : View.GONE);
+        cloudActionBtn.setText(cloudRegisterMode ? "注册并连接" : "登录并连接");
+        cloudModeToggle.setText(cloudRegisterMode ? "已有账号？登录" : "没有账号？注册");
+        cloudMsg.setText("");
     }
 
     /**
@@ -681,6 +817,11 @@ public class MainActivity extends Activity {
         if (!host.isEmpty()) hostEdit.setText(host);
         String port = pairing.savedPort();
         portEdit.setText(port.isEmpty() ? "8788" : port);
+        // 已登录云端（有 cloud 令牌）→ 直接进云端智能体卡，不重复摆登录表单
+        if (!pairing.cloudToken().isEmpty()) {
+            showAgentCard();
+            return;
+        }
         startScan();
     }
 
@@ -689,12 +830,13 @@ public class MainActivity extends Activity {
         connectScreen.setVisibility(View.GONE);
         homeScreen.setVisibility(View.VISIBLE);
         announceCapabilities(pager.currentCommandNames());
+        poller.loadCatalogSync(); // 先用本地目录渲染，不等第一轮网络（沙箱唤醒要几十秒）
         renderModel();
         poller.start(new Poller.Listener() {
             @Override public void onModelUpdated() { renderModel(); }
             @Override public void onUnpaired() {
                 pairing.forget();
-                showConnect("电脑已解除配对，重新连接一下");
+                showConnect("连接已断开，重新连接一下");
             }
         });
     }
@@ -706,8 +848,10 @@ public class MainActivity extends Activity {
         foundList.removeAllViews();
         foundCount = 0;
         scanCard.setVisibility(View.VISIBLE);
-        manualCard.setVisibility(View.VISIBLE);
+        cloudCard.setVisibility(View.VISIBLE);
+        cloudAgentCard.setVisibility(View.GONE);
         pairingCard.setVisibility(View.GONE);
+        manualToggleLink.setVisibility(View.VISIBLE);
         radar.start();
         scanStatus.setText("正在扫描附近的电脑…");
         scanStatus.setTextColor(Ui.SUB);
@@ -777,30 +921,40 @@ public class MainActivity extends Activity {
             scanStatus.setTextColor(Ui.ERR);
             return;
         }
-        startPairing(host, port, host);
+        startPairingAt((httpsCheck.isChecked() ? "https://" : "http://") + host + ":" + port, host);
     }
 
     private void startPairing(String host, int port, String name) {
-        lastHost = host;
-        lastPort = port;
+        startPairingAt("http://" + host + ":" + port, name);
+    }
+
+    /** 用完整 baseUrl（可含路径，如云端 bridgeUrl）进入配对卡。 */
+    private void startPairingAt(String baseUrl, String name) {
+        lastBaseUrl = baseUrl;
         lastName = name;
+        pairingCloud = baseUrl.contains("/bridge/");
         scanner.cancel();
         radar.stop();
         scanCard.setVisibility(View.GONE);
         manualCard.setVisibility(View.GONE);
+        cloudCard.setVisibility(View.GONE);
         pairingCard.setVisibility(View.VISIBLE);
         pairName.setText(name);
         pairCode.setVisibility(View.GONE);
         pairRetry.setVisibility(View.GONE);
         pairCancel.setText("取消");
-        pairMsg.setText("正在连接电脑…");
+        pairMsg.setText(pairingCloud ? "正在连接云端码得…" : "正在连接电脑…");
         pairMsg.setTextColor(Ui.SUB);
-        pairing.startManualPair(host, port, false, (phase, message, code) -> ui.post(() -> {
+        pairHint.setText(pairingCloud
+                ? "你的云端专属沙箱会自动完成配对，无需电脑操作"
+                : "在电脑工作台点「添加设备」，输入同一个配对码");
+        pairing.startPairingUrl(baseUrl, (phase, message, code) -> ui.post(() -> {
             switch (phase) {
                 case WAITING_APPROVAL:
                     pairCode.setText(code);
                     pairCode.setVisibility(View.VISIBLE);
-                    pairMsg.setText("已找到电脑，等你在电脑上确认");
+                    pairMsg.setText(pairingCloud ? "云端配对中，几秒内自动完成…"
+                            : "已找到电脑，等你在电脑上确认");
                     pairMsg.setTextColor(Ui.SUB);
                     break;
                 case PAIRED:
@@ -818,6 +972,225 @@ public class MainActivity extends Activity {
                     break;
             }
         }));
+    }
+
+    // ================= 云端码得（注册/登录 → 拉起沙箱 → 配对） =================
+
+    /** 注册或登录 cloud，拉起专属沙箱后进入配对。 */
+    private void cloudGo(boolean register) {
+        String server = cloudServerEdit.getText().toString().trim();
+        while (server.endsWith("/")) server = server.substring(0, server.length() - 1);
+        String email = cloudEmailEdit.getText().toString().trim();
+        String password = cloudPassEdit.getText().toString();
+        if (!server.startsWith("http://") && !server.startsWith("https://")) {
+            cloudMsg.setText("服务器地址要以 http:// 或 https:// 开头");
+            cloudMsg.setTextColor(Ui.ERR);
+            return;
+        }
+        if (email.isEmpty() || password.length() < 8) {
+            cloudMsg.setText("请填邮箱和至少 8 位的密码");
+            cloudMsg.setTextColor(Ui.ERR);
+            return;
+        }
+        cloudMsg.setText(register ? "正在注册…" : "正在登录…");
+        cloudMsg.setTextColor(Ui.SUB);
+        setCloudButtonsEnabled(false);
+        final String serverUrl = server;
+        new Thread(() -> {
+            try {
+                // 1. 注册/登录拿 cloud JWT
+                JSONObject authBody = new JSONObject();
+                authBody.put("email", email);
+                authBody.put("password", password);
+                if (register) {
+                    authBody.put("inviteCode", cloudInviteEdit.getText().toString().trim());
+                }
+                Bridge.Resp r = bridge.exchangeNoAuth(serverUrl + (register
+                        ? "/v1/auth/register" : "/v1/auth/login"), "POST",
+                        authBody.toString().getBytes(java.nio.charset.StandardCharsets.UTF_8),
+                        "application/json");
+                if (!r.ok()) {
+                    cloudFail(register ? "注册失败：" + r.errorText() : "登录失败：" + r.errorText());
+                    return;
+                }
+                String cloudToken = new JSONObject(r.body).optString("token");
+                if (cloudToken.isEmpty()) {
+                    cloudFail("云端未返回令牌");
+                    return;
+                }
+                // 2. 只保存凭据并进入「云端智能体」卡；沙箱不随登录自动拉起，
+                //    由用户在卡片里点「生成云端智能体」才创建（计费闸口在 cloud 侧）
+                bridge.setCloudToken(cloudToken);
+                pairing.saveCloud(cloudToken, serverUrl);
+                ui.post(() -> {
+                    cloudMsg.setText("");
+                    setCloudButtonsEnabled(true);
+                    showAgentCard();
+                });
+            } catch (Exception e) {
+                Log.w(TAG, "cloud flow", e);
+                cloudFail("云端连接失败");
+            }
+        }, "made-cloud").start();
+    }
+
+    private void setCloudButtonsEnabled(boolean enabled) {
+        cloudServerEdit.setEnabled(enabled);
+        cloudEmailEdit.setEnabled(enabled);
+        cloudInviteEdit.setEnabled(enabled);
+        cloudPassEdit.setEnabled(enabled);
+        cloudActionBtn.setEnabled(enabled);
+        cloudActionBtn.setAlpha(enabled ? 1f : 0.55f);
+    }
+
+    private void cloudFail(String message) {
+        ui.post(() -> {
+            cloudMsg.setText(message);
+            cloudMsg.setTextColor(Ui.ERR);
+            setCloudButtonsEnabled(true);
+        });
+    }
+
+    // ================= 云端智能体卡（登录后） =================
+
+    /** 登录成功后展示：沙箱状态 + 余额 + 手动生成/连接按钮。 */
+    private void showAgentCard() {
+        scanCard.setVisibility(View.GONE);
+        cloudCard.setVisibility(View.GONE);
+        manualCard.setVisibility(View.GONE);
+        manualToggleLink.setVisibility(View.GONE);
+        pairingCard.setVisibility(View.GONE);
+        cloudAgentCard.setVisibility(View.VISIBLE);
+        refreshAgentStatus();
+    }
+
+    private void refreshAgentStatus() {
+        final String server = cloudServerOf();
+        agentStatusText.setText("正在查询状态…");
+        agentQuotaText.setText("");
+        agentMsg.setText("");
+        new Thread(() -> {
+            try {
+                Bridge.Resp sb = bridge.exchangeNoAuth(server + "/v1/sandboxes/current",
+                        "GET", null, null, 15000);
+                Bridge.Resp bill = bridge.exchangeNoAuth(server + "/v1/billing",
+                        "GET", null, null, 15000);
+                String status = "none";
+                String bridgeUrl = "";
+                if (sb.ok()) {
+                    JSONObject o = new JSONObject(sb.body);
+                    status = o.optString("status", "none");
+                    bridgeUrl = o.optString("bridgeUrl", "");
+                }
+                String quotaLine = "";
+                if (bill.ok()) {
+                    JSONObject rem = new JSONObject(bill.body).optJSONObject("remaining");
+                    if (rem != null) {
+                        quotaLine = "余额：沙箱 " + fmtQty(rem.optDouble("sandboxMin", 0)) + " 分钟 · 模型 "
+                                + fmtQty(rem.optDouble("llmTokens", 0)) + " tokens · 语音 "
+                                + fmtQty(rem.optDouble("asrCount", 0)) + " 次";
+                    }
+                }
+                final String st = status;
+                final String url = bridgeUrl;
+                final String quota = quotaLine;
+                ui.post(() -> {
+                    agentQuotaText.setText(quota);
+                    boolean running = "running".equals(st) || "starting".equals(st);
+                    agentStatusText.setText(running ? "智能体运行中 · 闲置 10 分钟自动回收，下次连接自动拉起"
+                            : "error".equals(st) ? "智能体异常，可重新生成" : "智能体未生成 · 生成后自动配对到设备");
+                    agentStatusText.setTextColor(Ui.SUB);
+                    agentActionBtn.setText(running ? "进入配对" : "生成云端智能体");
+                    agentActionBtn.setOnClickListener(v -> agentGo(url));
+                    agentActionBtn.setEnabled(true);
+                    agentActionBtn.setAlpha(1f);
+                });
+            } catch (Exception e) {
+                ui.post(() -> {
+                    agentStatusText.setText("状态查询失败，请重试");
+                    agentStatusText.setTextColor(Ui.ERR);
+                    agentActionBtn.setEnabled(true);
+                    agentActionBtn.setAlpha(1f);
+                });
+            }
+        }, "made-agent-status").start();
+    }
+
+    private String fmtQty(double v) {
+        if (v >= 10000) return String.format("%.0f万", v / 10000);
+        if (v == Math.floor(v)) return String.valueOf((long) v);
+        return String.format("%.0f", v);
+    }
+
+    /** 生成（或连接已有）云端智能体 → 拉起沙箱 → 进入配对。 */
+    private void agentGo(String knownUrl) {
+        final String server = cloudServerOf();
+        agentMsg.setText("");
+        agentActionBtn.setEnabled(false);
+        agentActionBtn.setAlpha(0.55f);
+        final boolean reuse = knownUrl != null && !knownUrl.isEmpty();
+        agentStatusText.setText(reuse ? "正在连接云端智能体…" : "正在生成云端智能体…（首次约半分钟）");
+        agentStatusText.setTextColor(Ui.SUB);
+        new Thread(() -> {
+            try {
+                Bridge.Resp sb = null;
+                for (int attempt = 0; attempt < 2; attempt++) {
+                    try {
+                        sb = bridge.exchangeNoAuth(server + "/v1/sandboxes", "POST",
+                                "{}".getBytes(java.nio.charset.StandardCharsets.UTF_8), "application/json",
+                                60000); // 沙箱冷启动可能 10 秒以上
+                        break;
+                    } catch (Exception netErr) {
+                        if (attempt == 0) {
+                            ui.post(() -> agentStatusText.setText("网络抖动，重试…"));
+                        } else {
+                            throw netErr;
+                        }
+                    }
+                }
+                final Bridge.Resp sbFinal = sb;
+                if (!sbFinal.ok()) {
+                    ui.post(() -> {
+                        agentMsg.setText("生成失败：" + sbFinal.errorText());
+                        agentMsg.setTextColor(Ui.ERR);
+                        agentActionBtn.setEnabled(true);
+                        agentActionBtn.setAlpha(1f);
+                        agentStatusText.setText("");
+                    });
+                    return;
+                }
+                String bridgeUrl = new JSONObject(sb.body).optString("bridgeUrl");
+                if (bridgeUrl.isEmpty()) {
+                    ui.post(() -> {
+                        agentMsg.setText("云端未返回桥接器地址");
+                        agentMsg.setTextColor(Ui.ERR);
+                        agentActionBtn.setEnabled(true);
+                        agentActionBtn.setAlpha(1f);
+                    });
+                    return;
+                }
+                ui.post(() -> {
+                    agentStatusText.setText("智能体已就绪，正在进入配对…");
+                    startPairingAt(bridgeUrl, "云端码得");
+                });
+            } catch (Exception e) {
+                Log.w(TAG, "agent flow", e);
+                ui.post(() -> {
+                    agentMsg.setText("云端连接失败，请重试");
+                    agentMsg.setTextColor(Ui.ERR);
+                    agentActionBtn.setEnabled(true);
+                    agentActionBtn.setAlpha(1f);
+                    agentStatusText.setText("");
+                });
+            }
+        }, "made-agent").start();
+    }
+
+    private String cloudServerOf() {
+        String server = pairing.cloudServer();
+        if (server.isEmpty()) server = "https://cloud.made-world.link";
+        while (server.endsWith("/")) server = server.substring(0, server.length() - 1);
+        return server;
     }
 
     // ================= 板侧事件与命令（对齐固件 vibe_app_board_events/commands） =================
@@ -996,8 +1369,10 @@ public class MainActivity extends Activity {
             providerLabel.setText("选择助手");
         }
         Model.Session s = model.session();
-        sessionLabel.setText(s == null || TextUtils.isEmpty(s.title)
-                ? "未选择会话" : s.title);
+        sessionLabel.setText(model.providers.isEmpty()
+                ? "正在唤醒云端沙箱…"
+                : (s == null || TextUtils.isEmpty(s.title)
+                        ? "未选择会话" : s.title));
 
         if (TextUtils.isEmpty(model.connectionError)) {
             connBanner.setVisibility(View.GONE);
@@ -1061,6 +1436,7 @@ public class MainActivity extends Activity {
             jobDot.getBackground().setColorFilter(Ui.SUB,
                     android.graphics.PorterDuff.Mode.SRC_IN);
             jobActions.setVisibility(View.GONE);
+            actingJobId = "";
             if (!emptySheetShown) {
                 emptySheetShown = true;
                 snapToSheet(SHEET_PEEK);
@@ -1101,8 +1477,21 @@ public class MainActivity extends Activity {
         jobError.setText(job.error);
         jobError.setVisibility(job.error.isEmpty() ? View.GONE : View.VISIBLE);
         // peek 档藏操作行（只露边缘）；确认/取消在半屏/全屏可见
-        jobActions.setVisibility("waiting_confirmation".equals(job.status)
-                && sheetState != SHEET_PEEK ? View.VISIBLE : View.GONE);
+        renderJobButtons();
+    }
+
+    /** 确认/取消按钮状态：等待中可点，提交中置灰（用户点了立刻有反馈）。 */
+    private void renderJobButtons() {
+        Model.Job job = model.jobs.isEmpty() ? null : model.jobs.get(0);
+        boolean waiting = job != null && "waiting_confirmation".equals(job.status)
+                && sheetState != SHEET_PEEK;
+        boolean acting = job != null && job.id.equals(actingJobId);
+        jobActions.setVisibility(waiting ? View.VISIBLE : View.GONE);
+        confirmBtn.setEnabled(waiting && !acting);
+        cancelBtn.setEnabled(waiting && !acting);
+        confirmBtn.setAlpha(acting ? 0.45f : 1f);
+        cancelBtn.setAlpha(acting ? 0.45f : 1f);
+        confirmBtn.setText(acting ? "提交中…" : "确认执行");
     }
 
     // ================= 任务面板（底部拖拽三档） =================
@@ -1238,11 +1627,23 @@ public class MainActivity extends Activity {
     }
 
     private void showMenu() {
+        // 云端模式多一项桥接器设置；局域网模式菜单保持原样。
+        java.util.List<String> items = new java.util.ArrayList<>(
+                java.util.Arrays.asList(pairingCloud
+                        ? new String[]{"云端桥接器设置", "切换会话", "删除会话", "新建会话", "断开连接"}
+                        : new String[]{"切换会话", "删除会话", "新建会话", "断开连接"}));
+        int cloudIdx = pairingCloud ? 0 : -1;
         new AlertDialog.Builder(this)
-                .setItems(new String[]{"切换会话", "删除会话", "新建会话", "断开连接"}, (d, which) -> {
-                    if (which == 0) pickSession();
-                    else if (which == 1) deleteCurrentSession();
-                    else if (which == 2) createSession();
+                .setItems(items.toArray(new String[0]), (d, which) -> {
+                    int i = which;
+                    if (i == cloudIdx) {
+                        openCloudSettings();
+                        return;
+                    }
+                    if (pairingCloud) i -= 1; // 后续项回到原索引
+                    if (i == 0) pickSession();
+                    else if (i == 1) deleteCurrentSession();
+                    else if (i == 2) createSession();
                     else {
                         pairing.forget();
                         model.sessions.clear();
@@ -1252,6 +1653,15 @@ public class MainActivity extends Activity {
                     }
                 })
                 .show();
+    }
+
+    /** 云端沙箱桥接器设置页（仅 pairingCloud 时菜单可见）。 */
+    private void openCloudSettings() {
+        android.content.Intent it = new android.content.Intent(this, CloudSettingsActivity.class);
+        it.putExtra("base", bridge.baseUrl());
+        it.putExtra("token", bridge.token());
+        it.putExtra("cloudToken", bridge.cloudToken());
+        startActivity(it);
     }
 
     /** 删除当前会话（POST /device/sessions/<id>/delete），先确认再动手。 */
@@ -1286,49 +1696,78 @@ public class MainActivity extends Activity {
                 .show();
     }
 
-    private void createSession() {
+    /**
+     * 阻塞确保当前有会话：有现成的直接返回 {id, projectId}；没有就自动新建。
+     * 返回 null = 新建失败（网络/桥接器不可达）。必须在后台线程调用。
+     */
+    private JSONObject ensureSessionBlocking() {
+        Model.Session cur = model.session();
+        if (cur != null) {
+            try {
+                JSONObject o = new JSONObject();
+                o.put("id", cur.id);
+                o.put("projectId", cur.projectId);
+                return o;
+            } catch (Exception ignored) { }
+        }
         Model.Provider p = model.provider();
-        if (p == null) return;
+        if (p == null) return null;
         String project = model.defaultProject;
+        Bridge.Resp r = bridge.postJson("/device/sessions?provider=" + p.id
+                + (project.isEmpty() ? "" : "&projectId=" + project), "{}");
+        if (!r.ok()) return null;
+        try {
+            JSONObject o = new JSONObject(r.body);
+            String id = o.optString("id");
+            if (id.isEmpty()) return null;
+            model.selectedSessionId = id;
+            ui.post(() -> {
+                model.sessions.clear(); // 触发下轮重建
+                poller.kick();
+            });
+            return o;
+        } catch (Exception ignored) {
+            return null;
+        }
+    }
+
+    private void createSession() {
         new Thread(() -> {
-            Bridge.Resp r = bridge.postJson("/device/sessions?provider=" + p.id
-                    + (project.isEmpty() ? "" : "&projectId=" + project), "{}");
-            if (r.ok()) {
-                try {
-                    JSONObject o = new JSONObject(r.body);
-                    model.selectedSessionId = o.optString("id");
-                    ui.post(() -> {
-                        model.sessions.clear(); // 触发下轮重建
-                        poller.kick();
-                        Toast.makeText(this, "已新建会话", Toast.LENGTH_SHORT).show();
-                    });
-                } catch (Exception ignored) { }
-            } else {
-                ui.post(() -> Toast.makeText(this, "新建失败：" + r.errorText(),
-                        Toast.LENGTH_SHORT).show());
-            }
+            JSONObject o = ensureSessionBlocking();
+            ui.post(() -> Toast.makeText(this,
+                    o != null ? "已新建会话" : "新建失败：电脑连接失败，请检查网络后重试",
+                    Toast.LENGTH_SHORT).show());
         }, "made-new-session").start();
     }
 
     private void sendTask() {
         String text = inputEdit.getText().toString().trim();
         if (text.isEmpty()) return;
-        if (model.selectedSessionId.isEmpty()) {
-            Toast.makeText(this, "还没有会话，先点顶部新建一个", Toast.LENGTH_SHORT).show();
-            return;
-        }
         inputEdit.setText("");
         suppressNextJobCard = false;
-        JSONObject body = new JSONObject();
-        try {
-            body.put("instruction", text);
-            body.put("sessionId", model.selectedSessionId);
-        } catch (Exception ignored) { }
         new Thread(() -> {
+            // 没有会话就自动新建（弱网下沙箱刚拉起时会话列表为空，不能把用户挡在门外）
+            JSONObject sess = ensureSessionBlocking();
+            if (sess == null) {
+                ui.post(() -> {
+                    inputEdit.setText(text);
+                    Toast.makeText(this, "发送失败：会话未就绪，请检查网络后重试",
+                            Toast.LENGTH_LONG).show();
+                });
+                return;
+            }
+            JSONObject body = new JSONObject();
+            try {
+                body.put("instruction", text);
+                body.put("sessionId", sess.optString("id"));
+            } catch (Exception ignored) { }
             Bridge.Resp r = bridge.postJson("/device/tasks", body.toString());
             if (!r.ok()) {
-                ui.post(() -> Toast.makeText(this, "发送失败：" + r.errorText(),
-                        Toast.LENGTH_SHORT).show());
+                ui.post(() -> {
+                    inputEdit.setText(text); // 发送失败把文字还回去，别让用户重打
+                    Toast.makeText(this, "发送失败：" + r.errorText(),
+                            Toast.LENGTH_SHORT).show();
+                });
             }
             poller.kick();
         }, "made-send").start();
@@ -1337,9 +1776,22 @@ public class MainActivity extends Activity {
     private void act(String verb) {
         if (model.jobs.isEmpty()) return;
         String id = model.jobs.get(0).id;
+        if (id.equals(actingJobId)) return; // 已提交待回调：忽略重复点击
+        actingJobId = id;
+        renderJobButtons(); // 乐观置灰：用户点了立刻知道
         new Thread(() -> {
-            bridge.postJson("/device/tasks/" + id + "/" + verb, "");
-            poller.kick();
+            Bridge.Resp r = bridge.postJson("/device/tasks/" + id + "/" + verb, "");
+            ui.post(() -> {
+                if (id.equals(actingJobId)) {
+                    actingJobId = ""; // 请求已回：恢复按钮，状态随下轮轮询刷新
+                    renderJobButtons();
+                    if (!r.ok()) {
+                        Toast.makeText(this, "提交失败：" + r.errorText(),
+                                Toast.LENGTH_SHORT).show();
+                    }
+                }
+                poller.kick();
+            });
         }, "made-act").start();
     }
 
@@ -1396,13 +1848,22 @@ public class MainActivity extends Activity {
                         return;
                     }
                     Model.Provider p = model.provider();
-                    Model.Session s = model.session();
-                    if (p == null || s == null) return;
+                    if (p == null) return;
+                    // 没有会话不能静默丢弃（旧实现直接 return，用户说了话却毫无反应）。
+                    // 自动新建会话再上传；失败明确提示。
+                    JSONObject sess = ensureSessionBlocking();
+                    if (sess == null) {
+                        ui.post(() -> Toast.makeText(this,
+                                "会话未就绪（网络波动），请再试一次",
+                                Toast.LENGTH_LONG).show());
+                        return;
+                    }
                     suppressNextJobCard = false;
-                                voiceUploading = true;
+                    voiceUploading = true;
                     ui.post(this::renderModel);
                     String path = "/device/voice?provider=" + p.id
-                            + "&projectId=" + s.projectId + "&sessionId=" + s.id
+                            + "&projectId=" + sess.optString("projectId", "cloud")
+                            + "&sessionId=" + sess.optString("id")
                             + "&uiLocale=zh-CN";
                     Bridge.Resp r = bridge.postBytes(path, wav, "audio/wav", 90000);
                     voiceUploading = false;

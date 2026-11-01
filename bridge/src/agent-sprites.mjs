@@ -406,3 +406,24 @@ export function spriteChunk(sprite, file, offset, length) {
   const data = fs.readFileSync(path.join(sprite.dir, file));
   return data.subarray(start, end);
 }
+
+/**
+ * 整包素材：把 sprite/ 里全部已声明文件按帧格式打进一个 Buffer，客户端一次请求带回。
+ * 帧格式（大端）：[u16 名长][文件名 UTF-8][u32 数据长][数据] × N，Buffer 结束即包尾。
+ * 弱网优化：分片端点每 4KB 一个往返，云端转发链路下整包要 1 分半且易截断；整包一次到位。
+ */
+export function spriteBundle(sprite) {
+  if (!sprite?.files?.length) return null;
+  const parts = [];
+  for (const entry of sprite.files) {
+    const name = Buffer.from(entry.file, 'utf8');
+    if (name.length > 0xffff) throw new Error(`素材文件名过长：${entry.file}`);
+    const data = fs.readFileSync(path.join(sprite.dir, entry.file));
+    const head = Buffer.alloc(2 + name.length + 4);
+    head.writeUInt16BE(name.length, 0);
+    name.copy(head, 2);
+    head.writeUInt32BE(data.length, 2 + name.length);
+    parts.push(head, data);
+  }
+  return Buffer.concat(parts);
+}

@@ -5,7 +5,7 @@ import net from 'node:net';
 import dgram from 'node:dgram';
 import os from 'node:os';
 import path from 'node:path';
-import { readSprite, spriteChunk, SPRITE_MAX_TOTAL_BYTES, SPRITE_MAX_CHUNK } from '../src/agent-sprites.mjs';
+import { readSprite, spriteChunk, spriteBundle, SPRITE_MAX_TOTAL_BYTES, SPRITE_MAX_CHUNK } from '../src/agent-sprites.mjs';
 import { testRegistry } from './helpers/fixture-agents.mjs';
 
 const PNG_1PX = Buffer.from([
@@ -206,6 +206,50 @@ test('设备端全链路：/device/config 暴露 sprite 清单，manifest 与分
   // 4) 未知文件与未知助手都是 404。
   assert.equal((await fetch(`${device}/device/sprite/demo_sprite/nope.png`, { headers })).status, 404);
   assert.equal((await fetch(`${device}/device/sprite/other_agent/manifest.json`, { headers })).status, 404);
+
+  // 5) 整包端点：一次请求带回全部素材，帧格式可逆。
+  const bundleRes = await fetch(`${device}/device/sprite/bundle?provider=demo_sprite`, { headers });
+  assert.equal(bundleRes.status, 200);
+  assert.ok(bundleRes.headers.get('x-sprite-version'));
+  const bundleBuf = Buffer.from(await bundleRes.arrayBuffer());
+  const bundled = new Map();
+  let bp = 0;
+  while (bp < bundleBuf.length) {
+    const nameLen = bundleBuf.readUInt16BE(bp); bp += 2;
+    const name = bundleBuf.subarray(bp, bp + nameLen).toString('utf8'); bp += nameLen;
+    const dataLen = bundleBuf.readUInt32BE(bp); bp += 4;
+    bundled.set(name, bundleBuf.subarray(bp, bp + dataLen)); bp += dataLen;
+  }
+  assert.equal(bp, bundleBuf.length);
+  assert.ok(bundled.size >= 1, 'bundle 应至少包含一个文件');
+  assert.ok(bundled.get('manifest.json') || bundled.size > 0);
+  assert.equal((await fetch(`${device}/device/sprite/bundle?provider=other_agent`, { headers })).status, 404);
+});
+
+test('spriteBundle 整包：帧格式可逆解析出全部文件', () => {
+  const body = Buffer.from('body-bytes-0123456789');
+  const eyes = PNG_1PX;
+  const dir = makePackage({
+    manifest: validManifest(),
+    files: { 'body.png': body, 'eyes-open.png': eyes, 'eyes-closed.png': eyes },
+  });
+  const sprite = readSprite(dir);
+  const bundle = spriteBundle(sprite);
+  assert.ok(bundle && bundle.length > body.length + eyes.length * 2);
+  // 按帧格式逆解析：[u16 名长][名][u32 数据长][数据] × N
+  const out = new Map();
+  let p = 0;
+  while (p < bundle.length) {
+    const nameLen = bundle.readUInt16BE(p); p += 2;
+    const name = bundle.subarray(p, p + nameLen).toString('utf8'); p += nameLen;
+    const dataLen = bundle.readUInt32BE(p); p += 4;
+    out.set(name, bundle.subarray(p, p + dataLen)); p += dataLen;
+  }
+  assert.equal(p, bundle.length);
+  assert.equal(out.size, 3);
+  assert.ok(out.get('body.png').equals(body));
+  assert.ok(out.get('eyes-open.png').equals(eyes));
+  assert.equal(spriteBundle(null), null);
 });
 
 async function freeTcpPort() {

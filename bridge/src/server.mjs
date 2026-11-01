@@ -26,7 +26,8 @@ import { watchPlugins } from './plugins/hot-reload.mjs';
 import { createEnhancement } from './plugins/enhance.mjs';
 import { listInstalled, listThemes, removePlugin, removeTheme, savePluginSettings, setPluginEnabled, themeExists } from './installed.mjs';
 import { createBoardLink } from './board-link.mjs';
-import { spriteChunk } from './agent-sprites.mjs';
+import { spriteChunk, spriteBundle } from './agent-sprites.mjs';
+import { applyCloudLlmDefaults } from './cloud-llm.mjs';
 import { createScreenshotStore, rgb565ToPng, validateScreenshotParams, MAX_UPLOAD } from './board-screenshot.mjs';
 import { createFirmwareStore } from './firmware-store.mjs';
 import { initializeSpeechSettings, saveSpeechSettings } from './speech-settings.mjs';
@@ -330,9 +331,17 @@ export function createApp(config, { run, transcribe, tunnel: providedTunnel, ena
   });
   // 任务存储与板侧链路就绪后，把句柄露给管控插件。
   enhance.attach({ jobs: store, board: boardLink, themes: () => listThemes(config) });
+  // 云端网关令牌：沙箱部署在 e2b 等公网可达环境时，两个口的直接访问都必须带
+  // x-made-cloud-gateway 头（cloud 代理转发时注入，值即沙箱令牌）；未设置时行为不变。
+  const gatewayToken = process.env.VIBE_API_GATEWAY_TOKEN || '';
   const desktop = http.createServer(async (req, res) => {
     try {
-      if (![`127.0.0.1:${config.port}`, `localhost:${config.port}`].includes(req.headers.host)) {
+      if (gatewayToken) {
+        if (req.headers['x-made-cloud-gateway'] !== gatewayToken) {
+          send(res, 403, { error: '缺少云端网关令牌' });
+          return;
+        }
+      } else if (![`127.0.0.1:${config.port}`, `localhost:${config.port}`].includes(req.headers.host)) {
         send(res, 403, { error: '只允许从本机访问电脑面板' });
         return;
       }
@@ -661,6 +670,10 @@ export function createApp(config, { run, transcribe, tunnel: providedTunnel, ena
     let deviceLocale = config.locale;
     const deviceSend = (res, status, value, translate = true) => send(res, status, value, translate, deviceLocale);
     try {
+      if (gatewayToken && req.headers['x-made-cloud-gateway'] !== gatewayToken) {
+        deviceSend(res, 403, { error: '缺少云端网关令牌' });
+        return;
+      }
       const url = new URL(req.url, 'http://localhost');
       const requestedLocales = url.searchParams.getAll('uiLocale');
       if (requestedLocales.length > 1) throw new Error('语言仅支持 zh-CN 或 en');
@@ -765,7 +778,21 @@ export function createApp(config, { run, transcribe, tunnel: providedTunnel, ena
           [tunnelSummary.status === 'online' ? tunnelSummary.url : null, tunnelSummary.configuredUrl]
             .map(publicAuthorityOf)
             .filter(Boolean));
-        if (!authority || (!publicAuthorities.has(authority) &&
+        // 云端部署（made-cloud）通过 env 声明其对外转发来源，信任级别与
+        // configuredUrl 相同：只放行 Host 校验，配对的 HMAC 挑战仍然生效。
+        // 支持完整 URL（https://cloud.example.com/bridge/u1）或裸 host，逗号分隔多个。
+        for (const origin of (process.env.VIBE_CLOUD_ORIGIN || '').split(',')) {
+          const value = origin.trim();
+          if (!value) continue;
+          try {
+            const parsed = new URL(value.includes('://') ? value : `https://${value}`);
+            const originAuthority = normalizedAuthority(parsed.host);
+            if (originAuthority) publicAuthorities.add(originAuthority);
+          } catch { /* 非法来源直接忽略，绝不放宽校验 */ }
+        }
+        // 网关令牌模式下（e2b 等托管部署），请求已被 cloud 代理鉴权并按 e2b 边缘
+        // 要求重写 Host，本地/云端白名单校验不再适用——令牌本身就是鉴权边界。
+        if (!authority || (!gatewayToken && !publicAuthorities.has(authority) &&
             !localAuthorities(config.devicePort).has(authority) && !usbForwarded)) {
           deviceSend(res, 403, { error: '接入地址未获桥接器授权' });
           return;
@@ -970,6 +997,26 @@ export function createApp(config, { run, transcribe, tunnel: providedTunnel, ena
         deviceSend(res, 200, payload);
         return;
       }
+      // 形象素材整包拉取（弱网优化）：一次请求把该形象全部素材按帧格式流式带回。
+      // 帧格式见 agent-sprites.mjs spriteBundle；客户端（App）优先走本端点，404 时回落分片。
+      if (req.method === 'GET' && url.pathname === '/device/sprite/bundle') {
+        const plugin = config.pluginsRuntime.agent(url.searchParams.get('provider') || '');
+        const bundle = plugin?.sprite ? spriteBundle(plugin.sprite) : null;
+        if (!bundle) {
+          deviceSend(res, 404, { error: '素材不存在' });
+          return;
+        }
+        console.error(`[trace] sprite-bundle ${url.searchParams.get('provider')} files=${plugin.sprite.files.length} -> ${bundle.length}B ${new Date().toISOString()}`);
+        res.writeHead(200, {
+          'Content-Type': 'application/octet-stream',
+          'Content-Length': bundle.length,
+          'X-Sprite-Version': String(plugin.sprite.version ?? ''),
+          'Cache-Control': 'no-store',
+          'X-Content-Type-Options': 'nosniff',
+        });
+        res.end(bundle);
+        return;
+      }
       // 形象素材分片拉取：单次 ≤192KB，兼容 USB 帧转发 256KB 上限（docs/SPRITES.md）。
       // 扩展名含 .gif：GIF 动作素材（actions[].gif）也在 files 清单里，路由
       // 只放行 .png 的话设备永远拉不到，playAction 报 gif_unavailable。
@@ -994,15 +1041,19 @@ export function createApp(config, { run, transcribe, tunnel: providedTunnel, ena
           });
           return;
         }
-        // 单次应答上限：固件按 offset 循环续拉整文件，这里故意切小。USB 链路
-        // （尤其叠着固件控制台输出时）对十几 KB 以上的帧偶发丢失；4KB 应答在
-        // 实测中始终送达，代价只是多几个来回。固件侧对下载失败已有 15s×5 次
-        // 重试（59f4043），此处小分片是为了把单次失败概率压到最低。
-        const SPRITE_DEVICE_CHUNK = 4 * 1024;
+        // 分片上限按传输通道区分。USB 转发的请求维持 4KB：USB 链路（尤其叠着
+        // 固件控制台输出时）对十几 KB 以上的帧偶发丢失（历史实测），固件侧对下载
+        // 失败已有 15s×5 次重试（59f4043）。WiFi/公网 HTTP 直连的请求放大到 192KB：
+        // 固件本就按 len=192KB 请求（made_sprite_cache kChunkBytes），此前被钉在
+        // 4KB 把整文件切成几十个来回——云端转发链路（每请求数秒）下 113KB 素材
+        // 要拖几十分钟；192KB 仍在 USB 帧转发 256KB 上限与固件 200KB 应答余量内。
+        const SPRITE_DEVICE_CHUNK_USB = 4 * 1024;
+        const SPRITE_DEVICE_CHUNK_NET = 192 * 1024;
+        const deviceChunkCap = req.headers['x-vibe-usb-forward'] ? SPRITE_DEVICE_CHUNK_USB : SPRITE_DEVICE_CHUNK_NET;
         const requested = url.searchParams.has('len') ? Number(url.searchParams.get('len')) : undefined;
         const chunk = plugin?.sprite ? spriteChunk(plugin.sprite, spriteMatch[2],
           Number(url.searchParams.get('offset')) || 0,
-          requested === undefined ? SPRITE_DEVICE_CHUNK : Math.min(requested, SPRITE_DEVICE_CHUNK)) : null;
+          requested === undefined ? deviceChunkCap : Math.min(requested, deviceChunkCap)) : null;
         console.error(`[trace] sprite ${spriteMatch[1]}/${spriteMatch[2]} off=${url.searchParams.get('offset') ?? 0} -> ${chunk ? chunk.length : -1}B ${new Date().toISOString()}`);
         if (process.env.VIBE_UI_DIAGNOSTICS) {
           console.log(`[device-sprite] ${spriteMatch[2]} offset=${url.searchParams.get('offset') ?? 0} len=${url.searchParams.get('len') ?? '-'} -> ${chunk ? chunk.length : -1}B`);
@@ -1096,7 +1147,7 @@ export function createApp(config, { run, transcribe, tunnel: providedTunnel, ena
     connection,
     async listen() {
       try {
-        await listenServer(desktop, config.port, '127.0.0.1');
+        await listenServer(desktop, config.port, process.env.VIBE_DESKTOP_HOST || '127.0.0.1');
         await listenServer(device, config.devicePort, '0.0.0.0');
         await new Promise((resolve, reject) => {
           discovery.once('error', reject);
@@ -1157,8 +1208,9 @@ if (isEntry) {
     }
     const config = loadConfig();
     config.pluginsRuntime = await loadConfiguredPlugins(config);
+    applyCloudLlmDefaults(config);
     const pluginsWatch = watchPlugins(config);
-    const app = createApp(config, { enableUsb: true });
+    const app = createApp(config, { enableUsb: process.env.VIBE_USB_DISABLE !== '1' });
     let shuttingDown = false;
     const shutdown = () => {
       if (shuttingDown) return;

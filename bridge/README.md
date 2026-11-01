@@ -11,6 +11,7 @@ npx made-bridge        # 任何机器一条命令（npm 包，Node >= 22）
 - 首次运行会在 `~/.made-bridge/config.local.json` 生成配置（含示例项目），编辑 `projects` 指向你自己的代码仓库后重启。
 - 配置、状态、工作区都在 `~/.made-bridge/`，与代码分离——npm 包目录视为只读，缓存被清也不丢数据。
 - 环境变量：`VIBE_CONFIG` / `VIBE_STATE_DIR` / `VIBE_DATA_DIR` 可把三个位置各自指到别处；`VIBE_USB_PORT`、`MADE_HOME` 等见 `npm run doctor` 输出。
+- 云端部署（made-cloud）：设置 `VIBE_CLOUD_ORIGIN`（完整 URL 或裸 host，逗号分隔多个）可把云转发来源加入 `/pair/verify` 的 Host 授权白名单，仅放行校验，配对 HMAC 挑战不变。
 
 ```sh
 npm start              # 源码仓库运行（本目录）；沿用仓库里的 config.local.json

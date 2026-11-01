@@ -721,12 +721,37 @@ void VibeCoding::maybeApplyArtwork(const std::string &selected_provider)
             artwork_applied_version_ = spriteVersionOf(selected_provider);
             return;
         }
+        // 陈旧兜底（stale-while-revalidate）：本地缓存里有一个版本号与目录
+        // 不一致的完整素材（沙箱重建后素材版本自增的常态）时，先用旧版本
+        // 顶住显示，绝不为等下载而白屏——沙箱回收/弱网下「拉不到就用本地」。
+        // 新版本下载完成后 dirty 触发正式换装（见下方 applied_version 哨兵）。
+        // 节流 1s：缓存真损坏时避免连环全量解码拖死 LVGL 线程。
+        const uint32_t stale_now = static_cast<uint32_t>(esp_timer_get_time() / 1000);
+        if (static_cast<int32_t>(stale_now - stale_apply_at_ms_) >= 1000) {
+            stale_apply_at_ms_ = stale_now;
+            std::string stale_manifest;
+            if (made_sprite_cache::loadManifest(selected_provider, stale_manifest) &&
+                made_sprite::applyArtwork(sprite_stage_, stale_manifest,
+                    made_sprite_cache::baseDir(selected_provider))) {
+                artwork_applied_ = selected_provider;
+                artwork_applied_version_ = 0;  // 陈旧版本哨兵：新版本下完后仍需正式换装
+                ESP_LOGI(BUTTON_TAG, "[sprite] stale_applied provider=%s",
+                    selected_provider.c_str());
+                return;
+            }
+        }
         if (dirty || made_sprite::artworkActive(sprite_stage_)) {
             made_sprite::clearArtwork(sprite_stage_);
             artwork_applied_.clear();
         }
     }
-    if (!dirty || ready.empty() || ready != selected_provider || artwork_applied_ == ready) return;
+    if (!dirty || ready.empty() || ready != selected_provider) return;
+    if (artwork_applied_ == ready) {
+        // 已应用同一助手：仅当显示的版本与目录一致才跳过。stale 兜底
+        // （版本哨兵 0）或版本不一致（新版本刚下完）都要走正式换装。
+        const uint32_t applied_version = artwork_applied_version_;
+        if (applied_version != 0 && applied_version == spriteVersionOf(selected_provider)) return;
+    }
     std::string manifest;
     if (made_sprite_cache::loadManifest(selected_provider, manifest) &&
         made_sprite::applyArtwork(sprite_stage_, manifest, made_sprite_cache::baseDir(selected_provider))) {

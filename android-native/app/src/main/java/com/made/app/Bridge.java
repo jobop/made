@@ -44,9 +44,14 @@ public final class Bridge {
 
     private volatile String baseUrl = "";
     private volatile String token = "";
+    // 云端码得：cloud 颁发的 JWT，所有请求额外携带（与桥接器自身的 Bearer 互不干扰）
+    private volatile String cloudToken = "";
 
     public String baseUrl() { return baseUrl; }
     public String token() { return token; }
+
+    public void setCloudToken(String t) { cloudToken = t == null ? "" : t; }
+    public String cloudToken() { return cloudToken; }
 
     public void setEndpoint(String url, String token) {
         while (url.endsWith("/")) url = url.substring(0, url.length() - 1);
@@ -72,11 +77,19 @@ public final class Bridge {
 
     /** 不带 token 的请求（配对握手用；传完整 URL，因为配对前还没有 baseUrl）。 */
     public Resp exchangeNoAuth(String fullUrl, String method, byte[] body, String contentType) {
-        return exchangeInner(fullUrl, method, body, contentType, 10000, false);
+        return exchangeNoAuth(fullUrl, method, body, contentType, 10000);
+    }
+
+    /** 同上，可指定读超时（沙箱冷启动等慢请求用）。 */
+    public Resp exchangeNoAuth(String fullUrl, String method, byte[] body, String contentType, long timeoutMs) {
+        return exchangeInner(fullUrl, method, body, contentType, timeoutMs, false);
     }
 
     private Resp exchange(String path, String method, byte[] body, String contentType, long timeoutMs) {
         if (!isPaired()) return err("未配对");
+        // 云端路径（经 cloud 转发到沙箱桥接器）单跳延迟远高于局域网：读超时一律放宽到 ≥30s，
+        // 否则弱网下素材分片/会话请求频繁超时报「电脑连接失败」。
+        if (baseUrl.contains("/bridge/") && timeoutMs < 30000) timeoutMs = 30000;
         return exchangeInner(baseUrl + path, method, body, contentType, timeoutMs, true);
     }
 
@@ -96,10 +109,12 @@ public final class Bridge {
                 // 局域网桥接器通常是自签或纯 HTTP；HTTPS 场景走系统信任链。
                 ((HttpsURLConnection) conn).setHostnameVerifier((h, s) -> true);
             }
-            conn.setConnectTimeout(8000);
+            // 连接超时 15s：公网链路（Cloudflare/跨境）TLS 握手常超 8s，太短会把弱连接直接判死。
+            conn.setConnectTimeout(15000);
             conn.setReadTimeout((int) timeoutMs);
             conn.setRequestMethod(method);
             conn.setRequestProperty("ngrok-skip-browser-warning", "1");
+            if (!cloudToken.isEmpty()) conn.setRequestProperty("x-made-cloud-token", cloudToken);
             if (withAuth) conn.setRequestProperty("Authorization", "Bearer " + token);
             boolean hasBody = body != null && body.length > 0;
             if (hasBody) {
