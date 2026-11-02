@@ -146,9 +146,9 @@ public final class Pairing {
         byte[] nonceBytes = new byte[16];
         random.nextBytes(nonceBytes);
         pendingNonce = hex(nonceBytes);
-        random.nextBytes(new byte[4]);
-        code[0] = String.format("%06d", (int) (Math.abs(new SecureRandom().nextInt()) % 1000000L));
-        // 与固件一致：6 位等概率。nextInt 取模有轻微偏差，但仅影响显示，不影响安全。
+        // 与固件一致：6 位等概率。nextInt(bound) 不会返回负值，
+        // 也不像 Math.abs(nextInt()) 那样在 Integer.MIN_VALUE 上取模出负号。
+        code[0] = String.format("%06d", random.nextInt(1000000));
         pairStartMs = System.currentTimeMillis();
         final String url = baseUrl.endsWith("/")
                 ? baseUrl.substring(0, baseUrl.length() - 1) : baseUrl;

@@ -141,7 +141,11 @@ public final class Poller {
                 if (!deliveredCommandIds.add(id)) continue;
                 if (deliveredCommandIds.size() > 64) deliveredCommandIds.clear();
                 final String cid = id, cname = name;
-                final String target = c.optString("id"), direction = c.optString("direction");
+                // 桥接器下发结构是 {id, name, fields:{...}}，业务参数都在 fields 里
+                // （对齐固件 commandField()：target 取的是 fields.id）。
+                JSONObject fields = c.optJSONObject("fields");
+                final String target = fields == null ? "" : fields.optString("id");
+                final String direction = fields == null ? "" : fields.optString("direction");
                 ui.post(() -> {
                     if (commandSink != null) commandSink.onCommand(cid, cname, target, direction);
                 });
@@ -158,8 +162,11 @@ public final class Poller {
 
     /** @return true = 401 需要重新配对。 */
     private boolean refreshOnce(int cycle) {
-        // 心跳：保持在线（桥接器按最后活跃判在线）。
-        bridge.get("/device/heartbeat?upMs=" + (System.currentTimeMillis() - bootMs));
+        // 心跳：保持在线（桥接器按最后活跃判在线）。401 同样代表已解绑，
+        // 不能只等 config/sessions —— 它们有缓存跳过的轮次。
+        Bridge.Resp alive = bridge.get("/device/heartbeat?upMs="
+                + (System.currentTimeMillis() - bootMs));
+        if (alive.code == 401) return true;
 
         // 配置：每 2 轮拉一次（含 provider 目录 + 语音可用性）。
         boolean refreshConfig = cycle % 2 == 0 || model.providers.isEmpty();

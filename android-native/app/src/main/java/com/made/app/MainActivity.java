@@ -107,6 +107,7 @@ public class MainActivity extends Activity {
     private volatile boolean recCancelled = false;
     private float recDownY = 0;
     private Runnable recTick;
+    private volatile boolean talkFinishing = false; // 一次按住说话只收尾一次
 
     @Override protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
@@ -114,6 +115,9 @@ public class MainActivity extends Activity {
         pairing = new Pairing(bridge, this);
         poller = new Poller(bridge, model);
         poller.setCommandSink(this::handleBoardCommand);
+        // 录音到 30s 上限或麦克风读失败时采集线程会自己退出，这里把这次手势正常收尾
+        // （发送已采到的音频），否则 UI 会一直停在「录音中」。
+        voice.setAutoStopListener(() -> ui.post(this::finishTalk));
         buildUi();
         pairingCloud = pairing.savedUrl().contains("/bridge/"); // 冷启动恢复时也要算云端模式（菜单入口依赖）
         if (bridge.isPaired()) {
@@ -827,6 +831,7 @@ public class MainActivity extends Activity {
 
     private void showHome() {
         scanner.cancel();
+        radar.stop();   // 离开连接页：取消扫描的同时停掉雷达动画（onDone 被取消后不再回调）
         connectScreen.setVisibility(View.GONE);
         homeScreen.setVisibility(View.VISIBLE);
         announceCapabilities(pager.currentCommandNames());
@@ -1673,6 +1678,12 @@ public class MainActivity extends Activity {
         startActivity(it);
     }
 
+    /** 会话 id 前 6 位做标题兜底；id 不足 6 位（空 id / 异常应答）不能直接 substring。 */
+    private static String shortId(String id) {
+        if (id == null || id.isEmpty()) return "未命名";
+        return id.length() > 6 ? id.substring(0, 6) : id;
+    }
+
     /** 删除当前会话（POST /device/sessions/<id>/delete），先确认再动手。 */
     private void deleteCurrentSession() {
         Model.Session s = model.session();
@@ -1680,7 +1691,7 @@ public class MainActivity extends Activity {
             Toast.makeText(this, "当前没有会话", Toast.LENGTH_SHORT).show();
             return;
         }
-        String title = TextUtils.isEmpty(s.title) ? "会话 " + s.id.substring(0, 6) : s.title;
+        String title = TextUtils.isEmpty(s.title) ? "会话 " + shortId(s.id) : s.title;
         new AlertDialog.Builder(this)
                 .setTitle("删除会话")
                 .setMessage("确定删除「" + title + "」？删除后电脑上的对话也会一并结束。")
@@ -1825,6 +1836,7 @@ public class MainActivity extends Activity {
                 }
                 recStartMs = System.currentTimeMillis();
                 recCancelled = false;
+                talkFinishing = false;
                 recDownY = e.getRawY();
                 normalRow.setVisibility(View.GONE);
                 recordingRow.setVisibility(View.VISIBLE);
@@ -1843,57 +1855,62 @@ public class MainActivity extends Activity {
             }
             case MotionEvent.ACTION_UP:
             case MotionEvent.ACTION_CANCEL: {
-                if (!voice.isRecording()) return true;
-                stopRecTick();
-                normalRow.setVisibility(View.VISIBLE);
-                recordingRow.setVisibility(View.GONE);
-                final boolean cancelled = recCancelled;
-                new Thread(() -> {
-                    byte[] wav = voice.stopAndGetWav();
-                    if (cancelled) return;
-                    if (wav == null) {
-                        ui.post(() -> Toast.makeText(this, "说话时间太短",
-                                Toast.LENGTH_SHORT).show());
-                        return;
-                    }
-                    Model.Provider p = model.provider();
-                    if (p == null) return;
-                    // 没有会话不能静默丢弃（旧实现直接 return，用户说了话却毫无反应）。
-                    // 自动新建会话再上传；失败明确提示。
-                    JSONObject sess = ensureSessionBlocking();
-                    if (sess == null) {
-                        ui.post(() -> Toast.makeText(this,
-                                "会话未就绪（网络波动），请再试一次",
-                                Toast.LENGTH_LONG).show());
-                        return;
-                    }
-                    suppressNextJobCard = false;
-                    voiceUploading = true;
-                    ui.post(this::renderModel);
-                    String path = "/device/voice?provider=" + p.id
-                            + "&projectId=" + sess.optString("projectId", "cloud")
-                            + "&sessionId=" + sess.optString("id")
-                            + "&uiLocale=zh-CN";
-                    Bridge.Resp r = bridge.postBytes(path, wav, "audio/wav", 90000);
-                    voiceUploading = false;
-                    if (r.ok()) {
-                        try {
-                            String transcript =
-                                    new JSONObject(r.body).optString("transcript");
-                            ui.post(() -> Toast.makeText(this, "识别：" + transcript,
-                                    Toast.LENGTH_LONG).show());
-                        } catch (Exception ignored) { }
-                    } else {
-                        ui.post(() -> Toast.makeText(this, "识别失败：" + r.errorText(),
-                                Toast.LENGTH_LONG).show());
-                    }
-                    poller.kick();
-                }, "made-upload").start();
+                finishTalk();
                 return true;
             }
             default:
                 return false;
         }
+    }
+
+    /** 收尾一次「按住说话」：复位 UI + 上传已录音频。松手 / 上滑取消 / 30s 到点都走这里。 */
+    private void finishTalk() {
+        if (talkFinishing || !voice.isRecording()) return;
+        talkFinishing = true;
+        stopRecTick();
+        normalRow.setVisibility(View.VISIBLE);
+        recordingRow.setVisibility(View.GONE);
+        final boolean cancelled = recCancelled;
+        new Thread(() -> {
+            byte[] wav = voice.stopAndGetWav();
+            if (cancelled) return;
+            if (wav == null) {
+                ui.post(() -> Toast.makeText(this, "说话时间太短",
+                        Toast.LENGTH_SHORT).show());
+                return;
+            }
+            Model.Provider p = model.provider();
+            if (p == null) return;
+            // 没有会话不能静默丢弃（旧实现直接 return，用户说了话却毫无反应）。
+            // 自动新建会话再上传；失败明确提示。
+            JSONObject sess = ensureSessionBlocking();
+            if (sess == null) {
+                ui.post(() -> Toast.makeText(this,
+                        "会话未就绪（网络波动），请再试一次",
+                        Toast.LENGTH_LONG).show());
+                return;
+            }
+            suppressNextJobCard = false;
+            voiceUploading = true;
+            ui.post(this::renderModel);
+            String path = "/device/voice?provider=" + p.id
+                    + "&projectId=" + sess.optString("projectId", "cloud")
+                    + "&sessionId=" + sess.optString("id")
+                    + "&uiLocale=zh-CN";
+            Bridge.Resp r = bridge.postBytes(path, wav, "audio/wav", 90000);
+            voiceUploading = false;
+            if (r.ok()) {
+                try {
+                    String transcript = new JSONObject(r.body).optString("transcript");
+                    ui.post(() -> Toast.makeText(this, "识别：" + transcript,
+                            Toast.LENGTH_LONG).show());
+                } catch (Exception ignored) { }
+            } else {
+                ui.post(() -> Toast.makeText(this, "识别失败：" + r.errorText(),
+                        Toast.LENGTH_LONG).show());
+            }
+            poller.kick();
+        }, "made-upload").start();
     }
 
     private void startRecTick() {

@@ -9,6 +9,7 @@ import java.net.HttpURLConnection;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 
 import javax.net.ssl.HttpsURLConnection;
@@ -106,8 +107,11 @@ public final class Bridge {
         try {
             conn = (HttpURLConnection) new URL(url).openConnection();
             if (url.startsWith("https://")) {
-                // 局域网桥接器通常是自签或纯 HTTP；HTTPS 场景走系统信任链。
-                ((HttpsURLConnection) conn).setHostnameVerifier((h, s) -> true);
+                // 局域网桥接器可能是「证书有效但主机名对不上」（按 IP 访问）的情况，
+                // 只对私有网段放行主机名校验；公网/云端域名一律走系统校验，防中间人。
+                if (isPrivateHost(conn.getURL().getHost())) {
+                    ((HttpsURLConnection) conn).setHostnameVerifier((h, s) -> true);
+                }
             }
             // 连接超时 15s：公网链路（Cloudflare/跨境）TLS 握手常超 8s，太短会把弱连接直接判死。
             conn.setConnectTimeout(15000);
@@ -146,8 +150,30 @@ public final class Bridge {
         ByteArrayOutputStream out = new ByteArrayOutputStream();
         byte[] buf = new byte[8192];
         int n;
-        while ((n = in.read(buf)) > 0) out.write(buf, 0, n);
+        while ((n = in.read(buf)) != -1) out.write(buf, 0, n);
         in.close();
         return out.toByteArray();
+    }
+
+    /** 本机 / 局域网私有地址：只有这些才允许绕过 HTTPS 主机名校验。 */
+    static boolean isPrivateHost(String host) {
+        if (host == null) return false;
+        String h = host.toLowerCase(Locale.ROOT);
+        if (h.startsWith("[") && h.endsWith("]")) h = h.substring(1, h.length() - 1);
+        if (h.isEmpty()) return false;
+        if (h.equals("localhost") || h.endsWith(".local") || h.endsWith(".lan")) return true;
+        if (h.indexOf(':') >= 0) {
+            // IPv6：回环 / 唯一本地 / 链路本地
+            return h.equals("::1") || h.startsWith("fc") || h.startsWith("fd")
+                    || h.startsWith("fe80");
+        }
+        if (!h.matches("\\d{1,3}(\\.\\d{1,3}){3}")) return false;
+        String[] p = h.split("\\.");
+        int a = Integer.parseInt(p[0]);
+        int b = Integer.parseInt(p[1]);
+        if (a == 10 || a == 127) return true;
+        if (a == 192 && b == 168) return true;
+        if (a == 172 && b >= 16 && b <= 31) return true;
+        return a == 169 && b == 254;
     }
 }

@@ -48,6 +48,7 @@ public final class LanScanner {
     private final Handler ui = new Handler(Looper.getMainLooper());
     private Thread worker;
     private volatile boolean cancelled;
+    private volatile DatagramSocket socket;
 
     /** 开始一轮扫描（重复调用会先取消上一轮）。 */
     public void scan(Context context, Listener listener) {
@@ -73,15 +74,26 @@ public final class LanScanner {
         cancelled = true;
         Thread t = worker;
         worker = null;
+        // receive() 不响应 interrupt，必须关掉 socket 才会立刻抛异常退出，
+        // 否则取消后还要白等一个 SO_TIMEOUT（240ms）才真正停。
+        DatagramSocket s = socket;
+        socket = null;
+        if (s != null) {
+            try { s.close(); } catch (Exception ignored) { }
+        }
         if (t != null) t.interrupt();
     }
 
     private void run(Listener listener, WifiManager.MulticastLock lock) {
         int found = 0;
         Set<String> seen = new LinkedHashSet<>();
-        try (DatagramSocket socket = new DatagramSocket()) {
-            socket.setBroadcast(true);
-            socket.setSoTimeout(240);
+        DatagramSocket ds = null;
+        try {
+            ds = new DatagramSocket();
+            socket = ds;              // 暴露给 cancel()：关它才能立刻打断 receive()
+            if (cancelled) return;    // cancel 发生在 socket 创建前：直接收工
+            ds.setBroadcast(true);
+            ds.setSoTimeout(240);
             Set<InetAddress> targets = broadcastTargets();
             byte[] buf = new byte[2048];
             long deadline = System.currentTimeMillis() + WINDOW_MS;
@@ -90,7 +102,7 @@ public final class LanScanner {
                 if (System.currentTimeMillis() - lastSend > 650) {
                     for (InetAddress target : targets) {
                         try {
-                            socket.send(new DatagramPacket(REQUEST, REQUEST.length,
+                            ds.send(new DatagramPacket(REQUEST, REQUEST.length,
                                     target, DISCOVERY_PORT));
                         } catch (Exception ignored) { }
                     }
@@ -98,7 +110,7 @@ public final class LanScanner {
                 }
                 DatagramPacket packet = new DatagramPacket(buf, buf.length);
                 try {
-                    socket.receive(packet);
+                    ds.receive(packet);
                 } catch (java.net.SocketTimeoutException e) {
                     continue;
                 }
@@ -111,8 +123,12 @@ public final class LanScanner {
                 ui.post(() -> listener.onFound(f));
             }
         } catch (Exception e) {
-            Log.w(TAG, "scan", e);
+            if (!cancelled) Log.w(TAG, "scan", e);   // 取消时 close 打断 receive，不算异常
         } finally {
+            if (socket == ds) socket = null;
+            if (ds != null) {
+                try { ds.close(); } catch (Exception ignored) { }
+            }
             if (lock != null) {
                 try { lock.release(); } catch (Exception ignored) { }
             }

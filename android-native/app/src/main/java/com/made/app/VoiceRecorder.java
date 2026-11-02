@@ -23,15 +23,25 @@ public final class VoiceRecorder {
         void onLevel(float level);
     }
 
+    /** 采集线程自己结束（到时长上限 / 麦克风读取失败）时的兜底回调，宿主线程自行 post。 */
+    public interface AutoStopListener {
+        void onAutoStop();
+    }
+
     private AudioRecord record;
     private volatile boolean recording = false;
     private Thread thread;
     private final ByteArrayOutputStream pcm = new ByteArrayOutputStream();
     private long startedAt = 0;
     private LevelListener levelListener;
+    private AutoStopListener autoStopListener;
 
     public void setLevelListener(LevelListener l) {
         levelListener = l;
+    }
+
+    public void setAutoStopListener(AutoStopListener l) {
+        autoStopListener = l;
     }
 
     public boolean isRecording() { return recording; }
@@ -66,22 +76,31 @@ public final class VoiceRecorder {
 
     private void captureLoop() {
         short[] buf = new short[1600]; // 100ms
-        while (recording) {
-            int n = record.read(buf, 0, buf.length);
-            if (n <= 0) break;
-            synchronized (pcm) {
-                for (int i = 0; i < n; i++) {
-                    pcm.write((byte) (buf[i] & 0xFF));
-                    pcm.write((byte) ((buf[i] >> 8) & 0xFF));
+        try {
+            while (recording) {
+                int n = record.read(buf, 0, buf.length);
+                if (n <= 0) break;
+                synchronized (pcm) {
+                    for (int i = 0; i < n; i++) {
+                        pcm.write((byte) (buf[i] & 0xFF));
+                        pcm.write((byte) ((buf[i] >> 8) & 0xFF));
+                    }
                 }
+                if (levelListener != null) {
+                    long sum = 0;
+                    for (int i = 0; i < n; i++) sum += (long) buf[i] * buf[i];
+                    float rms = (float) Math.sqrt(sum / (double) n) / 32768f;
+                    levelListener.onLevel(Math.min(1f, rms * 8f));
+                }
+                if (System.currentTimeMillis() - startedAt > MAX_MS) break;
             }
-            if (levelListener != null) {
-                long sum = 0;
-                for (int i = 0; i < n; i++) sum += (long) buf[i] * buf[i];
-                float rms = (float) Math.sqrt(sum / (double) n) / 32768f;
-                levelListener.onLevel(Math.min(1f, rms * 8f));
-            }
-            if (System.currentTimeMillis() - startedAt > MAX_MS) break;
+        } finally {
+            // 采集线程自己退出（到 30s 上限 / 麦克风读取失败）时不能把 recording 留在 true，
+            // 否则再次 start() 会直接 return true 却不采集、UI 一直显示「录音中」。
+            // 这里不清 recording（仍旧代表「手势还没收尾」），而是通知宿主立刻收尾，
+            // 由宿主的 stopAndGetWav()/cancel() 统一复位。
+            AutoStopListener l = autoStopListener;
+            if (l != null && recording) l.onAutoStop();
         }
     }
 

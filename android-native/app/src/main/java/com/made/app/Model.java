@@ -67,16 +67,31 @@ public final class Model {
     public static String loadCatalog() {
         if (appContext == null) return null;
         try {
-            java.io.File f = new java.io.File(spriteRootDir(), "catalog.json");
-            if (!f.exists()) return null;
-            byte[] buf = new byte[(int) f.length()];
-            java.io.FileInputStream in = new java.io.FileInputStream(f);
-            int n = in.read(buf);
-            in.close();
-            return n > 0 ? new String(buf, java.nio.charset.StandardCharsets.UTF_8) : null;
+            String s = readSmallFile(new java.io.File(spriteRootDir(), "catalog.json"));
+            return s == null || s.isEmpty() ? null : s;
         } catch (Exception e) {
             return null;
         }
+    }
+
+    /**
+     * 一次读完整个小文件（catalog / manifest / version.txt 这类）。
+     * 必须循环读到 -1：单次 read 不保证读满，长文件会被截断成半个 JSON。
+     *
+     * @return 空文件返回 ""，文件不存在或过大返回 null
+     */
+    static String readSmallFile(java.io.File f) throws java.io.IOException {
+        if (f == null || !f.exists() || !f.isFile()) return null;
+        long len = f.length();
+        if (len == 0) return "";
+        if (len > 8L * 1024 * 1024) return null;   // 状态文件不该这么大，防异常长度（int 溢出）
+        java.io.ByteArrayOutputStream out = new java.io.ByteArrayOutputStream((int) len);
+        try (java.io.FileInputStream in = new java.io.FileInputStream(f)) {
+            byte[] buf = new byte[8192];
+            int n;
+            while ((n = in.read(buf)) != -1) out.write(buf, 0, n);
+        }
+        return new String(out.toByteArray(), java.nio.charset.StandardCharsets.UTF_8);
     }
 
     public Session session() {

@@ -5,6 +5,7 @@ import android.graphics.Typeface;
 import android.os.Bundle;
 import android.text.InputType;
 import android.text.TextUtils;
+import android.util.Log;
 import android.view.Gravity;
 import android.view.View;
 import android.widget.EditText;
@@ -302,7 +303,7 @@ public final class CloudSettingsActivity extends Activity {
             String key = c.specs.get(i).optString("key", "");
             String value = c.inputs.get(i).getText().toString().trim();
             String pattern = c.specs.get(i).optString("pattern", "");
-            if (!TextUtils.isEmpty(pattern) && !TextUtils.isEmpty(value) && !value.matches(pattern)) {
+            if (!TextUtils.isEmpty(pattern) && !TextUtils.isEmpty(value) && !matchesQuietly(value, pattern)) {
                 Toast.makeText(this, "「" + c.specs.get(i).optString("label", key) + "」格式不对", Toast.LENGTH_SHORT).show();
                 return;
             }
@@ -318,6 +319,20 @@ public final class CloudSettingsActivity extends Activity {
             runOnUiThread(() -> Toast.makeText(this, r.ok() ? "已保存" : r.errorText(),
                     Toast.LENGTH_SHORT).show());
         }, "made.plugin.settings").start();
+    }
+
+    /**
+     * 插件 settingsSpec 里的 pattern 由插件包提供、桥接器不校验，写成非法正则时
+     * String.matches 会抛 PatternSyntaxException 直接把 UI 线程炸掉。这里退化为
+     * 「放行 + 打日志」：错在插件配置，不该让用户的保存动作崩溃。
+     */
+    private static boolean matchesQuietly(String value, String pattern) {
+        try {
+            return value.matches(pattern);
+        } catch (RuntimeException e) {
+            Log.w("made.settings", "插件 pattern 非法，跳过校验：" + pattern, e);
+            return true;
+        }
     }
 
     // ================= HTTP（带云端 + 沙箱双重鉴权，经 cloud 代理直达沙箱桥接器） =================
@@ -360,7 +375,7 @@ public final class CloudSettingsActivity extends Activity {
         java.io.ByteArrayOutputStream out = new java.io.ByteArrayOutputStream();
         byte[] buf = new byte[8192];
         int n;
-        while ((n = in.read(buf)) > 0) out.write(buf, 0, n);
+        while ((n = in.read(buf)) != -1) out.write(buf, 0, n);
         in.close();
         return out.toByteArray();
     }

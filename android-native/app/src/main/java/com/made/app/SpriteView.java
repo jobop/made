@@ -683,13 +683,9 @@ public final class SpriteView extends View {
 
     private String readCachedManifest() {
         try {
-            File f = new File(cacheDir(), "manifest.json");
-            if (!f.exists()) return null;
-            FileInputStream in = new FileInputStream(f);
-            byte[] buf = new byte[(int) f.length()];
-            int n = in.read(buf);
-            in.close();
-            return n > 0 ? new String(buf, StandardCharsets.UTF_8) : null;
+            // 走 Model.readSmallFile：循环读满，单次 read 可能只读到半个 manifest。
+            String s = Model.readSmallFile(new File(cacheDir(), "manifest.json"));
+            return s == null || s.isEmpty() ? null : s;
         } catch (Exception e) {
             return null;
         }
@@ -702,13 +698,8 @@ public final class SpriteView extends View {
     /** 上次成功拉取的素材版本（云端目录不可达时给 setProvider 兑底）。 */
     private String cachedVersionOf(String providerId) {
         try {
-            File f = versionFile(providerId);
-            if (!f.exists()) return "";
-            FileInputStream in = new FileInputStream(f);
-            byte[] buf = new byte[32];
-            int n = in.read(buf);
-            in.close();
-            return n > 0 ? new String(buf, 0, n, StandardCharsets.UTF_8).trim() : "";
+            String s = Model.readSmallFile(versionFile(providerId));
+            return s == null ? "" : s.trim();
         } catch (Exception e) {
             return "";
         }
@@ -766,7 +757,7 @@ public final class SpriteView extends View {
         ByteArrayOutputStream out = new ByteArrayOutputStream();
         byte[] buf = new byte[8192];
         int n;
-        while ((n = in.read(buf)) > 0) out.write(buf, 0, n);
+        while ((n = in.read(buf)) != -1) out.write(buf, 0, n);
         in.close();
         return out.toByteArray();
     }
