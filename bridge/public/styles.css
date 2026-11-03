@@ -208,6 +208,10 @@
     .plugin-groups { display: grid; gap: 22px; }
     .plugin-groups[hidden], #pluginDetail[hidden] { display: none; }
     .catalog-list { display: grid; gap: 12px; margin-top: 16px; }
+    .market-list { display: grid; gap: 12px; margin-top: 16px; }
+    .market-group-title { margin: 8px 0 0; color: var(--dim); font-size: var(--font-small); }
+    .market-card h3, .market-card .catalog-meta { grid-column: 1 / -1; }
+    .market-card .catalog-actions { justify-self: end; }
     .plugin-tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(168px, 1fr)); gap: 14px; margin-top: 16px; }
     .plugin-tiles > .catalog-meta { grid-column: 1 / -1; margin: 0; }
     .plugin-tile { position: relative; aspect-ratio: 1; min-width: 0; }

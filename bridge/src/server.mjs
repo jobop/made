@@ -25,6 +25,7 @@ import { createPluginRegistry, loadConfiguredPlugins } from './plugins/registry.
 import { watchPlugins } from './plugins/hot-reload.mjs';
 import { createEnhancement } from './plugins/enhance.mjs';
 import { listInstalled, listThemes, removePlugin, removeTheme, savePluginSettings, setPluginEnabled, themeExists } from './installed.mjs';
+import { marketIndex, installPackage } from './plugin-install.mjs';
 import { createBoardLink } from './board-link.mjs';
 import { spriteChunk, spriteBundle } from './agent-sprites.mjs';
 import { applyCloudLlmDefaults } from './cloud-llm.mjs';
@@ -379,6 +380,13 @@ export function createApp(config, { run, transcribe, tunnel: providedTunnel, ena
         send(res, 200, await listInstalled(config), false);
         return;
       }
+      if (req.method === 'GET' && url.pathname === '/api/market/index') {
+        // ?refresh=1 跳过 5 分钟缓存。与 /api/installed 同级：云端经 cloud JWT 代理保护，
+        // 本机工作台与页面同源；只读公开索引的精简视图，不含任何本机敏感信息。
+        const refresh = url.searchParams.get('refresh') === '1';
+        send(res, 200, await marketIndex(config, { refresh }), false);
+        return;
+      }
       if (req.method === 'GET' && url.pathname === '/api/firmware') {
         send(res, 200, firmware.summary(), false);
         return;
@@ -517,6 +525,13 @@ export function createApp(config, { run, transcribe, tunnel: providedTunnel, ena
           const saved = await savePluginSettings(config, payload.id, payload.settings);
           for (const deviceId of boardLink.deviceIds()) boardLink.connect(deviceId, config.pluginsRuntime, config, enhance.bridge());
           send(res, 200, saved, false);
+          return;
+        }
+        if (url.pathname === '/api/plugins/install') {
+          // 从官方市场安装一个包：下载 → sha256 校验 → 解包 → reload 即时生效。
+          // 下载源白名单与校验规则见 plugin-install.mjs；失败自动回滚。
+          const payload = await body(req);
+          send(res, 200, await installPackage(config, { id: typeof payload?.id === 'string' ? payload.id : '' }), false);
           return;
         }
         if (url.pathname === '/api/plugins/remove') {

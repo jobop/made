@@ -80,7 +80,18 @@ public final class CloudSettingsActivity extends Activity {
         back.setPadding(dp(10), 0, dp(14), 0);
         back.setOnClickListener(v -> finish());
         bar.addView(back, lp(-2, -2));
-        bar.addView(Ui.text(this, "云端桥接器设置", 17, Ui.INK, true), lp(-2, -2));
+        bar.addView(Ui.text(this, "云端桥接器设置", 17, Ui.INK, true), lp(0, -2, 1f));
+        TextView market = Ui.text(this, "＋ 添加插件", 14, Ui.PRIMARY, true);
+        market.setPadding(dp(10), dp(6), dp(4), dp(6));
+        market.setOnClickListener(v -> {
+            android.content.Intent it = new android.content.Intent(this, MarketActivity.class);
+            it.putExtra("base", base);
+            it.putExtra("token", token);
+            it.putExtra("cloudToken", cloudToken);
+            startActivity(it);
+        });
+        Ui.press(market);
+        bar.addView(market, lp(-2, -2));
         root.addView(bar, lp(-1, -2));
         View line = new View(this);
         line.setBackgroundColor(Ui.LINE);

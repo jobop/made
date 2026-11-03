@@ -991,5 +991,17 @@ export const messages = {
   "plug.027": { "zh-CN": "配置已保存。已经连上的码得会按新配置重新计时。", "en": "Settings saved. A connected made reschedules with the new settings." },
   "plug.028": { "zh-CN": "配置项来自插件目录里的 plugin.json，当前值写在同目录的 settings.json。", "en": "Fields come from plugin.json in the plugin folder. Current values are stored in settings.json beside it." },
   "plug.031": { "zh-CN": "返回", "en": "Back" },
-  "plug.032": { "zh-CN": "这个插件没有可配置项。", "en": "This plugin has no settings." }
+  "plug.032": { "zh-CN": "这个插件没有可配置项。", "en": "This plugin has no settings." },
+  "plug.033": { "zh-CN": "插件市场", "en": "Plugin market" },
+  "plug.034": { "zh-CN": "从官方市场一键安装助手、管控插件和主题。下载会做 sha256 校验，装完即时生效，不用重启桥接器。", "en": "Install assistants, control plugins and themes from the official market in one click. Downloads are sha256-verified and take effect immediately, no bridge restart needed." },
+  "plug.035": { "zh-CN": "助手", "en": "Assistants" },
+  "plug.036": { "zh-CN": "管控", "en": "Control" },
+  "plug.037": { "zh-CN": "主题", "en": "Themes" },
+  "plug.038": { "zh-CN": "安装", "en": "Install" },
+  "plug.039": { "zh-CN": "已安装 · 重装", "en": "Installed · reinstall" },
+  "plug.040": { "zh-CN": "安装 {v0} 到当前桥接器？装完即时生效。", "en": "Install {v0} on this bridge? It takes effect immediately." },
+  "plug.041": { "zh-CN": "{v0} 已安装。重新安装会换成市场最新版，已保存的设置会保留。", "en": "{v0} is already installed. Reinstalling updates it to the latest market version; your saved settings are kept." },
+  "plug.042": { "zh-CN": "已安装 {v0}", "en": "Installed {v0}" },
+  "plug.043": { "zh-CN": "市场暂时没有可装的包。", "en": "The market has no packages right now." },
+  "plug.044": { "zh-CN": "安装中…", "en": "Installing…" }
 };

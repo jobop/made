@@ -6,6 +6,13 @@ let toastTimer;
 let busy = false;
 let installedPlugins = [];
 let openKey = '';
+let marketIndexCache = null;
+
+const MARKET_KINDS = [
+  { kind: 'agent', title: 'plug.035' },
+  { kind: 'control', title: 'plug.036' },
+  { kind: 'theme', title: 'plug.037' },
+];
 
 function showToast(message, error = false) {
   const toast = $('toast');
@@ -288,6 +295,84 @@ async function applyTheme(theme) {
   }
 }
 
+// ---- 插件市场：列表来自桥接器代理的官方索引，安装走 /api/plugins/install ----
+
+async function loadMarket() {
+  const list = $('marketList');
+  try {
+    marketIndexCache = await request('/api/market/index');
+  } catch (error) {
+    list.replaceChildren(meta(error.message));
+    return;
+  }
+  renderMarket(marketIndexCache);
+}
+
+function renderMarket(index) {
+  const list = $('marketList');
+  list.replaceChildren();
+  const packages = Array.isArray(index?.packages) ? index.packages : [];
+  if (!packages.length) {
+    list.append(meta(t('plug.043')));
+    return;
+  }
+  let shown = 0;
+  for (const kind of MARKET_KINDS) {
+    const items = packages.filter((item) => item.kind === kind.kind);
+    if (!items.length) continue;
+    shown += items.length;
+    const head = document.createElement('h3');
+    head.className = 'market-group-title';
+    head.textContent = t(kind.title);
+    list.append(head);
+    for (const item of items) list.append(marketCard(item));
+  }
+  if (!shown) list.append(meta(t('plug.043')));
+}
+
+function marketCard(item) {
+  const card = document.createElement('article');
+  card.className = 'catalog-card market-card';
+  const title = document.createElement('h3');
+  title.textContent = item.name || item.id;
+  const sub = [`v${item.version}`, item.author].filter(Boolean).join(' · ')
+    + (item.installed ? ` · ${t('plug.039')}` : '');
+  const summary = document.createElement('p');
+  summary.className = 'catalog-meta';
+  summary.textContent = item.summary || '';
+  const actions = document.createElement('div');
+  actions.className = 'catalog-actions';
+  const installButton = button(
+    item.installed ? t('plug.039') : t('plug.038'),
+    item.installed ? 'small-button' : 'small-button confirm',
+    () => installMarketPackage(item, installButton),
+  );
+  actions.append(installButton);
+  card.append(title, meta(sub), summary, actions);
+  return card;
+}
+
+async function installMarketPackage(item, installButton) {
+  const name = item.name || item.id;
+  const key = item.installed ? 'plug.041' : 'plug.040';
+  if (!window.confirm(t(key, { v0: name }))) return;
+  installButton.disabled = true;
+  installButton.textContent = t('plug.044');
+  try {
+    await post('/api/plugins/install', { id: item.id });
+    showToast(t('plug.042', { v0: name }));
+    // installed 标记在索引响应里现算，重拉一次即可点亮「已安装」；installed 列表同步刷新。
+    applyInstalled(await request('/api/installed'));
+    marketIndexCache = await request('/api/market/index');
+    renderMarket(marketIndexCache);
+  } catch (error) {
+    showToast(error.message, true);
+  } finally {
+    installButton.disabled = false;
+    installButton.textContent = item.installed ? t('plug.039') : t('plug.038');
+  }
+}
+
 async function deleteTheme(theme) {
   if (!window.confirm(t('plug.017', { v0: theme.title || theme.name }))) return;
   try {
@@ -333,3 +418,4 @@ applyStaticTranslations();
 $('languageSelect').value = getLocale();
 for (const id of ['boardPluginList', 'agentPluginList', 'themeList']) $(id).append(meta(t('plug.022')));
 refresh();
+loadMarket();

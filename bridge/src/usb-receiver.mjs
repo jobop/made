@@ -594,9 +594,13 @@ export class UsbReceiver {
     this.helloFailures = new Map();
     this.timer = null;
     this.state = {
-      status: process.platform === 'darwin' || process.platform === 'linux' || portPath ? 'disconnected' : 'disabled',
+      // VIBE_USB_DISABLED=1 完全关掉串口轮询：多实例并行（测试/CI/预览）时
+      // 防止第二个实例自动扫描并抢走真实桥接器正在用的串口。
+      status: process.env.VIBE_USB_DISABLED === '1' ? 'disabled'
+        : process.platform === 'darwin' || process.platform === 'linux' || portPath ? 'disconnected' : 'disabled',
       port: portPath, mode: '', active: false, deviceId: '', deviceName: '', ssid: '', password: '', lastSeen: '',
-      error: process.platform === 'darwin' || process.platform === 'linux' || portPath ? '' : '此系统需手动配置 VIBE_USB_PORT',
+      error: process.env.VIBE_USB_DISABLED === '1' ? 'VIBE_USB_DISABLED=1，本实例不连接 USB 串口'
+        : process.platform === 'darwin' || process.platform === 'linux' || portPath ? '' : '此系统需手动配置 VIBE_USB_PORT',
     };
   }
 
