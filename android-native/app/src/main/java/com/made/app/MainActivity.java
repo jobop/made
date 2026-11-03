@@ -105,11 +105,14 @@ public class MainActivity extends Activity {
     private int dragStartH = 0; // 把手拖动起点高度
     private boolean sheetAnimating = false;
 
-    // H5 小程序面板（精灵区下拉唤出，微信小程序同款交互）
+    // H5 小程序面板（精灵区下拉唤出，微信小程序同款全屏交互）
     private View h5Scrim;
     private LinearLayout h5Panel;
     private LinearLayout h5List;
     private TextView h5Status;
+    private EditText h5Search;
+    private List<JSONObject> h5AppsCache = new ArrayList<>();
+    private String h5Query = "";
     private boolean h5PanelOpen = false;
     private boolean h5Loading = false;
 
@@ -176,54 +179,124 @@ public class MainActivity extends Activity {
         buildH5Panel();
     }
 
-    // ---- H5 小程序面板（精灵区下拉唤出） ----
+    // ---- H5 小程序面板（精灵区下拉唤出，微信小程序同款全屏交互） ----
 
-    /** 面板挂在 root 顶层：半屏卡片列表 + 半透明遮罩，点遮罩/✕/返回键收起。 */
+    private static final int[] H5_TILE_COLORS = {
+            0xFF07C160, 0xFF10AEFF, 0xFFFA5151, 0xFFF7B500,
+            0xFF6467F0, 0xFFFA9D3B, 0xFF1485EE, 0xFFEE675C,
+    };
+
+    /** 全屏暗色面板：标题 + 搜索框 + 「最近使用」/「全部」圆形图标网格 + 底部连接栏。 */
     private void buildH5Panel() {
         h5Scrim = new View(this);
-        h5Scrim.setBackgroundColor(0x66000000);
         h5Scrim.setOnClickListener(v -> closeH5Panel(true));
         h5Scrim.setVisibility(View.GONE);
         root.addView(h5Scrim, new FrameLayout.LayoutParams(-1, -1));
 
         h5Panel = new LinearLayout(this);
         h5Panel.setOrientation(LinearLayout.VERTICAL);
-        h5Panel.setBackground(Ui.card(this, Ui.SURFACE, 0, Ui.LINE, 1));
-        h5Panel.setPadding(dp(16), dp(8), dp(16), dp(16));
+        h5Panel.setBackgroundColor(0xF2282C38); // 暗夜蓝（微信小程序面板同款氛围）
         h5Panel.setVisibility(View.GONE);
-        h5Panel.setElevation(dp(10));
-        root.addView(h5Panel, new FrameLayout.LayoutParams(-1, dp(430), Gravity.TOP));
+        root.addView(h5Panel, new FrameLayout.LayoutParams(-1, -1));
 
-        // 顶部小横条（提示可拖）+ 标题行
-        LinearLayout grabberWrap = new LinearLayout(this);
-        grabberWrap.setGravity(Gravity.CENTER_HORIZONTAL);
-        grabberWrap.setPadding(0, dp(4), 0, dp(6));
-        View grabber = new View(this);
-        grabber.setBackground(Ui.fill(this, Ui.LINE, 999));
-        grabberWrap.addView(grabber, lp(dp(36), dp(4)));
-        h5Panel.addView(grabberWrap, lp(-1, -2));
-
-        LinearLayout head = new LinearLayout(this);
-        head.setOrientation(LinearLayout.HORIZONTAL);
-        head.setGravity(Gravity.CENTER_VERTICAL);
-        head.addView(Ui.text(this, "H5 应用", 16, Ui.INK, true), new LinearLayout.LayoutParams(0, -2, 1f));
-        TextView close = Ui.text(this, "✕", 16, Ui.SUB, false);
-        close.setPadding(dp(12), dp(6), dp(4), dp(6));
+        // 标题行：居中「小程序」，右侧 ✕
+        FrameLayout titleWrap = new FrameLayout(this);
+        TextView title = Ui.text(this, "小程序", 17, 0xFFFFFFFF, true);
+        FrameLayout.LayoutParams tp = new FrameLayout.LayoutParams(-2, -2, Gravity.CENTER);
+        tp.topMargin = dp(10); tp.bottomMargin = dp(10);
+        titleWrap.addView(title, tp);
+        TextView close = Ui.text(this, "✕", 16, 0x99FFFFFF, false);
+        close.setPadding(dp(18), dp(12), dp(18), dp(12));
         close.setOnClickListener(v -> closeH5Panel(true));
         Ui.press(close);
-        head.addView(close, lp(-2, -2));
-        h5Panel.addView(head, lp(-1, -2));
+        titleWrap.addView(close, new FrameLayout.LayoutParams(-2, -2, Gravity.END | Gravity.CENTER_VERTICAL));
+        h5Panel.addView(titleWrap, lp(-1, -2));
 
-        h5Status = Ui.text(this, "", 12, Ui.SUB, false);
-        h5Status.setPadding(dp(2), dp(6), dp(2), dp(2));
+        // 搜索框
+        LinearLayout searchWrap = new LinearLayout(this);
+        searchWrap.setOrientation(LinearLayout.HORIZONTAL);
+        searchWrap.setGravity(Gravity.CENTER_VERTICAL);
+        searchWrap.setBackground(Ui.fill(this, 0x1AFFFFFF, 14));
+        searchWrap.setPadding(dp(14), dp(9), dp(14), dp(9));
+        TextView magnifier = Ui.text(this, "⌕", 16, 0x88FFFFFF, false);
+        magnifier.setPadding(0, 0, dp(8), 0);
+        searchWrap.addView(magnifier, lp(-2, -2));
+        h5Search = new EditText(this);
+        h5Search.setHint("搜索小程序");
+        h5Search.setHintTextColor(0x66FFFFFF);
+        h5Search.setTextColor(0xFFFFFFFF);
+        h5Search.setTextSize(14);
+        h5Search.setBackground(null);
+        h5Search.setSingleLine(true);
+        h5Search.setImeOptions(16384); // actionSearch：不弹全屏键盘
+        h5Search.addTextChangedListener(new android.text.TextWatcher() {
+            @Override public void beforeTextChanged(CharSequence s, int a, int b, int c2) { }
+            @Override public void onTextChanged(CharSequence s, int a, int b, int c2) { }
+            @Override public void afterTextChanged(android.text.Editable s) {
+                h5Query = s.toString().trim();
+                renderH5Apps("", h5AppsCache); // 本地过滤，不重新请求
+            }
+        });
+        searchWrap.addView(h5Search, new LinearLayout.LayoutParams(0, -2, 1f));
+        LinearLayout.LayoutParams searchLp = lp(-1, -2);
+        searchLp.leftMargin = dp(16); searchLp.rightMargin = dp(16);
+        h5Panel.addView(searchWrap, searchLp);
+
+        h5Status = Ui.text(this, "", 12, 0x77FFFFFF, false);
+        h5Status.setPadding(dp(18), dp(8), dp(18), dp(2));
         h5Panel.addView(h5Status, lp(-1, -2));
 
         ScrollView scroll = new ScrollView(this);
+        scroll.setFillViewport(true);
         h5List = new LinearLayout(this);
         h5List.setOrientation(LinearLayout.VERTICAL);
-        h5List.setPadding(dp(2), dp(6), dp(2), dp(8));
+        h5List.setPadding(dp(10), dp(4), dp(10), dp(12));
         scroll.addView(h5List, lp(-1, -2));
         h5Panel.addView(scroll, new LinearLayout.LayoutParams(-1, 0, 1f));
+
+        // 底部连接栏：桥接器名 + 应用数 | 市场入口
+        LinearLayout bottom = new LinearLayout(this);
+        bottom.setOrientation(LinearLayout.HORIZONTAL);
+        bottom.setGravity(Gravity.CENTER_VERTICAL);
+        bottom.setBackground(Ui.fill(this, 0x24FFFFFF, 26));
+        bottom.setPadding(dp(18), dp(10), dp(10), dp(10));
+        TextView conn = Ui.text(this, "码得", 14, 0xCCFFFFFF, true);
+        bottom.addView(conn, new LinearLayout.LayoutParams(0, -2, 1f));
+        TextView market = Ui.text(this, "＋", 18, 0xFFFFFFFF, false);
+        market.setGravity(Gravity.CENTER);
+        market.setBackground(Ui.fill(this, 0x33FFFFFF, 999));
+        market.setPadding(dp(10), dp(4), dp(10), dp(4));
+        market.setOnClickListener(v -> {
+            closeH5Panel(true);
+            android.content.Intent it = new android.content.Intent(this, MarketActivity.class);
+            it.putExtra("base", bridge.baseUrl());
+            it.putExtra("token", bridge.token());
+            it.putExtra("cloudToken", bridge.cloudToken());
+            startActivity(it);
+        });
+        Ui.press(market);
+        bottom.addView(market, lp(-2, -2));
+        h5Panel.addView(bottom, lp(-1, -2));
+    }
+
+    /** 「最近使用」记录：逗号分隔的 id 序列，最新在前，去重，最多 8 个。 */
+    private List<String> h5Recents() {
+        List<String> out = new ArrayList<>();
+        for (String id : getSharedPreferences("made-ui", MODE_PRIVATE)
+                .getString("h5_recents", "").split(",")) {
+            if (!id.isEmpty() && !out.contains(id)) out.add(id);
+        }
+        return out;
+    }
+
+    private void trackH5Recent(String id) {
+        if (id.isEmpty()) return;
+        List<String> recents = h5Recents();
+        recents.remove(id);
+        recents.add(0, id);
+        while (recents.size() > 8) recents.remove(recents.size() - 1);
+        getSharedPreferences("made-ui", MODE_PRIVATE).edit()
+                .putString("h5_recents", String.join(",", recents)).apply();
     }
 
     /** 打开面板（动画收尾），每次都重新拉 /api/installed 里的 h5apps。 */
@@ -234,6 +307,8 @@ public class MainActivity extends Activity {
         h5Scrim.setVisibility(View.VISIBLE);
         h5Panel.setTranslationY(0);
         h5Scrim.setAlpha(1f);
+        h5Query = "";
+        h5Search.setText("");
         loadH5Apps();
     }
 
@@ -257,7 +332,7 @@ public class MainActivity extends Activity {
     /** 手指跟手阶段：progress 0→1，面板从屏顶外滑到位，遮罩同步加深。 */
     private void dragH5Panel(float progress) {
         progress = Math.max(0f, Math.min(1f, progress));
-        int h = h5Panel.getHeight() > 0 ? h5Panel.getHeight() : dp(430);
+        int h = h5Panel.getHeight() > 0 ? h5Panel.getHeight() : dp(800);
         h5Panel.setVisibility(View.VISIBLE);
         h5Scrim.setVisibility(View.VISIBLE);
         h5Scrim.setAlpha(progress);
@@ -268,7 +343,6 @@ public class MainActivity extends Activity {
         if (h5Loading) return;
         h5Loading = true;
         h5Status.setText("加载中…");
-        h5List.removeAllViews();
         new Thread(() -> {
             Bridge.Resp r = bridge.get("/api/installed");
             List<JSONObject> apps = new ArrayList<>();
@@ -288,20 +362,41 @@ public class MainActivity extends Activity {
             final List<JSONObject> result = apps;
             runOnUiThread(() -> {
                 h5Loading = false;
+                h5AppsCache = result;
                 renderH5Apps(err, result);
             });
         }, "made.h5panel").start();
     }
 
+    private List<JSONObject> h5Filtered(String query) {
+        List<JSONObject> out = new ArrayList<>();
+        for (JSONObject app : h5AppsCache) {
+            if (query.isEmpty()
+                    || app.optString("id", "").toLowerCase().contains(query.toLowerCase())
+                    || app.optString("name", "").toLowerCase().contains(query.toLowerCase())) {
+                out.add(app);
+            }
+        }
+        return out;
+    }
+
+    /** 微信小程序面板同款渲染：「最近使用的应用」+「全部应用」两段 4 列圆形图标网格。 */
     private void renderH5Apps(String error, List<JSONObject> apps) {
         h5List.removeAllViews();
         if (!TextUtils.isEmpty(error)) {
             h5Status.setText("加载失败：" + error);
+            h5Status.setVisibility(View.VISIBLE);
             return;
         }
-        h5Status.setText(apps.isEmpty() ? "还没有 H5 应用，去市场装一个" : "点击卡片打开 · 设置在「桥接器设置」里改");
-        for (JSONObject app : apps) h5List.addView(h5Card(app), lp(-1, -2));
         if (apps.isEmpty()) {
+            h5Status.setVisibility(View.GONE);
+            TextView tip = Ui.text(this, "还没有小程序", 15, 0x88FFFFFF, true);
+            tip.setGravity(Gravity.CENTER);
+            tip.setPadding(0, dp(48), 0, dp(8));
+            h5List.addView(tip, lp(-1, -2));
+            TextView tipSub = Ui.text(this, "去插件市场装一个 H5 应用", 12, 0x66FFFFFF, false);
+            tipSub.setGravity(Gravity.CENTER);
+            h5List.addView(tipSub, lp(-1, -2));
             TextView go = pillUi("打开插件市场", Ui.PRIMARY, 0xFFFFFFFF);
             go.setOnClickListener(v -> {
                 closeH5Panel(true);
@@ -311,23 +406,92 @@ public class MainActivity extends Activity {
                 it.putExtra("cloudToken", bridge.cloudToken());
                 startActivity(it);
             });
-            LinearLayout.LayoutParams goLp = lp(-1, -2);
-            goLp.topMargin = dp(10);
+            LinearLayout.LayoutParams goLp = lp(dp(190), -2);
+            goLp.topMargin = dp(18);
+            goLp.gravity = Gravity.CENTER_HORIZONTAL;
             h5List.addView(go, goLp);
+            return;
         }
+        boolean searching = !h5Query.isEmpty();
+        h5Status.setVisibility(View.GONE);
+
+        List<JSONObject> filtered = h5Filtered(h5Query);
+        if (searching) {
+            if (filtered.isEmpty()) {
+                TextView none = Ui.text(this, "没有匹配「" + h5Query + "」的小程序", 13, 0x88FFFFFF, false);
+                none.setGravity(Gravity.CENTER);
+                none.setPadding(0, dp(36), 0, 0);
+                h5List.addView(none, lp(-1, -2));
+                return;
+            }
+            h5List.addView(h5Section("搜索结果"));
+            h5List.addView(h5Grid(filtered));
+            return;
+        }
+
+        // 最近使用：按本地记录顺序取已安装的，最多一行 4 个
+        List<String> recents = h5Recents();
+        List<JSONObject> recentApps = new ArrayList<>();
+        for (String id : recents) {
+            for (JSONObject app : apps) {
+                if (app.optString("id", "").equals(id)) { recentApps.add(app); break; }
+            }
+        }
+        if (recentApps.size() > 4) recentApps = recentApps.subList(0, 4);
+        if (!recentApps.isEmpty()) {
+            h5List.addView(h5Section("最近使用的小程序"));
+            h5List.addView(h5Grid(recentApps));
+        }
+        h5List.addView(h5Section(recentApps.isEmpty() ? "全部小程序" : "常用的小程序"));
+        h5List.addView(h5Grid(apps));
     }
 
-    private View h5Card(JSONObject app) {
+    private View h5Section(String label) {
+        TextView t = Ui.text(this, label, 12, 0x88FFFFFF, false);
+        t.setPadding(dp(8), dp(14), dp(8), dp(2));
+        return t;
+    }
+
+    /** 4 列图标网格（行式排布，每格：56dp 圆形首字标 + 名称）。 */
+    private View h5Grid(List<JSONObject> apps) {
+        LinearLayout grid = new LinearLayout(this);
+        grid.setOrientation(LinearLayout.VERTICAL);
+        for (int start = 0; start < apps.size(); start += 4) {
+            LinearLayout row = new LinearLayout(this);
+            for (int i = start; i < start + 4 && i < apps.size(); i++) {
+                row.addView(h5Tile(apps.get(i)), new LinearLayout.LayoutParams(0, -2, 1f));
+            }
+            grid.addView(row, lp(-1, -2));
+        }
+        return grid;
+    }
+
+    private View h5Tile(JSONObject app) {
         String id = app.optString("id", "");
         String name = app.optString("name", id);
-        String version = app.optString("version", "");
-        String summary = app.optString("summary", "");
+        LinearLayout tile = new LinearLayout(this);
+        tile.setOrientation(LinearLayout.VERTICAL);
+        tile.setGravity(Gravity.CENTER_HORIZONTAL);
+        tile.setPadding(dp(4), dp(10), dp(4), dp(8));
 
-        LinearLayout card = new LinearLayout(this);
-        card.setOrientation(LinearLayout.VERTICAL);
-        card.setBackground(Ui.card(this, Ui.BG, 12, Ui.LINE, 1));
-        card.setPadding(dp(14), dp(12), dp(14), dp(12));
-        card.setOnClickListener(v -> {
+        TextView icon = Ui.text(this, name.isEmpty() ? "·" : name.substring(0, 1), 22, 0xFFFFFFFF, true);
+        icon.setGravity(Gravity.CENTER);
+        int color = H5_TILE_COLORS[Math.abs(id.hashCode()) % H5_TILE_COLORS.length];
+        icon.setBackground(Ui.fill(this, color, 999));
+        LinearLayout.LayoutParams iconLp = new LinearLayout.LayoutParams(dp(56), dp(56));
+        iconLp.gravity = Gravity.CENTER_HORIZONTAL;
+        tile.addView(icon, iconLp);
+
+        TextView label = Ui.text(this, name, 11, 0xE6FFFFFF, false);
+        label.setGravity(Gravity.CENTER);
+        label.setMaxLines(1);
+        label.setEllipsize(TextUtils.TruncateAt.END);
+        LinearLayout.LayoutParams labelLp = lp(-1, -2);
+        labelLp.topMargin = dp(6);
+        tile.addView(label, labelLp);
+
+        tile.setOnClickListener(v -> {
+            trackH5Recent(id);
             closeH5Panel(true);
             android.content.Intent it = new android.content.Intent(this, H5Activity.class);
             it.putExtra("base", bridge.baseUrl());
@@ -337,26 +501,8 @@ public class MainActivity extends Activity {
             it.putExtra("name", name);
             startActivity(it);
         });
-        Ui.press(card);
-
-        LinearLayout head = new LinearLayout(this);
-        head.setOrientation(LinearLayout.HORIZONTAL);
-        head.setGravity(Gravity.CENTER_VERTICAL);
-        head.addView(Ui.text(this, name, 15, Ui.INK, true), new LinearLayout.LayoutParams(0, -2, 1f));
-        head.addView(Ui.text(this, "打开 ›", 13, Ui.PRIMARY, true), lp(-2, -2));
-        card.addView(head, lp(-1, -2));
-        String sub = version.isEmpty() ? "H5 应用" : "H5 应用 · v" + version;
-        TextView subView = Ui.text(this, sub, 12, Ui.SUB, false);
-        subView.setPadding(dp(1), dp(3), 0, 0);
-        card.addView(subView, lp(-1, -2));
-        if (!TextUtils.isEmpty(summary)) {
-            TextView s = Ui.text(this, summary, 12, Ui.SUB, false);
-            s.setPadding(dp(1), dp(4), 0, 0);
-            card.addView(s, lp(-1, -2));
-        }
-        LinearLayout.LayoutParams cardLp = lp(-1, -2);
-        cardLp.topMargin = dp(8);
-        return card;
+        Ui.press(tile);
+        return tile;
     }
 
     /** 主色胶囊按钮（面板空态用）。 */
