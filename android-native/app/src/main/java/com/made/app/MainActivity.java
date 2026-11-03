@@ -90,6 +90,7 @@ public class MainActivity extends Activity {
     private float swipeDownX = 0, swipeDownY = 0;
     private String lastJobId = "";
     private String actingJobId = "";   // 已点确认/取消待回调的任务：按钮置灰防重复点击
+    private long actingAtMs = 0;       // 置灰起点（成功后靠轮询解锁，超时兜底防卡死）
     private boolean suppressNextJobCard = false; // 切助手/会话后不弹旧任务卡
     private boolean emptySheetShown = false;     // 空态「暂无任务」面板已展开过一次
     private volatile boolean voiceUploading = false;
@@ -1494,12 +1495,17 @@ public class MainActivity extends Activity {
         renderJobButtons();
     }
 
-    /** 确认/取消按钮状态：等待中可点，提交中置灰（用户点了立刻有反馈）。 */
+    /** 确认/取消按钮状态：等待中可点，提交后置灰锁定，直到状态刷新离开「等你确认」才消失。 */
     private void renderJobButtons() {
         Model.Job job = model.jobs.isEmpty() ? null : model.jobs.get(0);
         boolean waiting = job != null && "waiting_confirmation".equals(job.status)
                 && sheetState != SHEET_PEEK;
         boolean acting = job != null && job.id.equals(actingJobId);
+        if (acting && (!waiting
+                || System.currentTimeMillis() - actingAtMs > 15000)) {
+            actingJobId = ""; // 状态已刷新（按钮行将隐藏）或轮询迟迟没跟上：解锁兜底
+            acting = false;
+        }
         jobActions.setVisibility(waiting ? View.VISIBLE : View.GONE);
         confirmBtn.setEnabled(waiting && !acting);
         cancelBtn.setEnabled(waiting && !acting);
@@ -1798,14 +1804,15 @@ public class MainActivity extends Activity {
         String id = model.jobs.get(0).id;
         if (id.equals(actingJobId)) return; // 已提交待回调：忽略重复点击
         actingJobId = id;
+        actingAtMs = System.currentTimeMillis();
         renderJobButtons(); // 乐观置灰：用户点了立刻知道
         new Thread(() -> {
             Bridge.Resp r = bridge.postJson("/device/tasks/" + id + "/" + verb, "");
             ui.post(() -> {
                 if (id.equals(actingJobId)) {
-                    actingJobId = ""; // 请求已回：恢复按钮，状态随下轮轮询刷新
-                    renderJobButtons();
                     if (!r.ok()) {
+                        actingJobId = ""; // 失败才恢复按钮；成功则保持置灰，等轮询刷出新状态再解锁
+                        renderJobButtons();
                         Toast.makeText(this, "提交失败：" + r.errorText(),
                                 Toast.LENGTH_SHORT).show();
                     }
