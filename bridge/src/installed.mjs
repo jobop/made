@@ -6,6 +6,7 @@ import { BUILTIN_ROOT, packageRoots, packagesHome } from './config.mjs';
 import { validatePlugin } from './plugins/registry.mjs';
 import { reloadConfiguredPlugins } from './plugins/hot-reload.mjs';
 import { isPackageEntry, packageDirectories, readPackageSettings, writePackageSettings, fieldUsesCloudEnv } from './plugin-package.mjs';
+import { h5PackageDir, listH5Apps } from './h5-apps.mjs';
 
 const PLUGIN_ID = /^[a-z0-9][a-z0-9_-]{0,39}$/;
 const THEME_NAME = /^[A-Za-z0-9_-]{1,64}$/;
@@ -126,7 +127,7 @@ async function describeModule(filename, config) {
 export async function listInstalled(config) {
   const plugins = [];
   for (const filename of moduleFiles(config)) plugins.push(...await describeModule(filename, config));
-  return { plugins, themes: listThemes(config) };
+  return { plugins, themes: listThemes(config), h5apps: listH5Apps(config) };
 }
 
 export function listThemes(config) {
@@ -234,7 +235,14 @@ export async function setPluginEnabled(config, id, enabled) {
 }
 
 export async function savePluginSettings(config, id, values) {
-  if (!PLUGIN_ID.test(id || '') || !values || typeof values !== 'object' || Array.isArray(values)) throw fail('插件配置无效');
+  if (!values || typeof values !== 'object' || Array.isArray(values)) throw fail('插件配置无效');
+  // H5 包：id 即安装目录名，没有 plugin.mjs，settings 直接落在包目录 settings.json。
+  const h5Dir = h5PackageDir(config, id);
+  if (h5Dir) {
+    writePackageSettings(h5Dir, values);
+    return listInstalled(config);
+  }
+  if (!PLUGIN_ID.test(id || '')) throw fail('插件配置无效');
   const filename = await entryForId(config, id);
   if (!filename || !isPackageEntry(filename)) throw fail('插件没有可保存的配置');
   const dir = path.dirname(filename);

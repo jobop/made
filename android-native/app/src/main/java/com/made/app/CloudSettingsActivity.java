@@ -41,6 +41,7 @@ public final class CloudSettingsActivity extends Activity {
 
     private static final class PluginCard {
         JSONObject plugin;
+        boolean h5 = false; // h5 应用：无启用开关，只有设置表单
         LinearLayout body;   // 可展开的表单区
         boolean expanded = false;
         final List<EditText> inputs = new ArrayList<>();
@@ -80,7 +81,8 @@ public final class CloudSettingsActivity extends Activity {
         back.setPadding(dp(10), 0, dp(14), 0);
         back.setOnClickListener(v -> finish());
         bar.addView(back, lp(-2, -2));
-        bar.addView(Ui.text(this, "云端桥接器设置", 17, Ui.INK, true), lp(0, -2, 1f));
+        bar.addView(Ui.text(this, getIntent().getStringExtra("title") == null
+                ? "云端桥接器设置" : getIntent().getStringExtra("title"), 17, Ui.INK, true), lp(0, -2, 1f));
         TextView market = Ui.text(this, "＋ 添加插件", 14, Ui.PRIMARY, true);
         market.setPadding(dp(10), dp(6), dp(4), dp(6));
         market.setOnClickListener(v -> {
@@ -128,10 +130,12 @@ public final class CloudSettingsActivity extends Activity {
             }
             Bridge.Resp r = http("GET", "/api/installed", null);
             List<PluginCard> parsed = new ArrayList<>();
+            int h5Count = 0;
             String error = r.ok() ? "" : r.errorText();
             if (r.ok()) {
                 try {
-                    JSONArray arr = new JSONObject(r.body).optJSONArray("plugins");
+                    JSONObject data = new JSONObject(r.body);
+                    JSONArray arr = data.optJSONArray("plugins");
                     if (arr != null) {
                         for (int i = 0; i < arr.length(); i++) {
                             JSONObject p = arr.optJSONObject(i);
@@ -148,17 +152,35 @@ public final class CloudSettingsActivity extends Activity {
                             parsed.add(c);
                         }
                     }
+                    JSONArray h5 = data.optJSONArray("h5apps");
+                    for (int i = 0; h5 != null && i < h5.length(); i++) {
+                        JSONObject p = h5.optJSONObject(i);
+                        if (p == null) continue;
+                        PluginCard c = new PluginCard();
+                        c.plugin = p;
+                        c.h5 = true;
+                        h5Count++;
+                        JSONArray spec = p.optJSONArray("settingsSpec");
+                        if (spec != null) {
+                            for (int k = 0; k < spec.length(); k++) {
+                                JSONObject f = spec.optJSONObject(k);
+                                if (f != null) c.specs.add(f);
+                            }
+                        }
+                        parsed.add(c);
+                    }
                 } catch (Exception e) {
                     error = "数据解析失败";
                 }
             }
             final String err = error;
             final List<PluginCard> result = parsed;
-            runOnUiThread(() -> render(err, result));
+            final int h5Final = h5Count;
+            runOnUiThread(() -> render(err, result, h5Final));
         }, "made.cloudsettings").start();
     }
 
-    private void render(String error, List<PluginCard> parsed) {
+    private void render(String error, List<PluginCard> parsed, int h5Count) {
         cards.clear();
         cards.addAll(parsed);
         list.removeAllViews();
@@ -169,7 +191,8 @@ public final class CloudSettingsActivity extends Activity {
             list.addView(retry, lp(-1, -2));
             return;
         }
-        status.setText(cards.isEmpty() ? "沙箱里还没有助手插件" : "设置保存在你的云端沙箱里，改动即时生效");
+        status.setText(cards.isEmpty() ? "桥接器上还没有可设置的插件"
+                : "设置保存在桥接器上，改动即时生效" + (h5Count > 0 ? " · 含 " + h5Count + " 个 H5 应用" : ""));
         boolean anyCloud = false;
         for (PluginCard c : cards) {
             list.addView(pluginCard(c), lp(-1, -2));
@@ -185,9 +208,9 @@ public final class CloudSettingsActivity extends Activity {
     private View pluginCard(PluginCard c) {
         JSONObject p = c.plugin;
         String id = p.optString("id", "");
-        String label = p.optString("label", "");
+        String label = c.h5 ? p.optString("name", id) : p.optString("label", "");
         if (TextUtils.isEmpty(label)) label = id.isEmpty() ? p.optString("file", "未知插件") : id;
-        boolean available = p.optBoolean("available", false);
+        boolean available = c.h5 || p.optBoolean("available", false);
         boolean enabled = p.optBoolean("enabled", false);
         boolean modelKind = "model".equalsIgnoreCase(p.optString("kind", ""));
 
@@ -203,18 +226,22 @@ public final class CloudSettingsActivity extends Activity {
         LinearLayout titleCol = new LinearLayout(this);
         titleCol.setOrientation(LinearLayout.VERTICAL);
         titleCol.addView(Ui.text(this, label, 15, Ui.INK, true), lp(-2, -2));
-        String sub = modelKind ? "模型助手" : p.optString("kind", "插件");
-        if (!available) sub += " · 不可用";
-        titleCol.addView(Ui.text(this, sub, 12, available ? Ui.SUB : Ui.ERR, false), lp(-2, -2));
+        String sub = c.h5 ? ("H5 应用" + (p.optString("version", "").isEmpty() ? ""
+                : " · v" + p.optString("version", "")))
+                : modelKind ? "模型助手" : p.optString("kind", "插件");
+        if (!c.h5 && !available) sub += " · 不可用";
+        titleCol.addView(Ui.text(this, sub, 12, !c.h5 && !available ? Ui.ERR : Ui.SUB, false), lp(-2, -2));
         head.addView(titleCol, new LinearLayout.LayoutParams(0, -2, 1f));
 
-        Switch sw = new Switch(this);
-        sw.setEnabled(available && !id.isEmpty());
-        sw.setChecked(enabled);
-        sw.setOnCheckedChangeListener((b, checked) -> {
-            if (b.isPressed()) toggleEnabled(id, checked, sw);
-        });
-        head.addView(sw, lp(-2, -2));
+        if (!c.h5) {
+            Switch sw = new Switch(this);
+            sw.setEnabled(available && !id.isEmpty());
+            sw.setChecked(enabled);
+            sw.setOnCheckedChangeListener((b, checked) -> {
+                if (b.isPressed()) toggleEnabled(id, checked, sw);
+            });
+            head.addView(sw, lp(-2, -2));
+        }
         card.addView(head, lp(-1, -2));
 
         // 可展开的配置表单

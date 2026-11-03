@@ -26,7 +26,8 @@ import { watchPlugins } from './plugins/hot-reload.mjs';
 import { createEnhancement } from './plugins/enhance.mjs';
 import { listInstalled, listThemes, removePlugin, removeTheme, savePluginSettings, setPluginEnabled, themeExists } from './installed.mjs';
 import { marketIndex, installPackage } from './plugin-install.mjs';
-import { H5_CAPABILITIES, H5Tokens, h5StaticRoot, resolveStaticFile } from './h5-apps.mjs';
+import { H5_CAPABILITIES, H5Tokens, h5StaticRoot, resolveStaticFile, listH5Apps } from './h5-apps.mjs';
+import { readPackageSettings } from './plugin-package.mjs';
 import { createBoardLink } from './board-link.mjs';
 import { spriteChunk, spriteBundle } from './agent-sprites.mjs';
 import { applyCloudLlmDefaults } from './cloud-llm.mjs';
@@ -777,6 +778,22 @@ export function createApp(config, { run, transcribe, tunnel: providedTunnel, ena
           deviceSend(res, 200, {
             plugin: authed.id, capabilities: [...caps],
             expiresAt: authed.expiresAt, locale: deviceLocale,
+          }, false);
+          return;
+        }
+        if (req.method === 'GET' && url.pathname === '/h5api/settings' && allow('settings.read')) {
+          // 本包自己的配置（设置页保存的 resolved 值）。密钥类字段（key/secret/token/password）
+          // 不出值，只出「有没有填」——页面代码若需要这类值应走自己的服务端，不该过这里。
+          const pack = readPackageSettings(app.packageDir);
+          const secret = /(key|secret|token|password|passphrase)/i;
+          const settings = {};
+          for (const field of pack.fields) {
+            if (!secret.test(field.key)) settings[field.key] = pack.values[field.key];
+          }
+          deviceSend(res, 200, {
+            plugin: authed.id,
+            settings,
+            secretFields: pack.fields.filter((field) => secret.test(field.key)).map((field) => field.key),
           }, false);
           return;
         }

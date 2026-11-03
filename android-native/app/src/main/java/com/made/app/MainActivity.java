@@ -27,7 +27,11 @@ import android.widget.ScrollView;
 import android.widget.TextView;
 import android.widget.Toast;
 
+import org.json.JSONArray;
 import org.json.JSONObject;
+
+import java.util.ArrayList;
+import java.util.List;
 
 /**
  * 码得 · 原生安卓端。协议与 ESP32 固件一致（连桥接 / 对话 / 精灵 / 语音），
@@ -94,12 +98,20 @@ public class MainActivity extends Activity {
     private boolean suppressNextJobCard = false; // 切助手/会话后不弹旧任务卡
     private boolean emptySheetShown = false;     // 空态「暂无任务」面板已展开过一次
     private volatile boolean voiceUploading = false;
-    private int gestureMode = 0; // 0 未定 1 横滑（助手）；上下滑不触发切换
+    private int gestureMode = 0; // 0 未定 1 横滑（助手） 2 下拉（H5 小程序面板）；上下滑不触发切换
     private long gestureDownMs = 0;
     private FrameLayout spriteAreaHost; // 任务面板的宿主（精灵区）
     private int sheetState = SHEET_PEEK; // 任务面板当前档位
     private int dragStartH = 0; // 把手拖动起点高度
     private boolean sheetAnimating = false;
+
+    // H5 小程序面板（精灵区下拉唤出，微信小程序同款交互）
+    private View h5Scrim;
+    private LinearLayout h5Panel;
+    private LinearLayout h5List;
+    private TextView h5Status;
+    private boolean h5PanelOpen = false;
+    private boolean h5Loading = false;
 
     private static final int SHEET_PEEK = 0;  // 只露边缘
     private static final int SHEET_HALF = 1;  // 半屏
@@ -161,6 +173,200 @@ public class MainActivity extends Activity {
         root.addView(connectScreen, new FrameLayout.LayoutParams(-1, -1));
         root.addView(homeScreen, new FrameLayout.LayoutParams(-1, -1));
         homeScreen.setVisibility(View.GONE);
+        buildH5Panel();
+    }
+
+    // ---- H5 小程序面板（精灵区下拉唤出） ----
+
+    /** 面板挂在 root 顶层：半屏卡片列表 + 半透明遮罩，点遮罩/✕/返回键收起。 */
+    private void buildH5Panel() {
+        h5Scrim = new View(this);
+        h5Scrim.setBackgroundColor(0x66000000);
+        h5Scrim.setOnClickListener(v -> closeH5Panel(true));
+        h5Scrim.setVisibility(View.GONE);
+        root.addView(h5Scrim, new FrameLayout.LayoutParams(-1, -1));
+
+        h5Panel = new LinearLayout(this);
+        h5Panel.setOrientation(LinearLayout.VERTICAL);
+        h5Panel.setBackground(Ui.card(this, Ui.SURFACE, 0, Ui.LINE, 1));
+        h5Panel.setPadding(dp(16), dp(8), dp(16), dp(16));
+        h5Panel.setVisibility(View.GONE);
+        h5Panel.setElevation(dp(10));
+        root.addView(h5Panel, new FrameLayout.LayoutParams(-1, dp(430), Gravity.TOP));
+
+        // 顶部小横条（提示可拖）+ 标题行
+        LinearLayout grabberWrap = new LinearLayout(this);
+        grabberWrap.setGravity(Gravity.CENTER_HORIZONTAL);
+        grabberWrap.setPadding(0, dp(4), 0, dp(6));
+        View grabber = new View(this);
+        grabber.setBackground(Ui.fill(this, Ui.LINE, 999));
+        grabberWrap.addView(grabber, lp(dp(36), dp(4)));
+        h5Panel.addView(grabberWrap, lp(-1, -2));
+
+        LinearLayout head = new LinearLayout(this);
+        head.setOrientation(LinearLayout.HORIZONTAL);
+        head.setGravity(Gravity.CENTER_VERTICAL);
+        head.addView(Ui.text(this, "H5 应用", 16, Ui.INK, true), new LinearLayout.LayoutParams(0, -2, 1f));
+        TextView close = Ui.text(this, "✕", 16, Ui.SUB, false);
+        close.setPadding(dp(12), dp(6), dp(4), dp(6));
+        close.setOnClickListener(v -> closeH5Panel(true));
+        Ui.press(close);
+        head.addView(close, lp(-2, -2));
+        h5Panel.addView(head, lp(-1, -2));
+
+        h5Status = Ui.text(this, "", 12, Ui.SUB, false);
+        h5Status.setPadding(dp(2), dp(6), dp(2), dp(2));
+        h5Panel.addView(h5Status, lp(-1, -2));
+
+        ScrollView scroll = new ScrollView(this);
+        h5List = new LinearLayout(this);
+        h5List.setOrientation(LinearLayout.VERTICAL);
+        h5List.setPadding(dp(2), dp(6), dp(2), dp(8));
+        scroll.addView(h5List, lp(-1, -2));
+        h5Panel.addView(scroll, new LinearLayout.LayoutParams(-1, 0, 1f));
+    }
+
+    /** 打开面板（动画收尾），每次都重新拉 /api/installed 里的 h5apps。 */
+    private void openH5Panel() {
+        if (h5PanelOpen) return;
+        h5PanelOpen = true;
+        h5Panel.setVisibility(View.VISIBLE);
+        h5Scrim.setVisibility(View.VISIBLE);
+        h5Panel.setTranslationY(0);
+        h5Scrim.setAlpha(1f);
+        loadH5Apps();
+    }
+
+    private void closeH5Panel(boolean animate) {
+        if (!h5PanelOpen) return;
+        h5PanelOpen = false;
+        Runnable done = () -> {
+            if (!h5PanelOpen) {
+                h5Panel.setVisibility(View.GONE);
+                h5Scrim.setVisibility(View.GONE);
+            }
+        };
+        if (animate && h5Panel.getHeight() > 0) {
+            h5Panel.animate().translationY(-h5Panel.getHeight()).setDuration(180).withEndAction(done).start();
+            h5Scrim.animate().alpha(0f).setDuration(180).start();
+        } else {
+            done.run();
+        }
+    }
+
+    /** 手指跟手阶段：progress 0→1，面板从屏顶外滑到位，遮罩同步加深。 */
+    private void dragH5Panel(float progress) {
+        progress = Math.max(0f, Math.min(1f, progress));
+        int h = h5Panel.getHeight() > 0 ? h5Panel.getHeight() : dp(430);
+        h5Panel.setVisibility(View.VISIBLE);
+        h5Scrim.setVisibility(View.VISIBLE);
+        h5Scrim.setAlpha(progress);
+        h5Panel.setTranslationY(-(1f - progress) * h);
+    }
+
+    private void loadH5Apps() {
+        if (h5Loading) return;
+        h5Loading = true;
+        h5Status.setText("加载中…");
+        h5List.removeAllViews();
+        new Thread(() -> {
+            Bridge.Resp r = bridge.get("/api/installed");
+            List<JSONObject> apps = new ArrayList<>();
+            String error = r.ok() ? "" : r.errorText();
+            if (r.ok()) {
+                try {
+                    JSONArray arr = new JSONObject(r.body).optJSONArray("h5apps");
+                    for (int i = 0; arr != null && i < arr.length(); i++) {
+                        JSONObject a = arr.optJSONObject(i);
+                        if (a != null) apps.add(a);
+                    }
+                } catch (Exception e) {
+                    error = "数据解析失败";
+                }
+            }
+            final String err = error;
+            final List<JSONObject> result = apps;
+            runOnUiThread(() -> {
+                h5Loading = false;
+                renderH5Apps(err, result);
+            });
+        }, "made.h5panel").start();
+    }
+
+    private void renderH5Apps(String error, List<JSONObject> apps) {
+        h5List.removeAllViews();
+        if (!TextUtils.isEmpty(error)) {
+            h5Status.setText("加载失败：" + error);
+            return;
+        }
+        h5Status.setText(apps.isEmpty() ? "还没有 H5 应用，去市场装一个" : "点击卡片打开 · 设置在「桥接器设置」里改");
+        for (JSONObject app : apps) h5List.addView(h5Card(app), lp(-1, -2));
+        if (apps.isEmpty()) {
+            TextView go = pillUi("打开插件市场", Ui.PRIMARY, 0xFFFFFFFF);
+            go.setOnClickListener(v -> {
+                closeH5Panel(true);
+                android.content.Intent it = new android.content.Intent(this, MarketActivity.class);
+                it.putExtra("base", bridge.baseUrl());
+                it.putExtra("token", bridge.token());
+                it.putExtra("cloudToken", bridge.cloudToken());
+                startActivity(it);
+            });
+            LinearLayout.LayoutParams goLp = lp(-1, -2);
+            goLp.topMargin = dp(10);
+            h5List.addView(go, goLp);
+        }
+    }
+
+    private View h5Card(JSONObject app) {
+        String id = app.optString("id", "");
+        String name = app.optString("name", id);
+        String version = app.optString("version", "");
+        String summary = app.optString("summary", "");
+
+        LinearLayout card = new LinearLayout(this);
+        card.setOrientation(LinearLayout.VERTICAL);
+        card.setBackground(Ui.card(this, Ui.BG, 12, Ui.LINE, 1));
+        card.setPadding(dp(14), dp(12), dp(14), dp(12));
+        card.setOnClickListener(v -> {
+            closeH5Panel(true);
+            android.content.Intent it = new android.content.Intent(this, H5Activity.class);
+            it.putExtra("base", bridge.baseUrl());
+            it.putExtra("token", bridge.token());
+            it.putExtra("cloudToken", bridge.cloudToken());
+            it.putExtra("dir", id);
+            it.putExtra("name", name);
+            startActivity(it);
+        });
+        Ui.press(card);
+
+        LinearLayout head = new LinearLayout(this);
+        head.setOrientation(LinearLayout.HORIZONTAL);
+        head.setGravity(Gravity.CENTER_VERTICAL);
+        head.addView(Ui.text(this, name, 15, Ui.INK, true), new LinearLayout.LayoutParams(0, -2, 1f));
+        head.addView(Ui.text(this, "打开 ›", 13, Ui.PRIMARY, true), lp(-2, -2));
+        card.addView(head, lp(-1, -2));
+        String sub = version.isEmpty() ? "H5 应用" : "H5 应用 · v" + version;
+        TextView subView = Ui.text(this, sub, 12, Ui.SUB, false);
+        subView.setPadding(dp(1), dp(3), 0, 0);
+        card.addView(subView, lp(-1, -2));
+        if (!TextUtils.isEmpty(summary)) {
+            TextView s = Ui.text(this, summary, 12, Ui.SUB, false);
+            s.setPadding(dp(1), dp(4), 0, 0);
+            card.addView(s, lp(-1, -2));
+        }
+        LinearLayout.LayoutParams cardLp = lp(-1, -2);
+        cardLp.topMargin = dp(8);
+        return card;
+    }
+
+    /** 主色胶囊按钮（面板空态用）。 */
+    private TextView pillUi(String text, int bg, int fg) {
+        TextView t = Ui.text(this, text, 14, fg, true);
+        t.setGravity(Gravity.CENTER);
+        t.setBackground(Ui.fill(this, bg, 10));
+        t.setPadding(dp(14), dp(10), dp(14), dp(10));
+        Ui.press(t);
+        return t;
     }
 
     // ---- 连接页 ----
@@ -1243,6 +1449,14 @@ public class MainActivity extends Activity {
      * 不再派发给本视图，滑动永远收不到结尾（v4 的教训）。
      * 双击（450ms 两击）= touch.double；横滑 = 助手分页跟手；纵滑 = 切会话。
      */
+    @Override public void onBackPressed() {
+        if (h5PanelOpen) {
+            closeH5Panel(true);
+            return;
+        }
+        super.onBackPressed();
+    }
+
     private boolean onSpriteAreaTouch(View v, MotionEvent e) {
         switch (e.getActionMasked()) {
             case MotionEvent.ACTION_DOWN:
@@ -1264,13 +1478,20 @@ public class MainActivity extends Activity {
                     float ddx = e.getRawX() - swipeDownX;
                     float ddy = e.getRawY() - swipeDownY;
                     if (Math.abs(ddx) > dp(12) && Math.abs(ddx) > Math.abs(ddy)) {
-                        gestureMode = 1; // 只认横滑；上下滑不做任何切换
+                        gestureMode = 1; // 只认横滑切助手；上滑不做任何事
                         lastSpriteTapMs = 0;
                         pager.ensureNeighbors(); // 邻页未就绪时立刻补齐
+                    } else if (ddy > dp(14) && ddy > Math.abs(ddx) * 1.4f) {
+                        // 下拉 = 唤出 H5 小程序面板（跟手，拖回顶部可取消）
+                        gestureMode = 2;
+                        lastSpriteTapMs = 0;
+                        h5PanelOpen = false; // 跟手阶段由 dragH5Panel 管可见性
                     }
                 }
                 if (gestureMode == 1) {
                     pager.setDrag(e.getRawX() - swipeDownX); // 跟手
+                } else if (gestureMode == 2) {
+                    dragH5Panel((e.getRawY() - swipeDownY) / dp(130)); // 跟手
                 }
                 return true;
             }
@@ -1289,6 +1510,15 @@ public class MainActivity extends Activity {
                         target = (model.selectedProvider + step + n) % n;
                     }
                     applyProviderSwitch(target);
+                } else if (gestureMode == 2) {
+                    float dy = e.getRawY() - swipeDownY;
+                    boolean quickPull = System.currentTimeMillis() - gestureDownMs < 260
+                            && dy > dp(56);
+                    if (dy > dp(80) || quickPull) {
+                        openH5Panel(); // 拉过阈值：滑入就位并加载数据
+                    } else {
+                        closeH5Panel(true); // 拖回顶部：取消
+                    }
                 }
                 gestureMode = 0;
                 return true;
@@ -1297,6 +1527,8 @@ public class MainActivity extends Activity {
                 if (gestureMode == 1) {
                     pager.endDrag();
                     pager.snapTo(model.selectedProvider); // 回弹
+                } else if (gestureMode == 2) {
+                    closeH5Panel(true);
                 }
                 gestureMode = 0;
                 return true;
@@ -1647,10 +1879,11 @@ public class MainActivity extends Activity {
     }
 
     private void showMenu() {
-        // 云端模式多一项桥接器设置；插件市场两种模式都有（市场 API 由桥接器统一提供）。
+        // 云端模式多一项桥接器设置；插件市场/插件设置两种模式都有（API 由桥接器统一提供）。
         java.util.List<String> items = new java.util.ArrayList<>();
         if (pairingCloud) items.add("云端桥接器设置");
         items.add("插件市场");
+        if (!pairingCloud) items.add("插件设置");
         items.addAll(java.util.Arrays.asList("切换会话", "删除会话", "新建会话", "断开连接"));
         new AlertDialog.Builder(this)
                 .setItems(items.toArray(new String[0]), (d, which) -> {
@@ -1661,9 +1894,10 @@ public class MainActivity extends Activity {
                     }
                     if (pairingCloud) i -= 1; // 去掉云端设置项，后续项回到统一索引
                     if (i == 0) openMarket();
-                    else if (i == 1) pickSession();
-                    else if (i == 2) deleteCurrentSession();
-                    else if (i == 3) createSession();
+                    else if (i == 1) openLanSettings();
+                    else if (i == 2) pickSession();
+                    else if (i == 3) deleteCurrentSession();
+                    else if (i == 4) createSession();
                     else {
                         pairing.forget();
                         model.sessions.clear();
@@ -1681,6 +1915,16 @@ public class MainActivity extends Activity {
         it.putExtra("base", bridge.baseUrl());
         it.putExtra("token", bridge.token());
         it.putExtra("cloudToken", bridge.cloudToken());
+        startActivity(it);
+    }
+
+    /** 局域网模式的插件设置页（云端模式入口叫「云端桥接器设置」，同一页面）。 */
+    private void openLanSettings() {
+        android.content.Intent it = new android.content.Intent(this, CloudSettingsActivity.class);
+        it.putExtra("base", bridge.baseUrl());
+        it.putExtra("token", bridge.token());
+        it.putExtra("cloudToken", bridge.cloudToken());
+        it.putExtra("title", "插件设置");
         startActivity(it);
     }
 

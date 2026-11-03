@@ -32,7 +32,9 @@ function readJson(file) {
 
 export function parseSettingsSpec(raw) {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw fail('插件配置规范无效');
-  const allowed = new Set(['id', 'settings']);
+  // h5 包的 plugin.json 额外携带 kind/www/capabilities（能力清单见 h5-apps.mjs），
+  // 对设置解析是透明字段；助手包不带这些键，带上也不影响解析。
+  const allowed = new Set(['id', 'settings', 'kind', 'www', 'capabilities']);
   if (Object.keys(raw).some((key) => !allowed.has(key))) throw fail('插件配置规范无效');
   if (raw.id !== undefined && (typeof raw.id !== 'string' || !PACKAGE_DIR.test(raw.id))) throw fail('插件配置规范无效');
   if (raw.settings === undefined) return { id: raw.id || '', fields: [] };

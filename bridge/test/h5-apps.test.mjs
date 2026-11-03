@@ -176,3 +176,55 @@ test('H5Tokens：过期失效、revoke 按包撤销', async () => {
   store.tokens.get(b.token).expiresAt = Date.now() - 1;
   assert.equal(store.verify(b.token), null, '过期失效');
 });
+
+test('H5 设置项：listH5Apps 出表单，/api/installed 带 h5apps，保存后 /h5api/settings 可读且密钥遮蔽', async (t) => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'vibe-h5-settings-'));
+  t.after(() => fs.rmSync(home, { recursive: true, force: true }));
+  makeH5Package(home, 'setty', {
+    capabilities: ['settings.read'],
+    extra: { settings: [
+      { key: 'nickname', label: '昵称', type: 'text', default: '阿黄' },
+      { key: 'apiKey', label: '密钥', type: 'text' },
+    ] },
+  });
+  makeH5Package(home, 'plain');
+  const { app, config, token } = await boot(t, home);
+  const headers = { Authorization: `Bearer ${token}` };
+
+  // 桌面口 /api/installed 带 h5apps；设置表单来自 plugin.json（含 default 解析）
+  const installed = JSON.parse((await request(config.port, '/api/installed', headers)).body);
+  const setty = installed.h5apps.find((item) => item.id === 'setty');
+  assert.ok(setty, 'installed.h5apps 应含 setty');
+  assert.deepEqual(setty.settingsSpec.map((field) => field.key), ['nickname', 'apiKey']);
+  assert.equal(setty.settings.nickname, '阿黄');
+  const plain = installed.h5apps.find((item) => item.id === 'plain');
+  assert.deepEqual(plain.settingsSpec, []);
+
+  // 保存（POST /api/plugins/settings 要 x-vibe-token）：先拿桌面口会话令牌
+  const vibeToken = JSON.parse((await request(config.port, '/api/session', headers)).body).token;
+  const saved = await post(config.port, '/api/plugins/settings',
+    { id: 'setty', settings: { nickname: '小白', apiKey: 'sk-secret-1' } },
+    { Authorization: `Bearer ${token}`, 'x-vibe-token': vibeToken });
+  assert.equal(saved.status, 200, saved.body);
+
+  // 落盘 + 重读
+  const after = JSON.parse((await request(config.port, '/api/installed', headers)).body)
+    .h5apps.find((item) => item.id === 'setty');
+  assert.equal(after.settings.nickname, '小白');
+  assert.equal(after.settings.apiKey, 'sk-secret-1');
+
+  // 页面读配置：声明 settings.read 才放行；密钥类只出「有没有填」，不出值
+  const issue = JSON.parse((await request(config.devicePort, '/plugins/setty/token', headers)).body);
+  const auth = { Authorization: `Bearer ${issue.token}` };
+  const who = JSON.parse((await request(config.devicePort, '/h5api/whoami', auth)).body);
+  assert.ok(who.capabilities.includes('settings.read'));
+  const view = JSON.parse((await request(config.devicePort, '/h5api/settings', auth)).body);
+  assert.equal(view.plugin, 'setty');
+  assert.equal(view.settings.nickname, '小白');
+  assert.equal(view.settings.apiKey, undefined, '密钥类字段不得出值');
+  assert.deepEqual(view.secretFields, ['apiKey']);
+  // 未声明能力：403
+  const plainIssue = JSON.parse((await request(config.devicePort, '/plugins/plain/token', headers)).body);
+  assert.equal((await request(config.devicePort, '/h5api/settings',
+    { Authorization: `Bearer ${plainIssue.token}` })).status, 403);
+});

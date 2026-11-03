@@ -1,7 +1,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { randomBytes } from 'node:crypto';
-import { packagesHome } from './config.mjs';
+import { packagesHome, packageRoots } from './config.mjs';
+import { readPackageSettings } from './plugin-package.mjs';
 
 // H5 插件（kind=h5）：装到桥接器上的自包含静态网页应用，App/浏览器直接打开页面。
 // 板子（ESP32+LVGL）不下发、不参与；页面跑在手机 WebView 里。
@@ -20,6 +21,7 @@ export const H5_CAPABILITIES = Object.freeze([
   'tasks.write',     // POST /h5api/tasks、/h5api/tasks/<id>/(confirm|cancel)
   'sessions.read',   // GET  /h5api/sessions   会话列表
   'sessions.write',  // POST /h5api/sessions   新建会话
+  'settings.read',   // GET  /h5api/settings   读本包配置（密钥类字段自动遮蔽）
 ]);
 
 const PACKAGE_DIR = /^[a-z0-9][a-z0-9_-]{0,39}$/;
@@ -76,6 +78,66 @@ export function h5StaticRoot(config, id) {
   if (root !== packageDir && !root.startsWith(packageDir + path.sep)) return null;
   if (!fs.existsSync(root) || !fs.statSync(root).isDirectory()) return null;
   return { packageDir, manifest, root };
+}
+
+/** 按 id 找已安装 h5 包目录；不是合法已装 h5 包返回 null。 */
+export function h5PackageDir(config, id) {
+  if (!PACKAGE_DIR.test(id || '')) return null;
+  const packageDir = path.join(packagesHome(config), 'plugins', id);
+  const manifest = readH5Manifest(packageDir);
+  return manifest && manifest.id === id ? packageDir : null;
+}
+
+const H5_SECRET_KEY = /(key|secret|token|password|passphrase)/i;
+
+/** 插件查找顺序（与 installed.mjs 同源）：内置在前、用户目录在后。 */
+function h5PluginsDirs(config) {
+  return packageRoots(config).map((root) => path.join(root, 'plugins'));
+}
+
+/**
+ * 已安装 H5 应用列表（App 小程序面板 / 设置页用）：静态元数据 + 解析后的设置表单。
+ * 密钥类配置只出「有没有填」，不出值——页面拿到的也是遮蔽后的（见 /h5api/settings）。
+ */
+export function listH5Apps(config) {
+  const apps = [];
+  for (const directory of h5PluginsDirs(config)) {
+    if (!fs.existsSync(directory) || !fs.statSync(directory).isDirectory()) continue;
+    for (const name of fs.readdirSync(directory).sort()) {
+      if (!PACKAGE_DIR.test(name)) continue;
+      const packageDir = path.join(directory, name);
+      if (!fs.statSync(packageDir).isDirectory()) continue;
+      const manifest = readH5Manifest(packageDir);
+      if (!manifest || manifest.id !== name) continue;
+      if (apps.some((app) => app.id === name)) continue; // 同名包用户目录覆盖内置
+      let name2 = name, version = '', summary = '';
+      try {
+        const market = JSON.parse(fs.readFileSync(path.join(packageDir, 'market.json'), 'utf8'));
+        if (typeof market.name === 'string' && market.name.trim()) name2 = market.name.trim();
+        if (typeof market.version === 'string') version = market.version;
+        if (typeof market.summary === 'string' && market.summary.trim()) summary = market.summary.trim();
+      } catch { /* market.json 可选；缺了用 id 当名字 */ }
+      const pack = readPackageSettings(packageDir);
+      const secretFields = pack.fields.filter((field) => H5_SECRET_KEY.test(field.key)).map((field) => field.key);
+      const filledSecrets = Object.fromEntries(secretFields.map((key) => [key, Boolean(String(pack.values[key] || '').trim())]));
+      apps.push({
+        id: name, name: name2, version, summary, kind: 'h5',
+        capabilities: manifest.capabilities,
+        settingsSpec: pack.fields,
+        settings: pack.values,
+        settingsSources: pack.fields.reduce((acc, field) => {
+          if (!String(String(field.default || '')).includes('${MADE_LLM_')) return acc;
+          const value = String(pack.values[field.key] || '');
+          if (value && !value.includes('${MADE_LLM_')) acc[field.key] = 'cloud';
+          return acc;
+        }, {}),
+        secretFields,
+        secretFilled: filledSecrets,
+        settingsError: pack.error || '',
+      });
+    }
+  }
+  return apps;
 }
 
 const CONTENT_TYPES = {

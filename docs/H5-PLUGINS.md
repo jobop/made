@@ -37,8 +37,22 @@ tetris-h5/
 | `tasks.write` | `POST /h5api/tasks`、`POST /h5api/tasks/<id>/(confirm\|cancel)` |
 | `sessions.read` | `GET /h5api/sessions` |
 | `sessions.write` | `POST /h5api/sessions` |
+| `settings.read` | `GET /h5api/settings`（读本包配置；密钥类字段只出「有没有填」，不出值） |
 
 另有 `GET /h5api/whoami` 不算能力，任何有效 token 可调（返回插件 id、能力表、过期时间）。
+
+### 设置项
+
+`plugin.json` 可声明 `settings` 数组（与助手包同一套字段规范：key/label/type=text/default/required/pattern/help，help ≤200 字节）：
+
+```json
+{ "id": "my-h5", "kind": "h5", "capabilities": ["settings.read"],
+  "settings": [ { "key": "nickname", "label": "昵称", "type": "text", "default": "阿黄" } ] }
+```
+
+- 设置在 **App「桥接器设置」页**编辑（云端模式菜单「云端桥接器设置」/局域网模式菜单「插件设置」），保存落在包目录 settings.json，页面下一次拉取即生效。
+- 页面声明 `settings.read` 后调 `GET /h5api/settings`：`{ plugin, settings: {...}, secretFields: [...] }`。**密钥类字段**（key 含 key/secret/token/password/passphrase）永远不出值，只出字段名列表——页面需要密钥时应走自己的服务端，不要指望从这里拿。
+- App 的小程序面板（主页精灵区下拉）列出已装 H5 应用，点卡片直接打开。
 
 ## 链路
 
