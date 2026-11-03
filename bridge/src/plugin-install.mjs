@@ -4,6 +4,7 @@ import crypto from 'node:crypto';
 import zlib from 'node:zlib';
 import { randomUUID } from 'node:crypto';
 import { packagesHome } from './config.mjs';
+import { H5_CAPABILITIES } from './h5-apps.mjs';
 import { reloadConfiguredPlugins } from './plugins/hot-reload.mjs';
 
 // 桥接器内的市场安装：拉公开索引 → 下载归档 → sha256 校验 → 解包写入用户包目录
@@ -28,7 +29,7 @@ const THEME_DIR = /^[A-Za-z0-9_-]{1,64}$/;
 const PACKAGE_DIR = /^[a-z0-9][a-z0-9_-]{0,39}$/;
 const HEX64 = /^[0-9a-f]{64}$/;
 
-const KIND_TARGET = Object.freeze({ theme: 'themes', control: 'plugins', agent: 'plugins' });
+const KIND_TARGET = Object.freeze({ theme: 'themes', control: 'plugins', agent: 'plugins', h5: 'plugins' });
 const DEFAULT_SERVER = 'https://market.made-world.link';
 const INDEX_TTL_MS = 5 * 60 * 1000;
 const INDEX_TIMEOUT_MS = 10_000;
@@ -252,7 +253,10 @@ function unpack(archive, entry) {
   if (files.length > MAX_FILES) throw fail(`归档包含 ${files.length} 个文件，超过 ${MAX_FILES} 上限`);
   let total = 0;
   let hasEntryFile = false;
-  const expectedEntry = entry.kind === 'theme' ? 'theme.json' : null;
+  const expectedEntry = entry.kind === 'theme' ? 'theme.json'
+    : entry.kind === 'h5' ? 'plugin.json'
+    : null;
+  let h5Manifest = null;
   for (const file of files) {
     if (file.name.includes('..') || path.isAbsolute(file.name) || file.name.includes('\\')) {
       throw fail(`归档条目路径不安全：${file.name}`);
@@ -261,11 +265,42 @@ function unpack(archive, entry) {
     total += file.data.length;
     if (total > MAX_TOTAL_BYTES) throw fail(`归档解包后超过 ${MAX_TOTAL_BYTES} 字节上限`);
     if (expectedEntry ? file.name === expectedEntry : file.name === 'plugin.mjs' || file.name === 'plugin.js') hasEntryFile = true;
+    if (entry.kind === 'h5' && file.name === 'plugin.json') {
+      try { h5Manifest = JSON.parse(file.data.toString('utf8')); } catch {
+        throw fail('H5 包的 plugin.json 不是合法 JSON');
+      }
+    }
   }
   if (!hasEntryFile) {
-    throw fail(expectedEntry ? `归档缺少 ${expectedEntry}` : '归档缺少 plugin.mjs / plugin.js');
+    throw fail(expectedEntry === 'theme.json' ? `归档缺少 ${expectedEntry}`
+      : expectedEntry === 'plugin.json' ? 'H5 包归档缺少 plugin.json'
+      : '归档缺少 plugin.mjs / plugin.js');
   }
+  if (entry.kind === 'h5') validateH5Archive(entry, h5Manifest, files);
   return files;
+}
+
+/** H5 包落盘前校验：manifest 一致性 + 能力白名单 + 入口页存在（与桥接器运行时同规则）。 */
+function validateH5Archive(entry, manifest, files) {
+  if (!manifest || typeof manifest !== 'object' || Array.isArray(manifest)) {
+    throw fail('H5 包的 plugin.json 顶层必须是对象');
+  }
+  if (manifest.kind !== 'h5') throw fail(`H5 包的 plugin.json kind 必须是 h5，收到 ${manifest.kind ?? '(空)'}`);
+  if (manifest.id !== entry.id) throw fail(`H5 包的 plugin.json id (${manifest.id ?? '(空)'}) 与市场条目 ${entry.id} 不一致`);
+  if (manifest.capabilities !== undefined) {
+    if (!Array.isArray(manifest.capabilities) || manifest.capabilities.length > 8
+      || manifest.capabilities.some((name) => !H5_CAPABILITIES.includes(name))) {
+      throw fail(`H5 包 capabilities 必须是 ${H5_CAPABILITIES.join(' / ')} 的子集（≤8 项）`);
+    }
+  }
+  const www = typeof manifest.www === 'string' && manifest.www ? (manifest.www.endsWith('/') ? manifest.www : `${manifest.www}/`) : 'www/';
+  if (/(^|\/)\.\.(\/|$)/.test(www) || www.includes('\\') || path.isAbsolute(www) || !/^[A-Za-z0-9_][A-Za-z0-9_/-]*$/.test(www)) {
+    throw fail(`H5 包 www 目录不安全：${www}`);
+  }
+  const indexName = `${www}index.html`;
+  if (!files.some((file) => file.name === indexName)) {
+    throw fail(`H5 包缺少入口页 ${indexName}`);
+  }
 }
 
 // ---- 落盘与生效 ----
@@ -326,7 +361,8 @@ export async function installPackage(config, { id = '' } = {}) {
       if (fs.existsSync(saved)) fs.copyFileSync(saved, path.join(target, 'settings.json'));
       fs.rmSync(backup, { recursive: true, force: true });
     }
-    if (kind !== 'theme') {
+    // H5 包没有代码，静态服务按请求读盘，不需要 reload。
+    if (kind !== 'theme' && kind !== 'h5') {
       try {
         await reloadConfiguredPlugins(config);
       } catch (error) {
@@ -349,7 +385,7 @@ export async function installPackage(config, { id = '' } = {}) {
       name: entry.name,
       target: KIND_TARGET[kind],
       dir,
-      reloaded: kind !== 'theme',
+      reloaded: kind !== 'theme' && kind !== 'h5',
     },
   };
 }

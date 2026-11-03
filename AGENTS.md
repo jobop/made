@@ -20,5 +20,6 @@ This file is the development-standards index. The standards themselves are split
 - [Marketplace split](docs/MARKETS.md) — marketplace classification, boundaries and mixing rules
 - [Plugin development](docs/PLUGINS.md) — plugin usage and full examples
 - [Flash tool](docs/FLASH.md) — targets, board-ID rules, options, flash address table and troubleshooting
+- [H5 plugins](docs/H5-PLUGINS.md) — static web apps on the bridge, capability negotiation via scoped tokens; boards are not involved
 - [Sprite assets](docs/SPRITES.md) — assistant avatar format, animation semantics and chunked fetch protocol
 - [Voice](docs/VOICE.md) / [Connections](docs/CONNECTIONS.md) / [I18N](docs/I18N.md)

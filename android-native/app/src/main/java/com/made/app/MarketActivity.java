@@ -35,6 +35,7 @@ public final class MarketActivity extends Activity {
     private static final String[][] KINDS = {
             {"agent", "助手"},
             {"control", "管控"},
+            {"h5", "H5 应用"},
             {"theme", "主题"},
     };
 
@@ -192,6 +193,14 @@ public final class MarketActivity extends Activity {
         TextView action = pillButton(installed ? "重新安装" : "安装",
                 installed ? Ui.SURFACE : Ui.PRIMARY, installed ? Ui.INK : 0xFFFFFFFF, p);
         head.addView(action, lp(-2, -2));
+        // H5 插件装完即可打开：WebView 加载桥接器提供的静态页。
+        if (installed && "h5".equals(p.optString("kind", ""))) {
+            TextView open = pillButton("打开", Ui.PRIMARY, 0xFFFFFFFF, null);
+            open.setOnClickListener(v -> openH5(p));
+            LinearLayout.LayoutParams openLp = lp(-2, -2);
+            openLp.leftMargin = dp(6);
+            head.addView(open, openLp);
+        }
         card.addView(head, lp(-1, -2));
 
         String summary = p.optString("summary", "");
@@ -225,6 +234,18 @@ public final class MarketActivity extends Activity {
         Ui.press(t);
         if (pkg != null) t.setOnClickListener(v -> confirmInstall(pkg, t));
         return t;
+    }
+
+    private void openH5(JSONObject p) {
+        String dir = p.optString("dir", "");
+        if (TextUtils.isEmpty(dir)) dir = p.optString("id", "");
+        android.content.Intent intent = new android.content.Intent(this, H5Activity.class);
+        intent.putExtra("base", base);
+        intent.putExtra("token", token);
+        intent.putExtra("cloudToken", cloudToken);
+        intent.putExtra("dir", dir);
+        intent.putExtra("name", p.optString("name", p.optString("id", "插件")));
+        startActivity(intent);
     }
 
     private void confirmInstall(JSONObject pkg, TextView button) {

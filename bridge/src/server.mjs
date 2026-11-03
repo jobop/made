@@ -26,6 +26,7 @@ import { watchPlugins } from './plugins/hot-reload.mjs';
 import { createEnhancement } from './plugins/enhance.mjs';
 import { listInstalled, listThemes, removePlugin, removeTheme, savePluginSettings, setPluginEnabled, themeExists } from './installed.mjs';
 import { marketIndex, installPackage } from './plugin-install.mjs';
+import { H5_CAPABILITIES, H5Tokens, h5StaticRoot, resolveStaticFile } from './h5-apps.mjs';
 import { createBoardLink } from './board-link.mjs';
 import { spriteChunk, spriteBundle } from './agent-sprites.mjs';
 import { applyCloudLlmDefaults } from './cloud-llm.mjs';
@@ -259,6 +260,8 @@ export function createApp(config, { run, transcribe, tunnel: providedTunnel, ena
   validateModelSettings(Object.fromEntries(Object.entries(publicModels(config)).filter(([, value]) => value !== null)), config.pluginsRuntime);
   const sessionToken = randomUUID();
   const usbForwardSecret = randomUUID();
+  // H5 插件 scoped token：App 用设备令牌换取，页面带着调 /h5api/*（能力白名单见 h5-apps.mjs）。
+  const h5Tokens = new H5Tokens();
   const pairing = new PairingStore(config.stateDir);
   const boardLink = createBoardLink();
   const screenshots = createScreenshotStore(path.join(config.stateDir, 'screenshots'));
@@ -720,6 +723,128 @@ export function createApp(config, { run, transcribe, tunnel: providedTunnel, ena
         }
         return;
       }
+      // ---- H5 插件（kind=h5：桥接器承载的静态网页，App WebView / 浏览器打开；板子不参与）----
+      // 静态资源免设备令牌（页面本来就是公开入口）；数据接口走 /h5api/* + scoped token。
+      const h5Match = req.method === 'GET' && url.pathname.match(/^\/plugins\/([a-z0-9][a-z0-9_-]{0,39})\/(.*)$/);
+      if (h5Match && h5Match[2] !== 'token') {
+        const app = h5StaticRoot(config, h5Match[1]);
+        if (!app) {
+          deviceSend(res, 404, { error: 'H5 插件不存在' });
+          return;
+        }
+        const resolved = resolveStaticFile(app.root, decodeURIComponent(h5Match[2]));
+        if (!resolved) {
+          deviceSend(res, 404, { error: '页面不存在' });
+          return;
+        }
+        res.writeHead(200, {
+          'Content-Type': resolved.contentType,
+          'Cache-Control': 'no-store',
+          'X-Content-Type-Options': 'nosniff',
+        });
+        res.end(fs.readFileSync(resolved.file));
+        return;
+      }
+      if (url.pathname.startsWith('/h5api/')) {
+        // 页面拿 token 有两条路：Authorization 头，或 ?h5token= 查询参数
+        //（WebView 场景页面常把打开 URL 上的参数原样带到自己的 fetch 上，省得拼头）。
+        const h5Auth = String(req.headers.authorization || '').replace(/^Bearer\s+/i, '')
+          || String(url.searchParams.get('h5token') || '');
+        const authed = h5Tokens.verify(h5Auth);
+        if (!authed) {
+          deviceSend(res, 401, { error: 'H5 令牌无效或已过期，请重新打开插件' });
+          return;
+        }
+        const app = h5StaticRoot(config, authed.id);
+        // 包被卸载/换成非 h5：token 视为失效；包在但路由没声明能力：403。
+        if (!app) {
+          deviceSend(res, 401, { error: 'H5 令牌无效或已过期，请重新打开插件' });
+          return;
+        }
+        const caps = new Set(app.manifest.capabilities);
+        const allow = (name) => caps.has(name);
+        // 任务摘要：给页面的公开字段（对齐设备端 publicJob，去工具轨迹，截断长文本）。
+        const h5Job = (job) => {
+          const { toolCalls, ...pub } = publicJob(job, deviceLocale);
+          return {
+            id: pub.id, sessionId: pub.vibeSessionId || pub.sessionId, provider: pub.provider, projectId: pub.projectId,
+            status: pub.status, instruction: devicePreview(pub.instruction, 500), progress: devicePreview(pub.progress, 200),
+            result: devicePreview(pub.result, 2000), error: devicePreview(pub.error, 200),
+            createdAt: pub.createdAt, updatedAt: pub.updatedAt,
+          };
+        };
+        if (req.method === 'GET' && url.pathname === '/h5api/whoami') {
+          deviceSend(res, 200, {
+            plugin: authed.id, capabilities: [...caps],
+            expiresAt: authed.expiresAt, locale: deviceLocale,
+          }, false);
+          return;
+        }
+        if (req.method === 'GET' && url.pathname === '/h5api/state' && allow('state.read')) {
+          deviceSend(res, 200, {
+            jobs: store.list().slice(0, 20).map(h5Job),
+            sessions: store.listSessions().filter((session) => !session.legacy).slice(0, 20).map((session) => ({
+              id: session.id, title: devicePreview(publicSession(session, deviceLocale).title, 120),
+              provider: session.provider, projectId: session.projectId, status: session.status, updatedAt: session.updatedAt,
+            })),
+            providers: providerStates(config).map(({ id, label, available }) => ({ id, label, available })),
+          }, false);
+          return;
+        }
+        if (req.method === 'GET' && url.pathname === '/h5api/tasks' && allow('tasks.read')) {
+          deviceSend(res, 200, { jobs: store.list().slice(0, 20).map(h5Job) }, false);
+          return;
+        }
+        if (req.method === 'POST' && url.pathname === '/h5api/tasks' && allow('tasks.write')) {
+          const payload = await body(req);
+          const instruction = String(payload.instruction || '').trim();
+          if (!instruction) throw new Error('请输入任务内容');
+          if (Buffer.byteLength(instruction) > 4000) throw new Error('任务内容过长');
+          let session;
+          if (payload.sessionId) {
+            if (!VIBE_SESSION_ID.test(payload.sessionId) || !store.sessions.get(payload.sessionId)) {
+              throw new Error('会话不存在');
+            }
+            session = store.sessions.get(payload.sessionId);
+          } else {
+            const provider = payload.provider || config.defaultProvider;
+            if (!provider || !config.pluginsRuntime.hasAgent(provider)) throw new Error('请先在电脑桥接器里选择编程助手');
+            session = store.createSession({ provider, projectId: payload.projectId || config.defaultProject, title: payload.title });
+          }
+          const job = store.submit({
+            instruction, sessionId: session.id, provider: session.provider,
+            projectId: session.projectId, source: 'h5',
+          });
+          deviceSend(res, 201, h5Job(job), false);
+          return;
+        }
+        const h5JobAction = req.method === 'POST' && url.pathname.match(/^\/h5api\/tasks\/([a-z0-9-]+)\/(confirm|cancel)$/);
+        if (h5JobAction && allow('tasks.write')) {
+          const job = h5JobAction[2] === 'confirm' ? store.confirm(h5JobAction[1]) : store.cancel(h5JobAction[1]);
+          deviceSend(res, 200, h5Job(job), false);
+          return;
+        }
+        if (req.method === 'GET' && url.pathname === '/h5api/sessions' && allow('sessions.read')) {
+          const provider = url.searchParams.get('provider');
+          if (provider && !config.pluginsRuntime.hasAgent(provider)) throw new Error('未知编程工具');
+          deviceSend(res, 200, { sessions: store.listSessions(provider).filter((session) => !session.legacy).slice(0, 30).map((session) => ({
+            id: session.id, title: devicePreview(publicSession(session, deviceLocale).title, 120),
+            provider: session.provider, projectId: session.projectId, status: session.status, updatedAt: session.updatedAt,
+          })) }, false);
+          return;
+        }
+        if (req.method === 'POST' && url.pathname === '/h5api/sessions' && allow('sessions.write')) {
+          const payload = await body(req);
+          const provider = payload.provider || config.defaultProvider;
+          if (!provider || !config.pluginsRuntime.hasAgent(provider)) throw new Error('请先在电脑桥接器里选择编程助手');
+          const session = store.createSession({ provider, projectId: payload.projectId || config.defaultProject, title: payload.title });
+          deviceSend(res, 201, { id: session.id, title: devicePreview(publicSession(session, deviceLocale).title, 120),
+            provider: session.provider, projectId: session.projectId }, false);
+          return;
+        }
+        deviceSend(res, 403, { error: '该插件未声明此能力（capabilities 白名单）' });
+        return;
+      }
       // ---- 主题包（themes/<名字>/theme.json + 可选资产文件）----
       if (req.method === 'GET' && url.pathname === '/api/themes') {
         const out = [...themeDirectories(config)]
@@ -820,6 +945,17 @@ export function createApp(config, { run, transcribe, tunnel: providedTunnel, ena
       const token = (req.headers.authorization || '').replace(/^Bearer\s+/i, '');
       if (!pairing.authenticate(token)) {
         deviceSend(res, 401, { error: '设备未授权' });
+        return;
+      }
+      // H5 插件打开页：设备令牌换短期 scoped token（能力以磁盘 manifest 为准）。
+      const h5TokenMatch = req.method === 'GET' && url.pathname.match(/^\/plugins\/([a-z0-9][a-z0-9_-]{0,39})\/token$/);
+      if (h5TokenMatch) {
+        const app = h5StaticRoot(config, h5TokenMatch[1]);
+        if (!app) {
+          deviceSend(res, 404, { error: 'H5 插件不存在' });
+          return;
+        }
+        deviceSend(res, 200, { id: app.manifest.id, capabilities: app.manifest.capabilities, ...h5Tokens.issue(app.manifest.id, app.manifest.capabilities) }, false);
         return;
       }
       if (req.method === 'GET' && url.pathname === '/device/firmware/current') {
