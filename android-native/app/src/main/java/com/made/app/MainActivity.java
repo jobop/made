@@ -1647,23 +1647,23 @@ public class MainActivity extends Activity {
     }
 
     private void showMenu() {
-        // 云端模式多一项桥接器设置；局域网模式菜单保持原样。
-        java.util.List<String> items = new java.util.ArrayList<>(
-                java.util.Arrays.asList(pairingCloud
-                        ? new String[]{"云端桥接器设置", "切换会话", "删除会话", "新建会话", "断开连接"}
-                        : new String[]{"切换会话", "删除会话", "新建会话", "断开连接"}));
-        int cloudIdx = pairingCloud ? 0 : -1;
+        // 云端模式多一项桥接器设置；插件市场两种模式都有（市场 API 由桥接器统一提供）。
+        java.util.List<String> items = new java.util.ArrayList<>();
+        if (pairingCloud) items.add("云端桥接器设置");
+        items.add("插件市场");
+        items.addAll(java.util.Arrays.asList("切换会话", "删除会话", "新建会话", "断开连接"));
         new AlertDialog.Builder(this)
                 .setItems(items.toArray(new String[0]), (d, which) -> {
                     int i = which;
-                    if (i == cloudIdx) {
+                    if (pairingCloud && i == 0) {
                         openCloudSettings();
                         return;
                     }
-                    if (pairingCloud) i -= 1; // 后续项回到原索引
-                    if (i == 0) pickSession();
-                    else if (i == 1) deleteCurrentSession();
-                    else if (i == 2) createSession();
+                    if (pairingCloud) i -= 1; // 去掉云端设置项，后续项回到统一索引
+                    if (i == 0) openMarket();
+                    else if (i == 1) pickSession();
+                    else if (i == 2) deleteCurrentSession();
+                    else if (i == 3) createSession();
                     else {
                         pairing.forget();
                         model.sessions.clear();
@@ -1673,6 +1673,15 @@ public class MainActivity extends Activity {
                     }
                 })
                 .show();
+    }
+
+    /** 插件市场（云端与局域网桥接器走同一套 /api/market API）。 */
+    private void openMarket() {
+        android.content.Intent it = new android.content.Intent(this, MarketActivity.class);
+        it.putExtra("base", bridge.baseUrl());
+        it.putExtra("token", bridge.token());
+        it.putExtra("cloudToken", bridge.cloudToken());
+        startActivity(it);
     }
 
     /** 云端沙箱桥接器设置页（仅 pairingCloud 时菜单可见）。 */
