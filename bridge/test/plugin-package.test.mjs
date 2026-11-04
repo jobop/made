@@ -153,3 +153,69 @@ test('readPackageSettings 返回 saved（用户原始保存值）；writePackage
   // 重读仍能得到云端解析值
   assert.deepEqual(readPackageSettings(pkg, env).values, { endpoint: 'https://cloud.test/llm', apiKey: 'tok-1' });
 });
+
+// ---- 云端通道令牌轮换：不许把旧令牌固化在 settings.json ----
+// 真实故障：工作台把解析后的令牌回显并提交保存 → settings.json 存下 JWT →
+// 云端重启/沙箱重建换令牌后，助手仍拿旧令牌请求网关，模型侧 401。
+const oldJwt = 'eyJhbGciOiJIUzI1NiJ9.eyJzY29wZSI6InNhbmRib3gifQ.old';
+const newJwt = 'eyJhbGciOiJIUzI1NiJ9.eyJzY29wZSI6InNhbmRib3gifQ.new';
+const cloudFields = [
+  { key: 'endpoint', label: '端点', type: 'text', default: '${MADE_LLM_BASE_URL}' },
+  { key: 'apiKey', label: '密钥', type: 'text', default: '${MADE_LLM_TOKEN}' },
+  { key: 'model', label: '模型', type: 'text', default: '${MADE_LLM_MODEL}' },
+];
+
+test('resolveSettings：settings.json 里固化的旧沙箱令牌自动回落当前云端值；用户自定义密钥不受影响', async () => {
+  const { resolveSettings, isSandboxJwt } = await import('../src/plugin-package.mjs');
+  const env = { MADE_LLM_BASE_URL: 'https://cloud.test/llm', MADE_LLM_TOKEN: newJwt, MADE_LLM_MODEL: 'm-2' };
+  assert.equal(isSandboxJwt(oldJwt), true);
+  const healed = resolveSettings(cloudFields, { apiKey: oldJwt }, env);
+  assert.equal(healed.apiKey, newJwt);
+  assert.equal(healed.model, 'm-2');
+  const own = resolveSettings(cloudFields, { apiKey: 'sk-my-own' }, env);
+  assert.equal(own.apiKey, 'sk-my-own');
+  // 云端环境缺失（本地跑）不能把用户值吞掉
+  assert.equal(resolveSettings(cloudFields, { apiKey: oldJwt }, {}).apiKey, oldJwt);
+});
+
+test('writePackageSettings：提交解析值或令牌形状一律归一为「未填」，不固化凭证', async (t) => {
+  const { writePackageSettings, readPackageSettings } = await import('../src/plugin-package.mjs');
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'vibe-token-heal-'));
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  const pkg = path.join(directory, 'mimi');
+  fs.mkdirSync(pkg);
+  fs.writeFileSync(path.join(pkg, 'plugin.json'), JSON.stringify({ id: 'mimi', settings: cloudFields }));
+  const env = { MADE_LLM_BASE_URL: 'https://cloud.test/llm', MADE_LLM_TOKEN: newJwt, MADE_LLM_MODEL: 'm-2' };
+  // 旧版 UI 把整张解析视图回显提交
+  const resolved = writePackageSettings(pkg, { endpoint: 'https://cloud.test/llm', apiKey: newJwt, model: 'm-2' }, env);
+  assert.equal(resolved.apiKey, newJwt);
+  assert.deepEqual(JSON.parse(fs.readFileSync(path.join(pkg, 'settings.json'), 'utf8')), { endpoint: '', apiKey: '', model: '' });
+  // 甚至直接提交一个陈旧令牌也不会落盘
+  writePackageSettings(pkg, { endpoint: '', apiKey: oldJwt, model: '' }, env);
+  assert.equal(JSON.parse(fs.readFileSync(path.join(pkg, 'settings.json'), 'utf8')).apiKey, '');
+  // 存量固化文件重读时自动用上新令牌
+  fs.writeFileSync(path.join(pkg, 'settings.json'), JSON.stringify({ apiKey: oldJwt }));
+  assert.equal(readPackageSettings(pkg, env).values.apiKey, newJwt);
+});
+
+test('工作台视图不回显云端令牌，标为「云端提供」', async (t) => {
+  const { config, pkg } = fixture(t);
+  const previous = { ...process.env };
+  process.env.MADE_LLM_BASE_URL = 'https://cloud.test/llm';
+  process.env.MADE_LLM_TOKEN = newJwt;
+  process.env.MADE_LLM_MODEL = 'm-2';
+  t.after(() => {
+    for (const key of ['MADE_LLM_BASE_URL', 'MADE_LLM_TOKEN', 'MADE_LLM_MODEL']) {
+      if (previous[key] === undefined) delete process.env[key];
+      else process.env[key] = previous[key];
+    }
+  });
+  fs.writeFileSync(path.join(pkg, 'plugin.json'), JSON.stringify({ id: 'alarm-clock', settings: cloudFields }));
+  fs.writeFileSync(path.join(pkg, 'settings.json'), JSON.stringify({ endpoint: '', apiKey: newJwt, model: '' }));
+  const listed = await listInstalled(config);
+  const plugin = listed.plugins.find((item) => item.file === 'alarm-clock');
+  assert.equal(plugin.settingsError, '');
+  assert.equal(plugin.settings.apiKey, '', '绝不把真实令牌发给工作台');
+  assert.equal(plugin.settings.endpoint, '');
+  assert.equal(plugin.settingsSources.apiKey, 'cloud');
+});

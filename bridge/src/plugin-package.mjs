@@ -100,6 +100,20 @@ export function fieldUsesCloudEnv(field) {
   return false;
 }
 
+// 本服务签发的通道令牌形状（HS256 JWT）。识别出「被误存进 settings.json 的
+// 旧沙箱令牌」用：令牌轮换后它仍是合法 JWT，却在网关侧被拒（401）。
+const SANDBOX_JWT = /^eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/;
+export function isSandboxJwt(value) {
+  return SANDBOX_JWT.test(String(value ?? '').trim());
+}
+
+/** 云端资源字段此刻的解析值；环境缺失（本地跑）时返回空串。 */
+export function cloudDefaultValue(field, env = process.env) {
+  if (!fieldUsesCloudEnv(field)) return '';
+  const resolved = resolveCloudPlaceholders(String(field?.default ?? ''), env);
+  return resolved.includes('${MADE_LLM_') ? '' : resolved;
+}
+
 export function resolveSettings(fields, raw, env = process.env) {
   if (raw === undefined || raw === null) raw = {};
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw fail('插件配置无效');
@@ -115,7 +129,15 @@ export function resolveSettings(fields, raw, env = process.env) {
   for (const field of fields) {
     // 空串=未填：回落插件默认值，再做云端占位符解析，然后才校验格式。
     // （这样 default 里写 "${MADE_LLM_BASE_URL}" 这类占位符也能过 URL 类 pattern）
-    const submitted = Object.hasOwn(raw, field.key) ? String(raw[field.key] ?? '') : '';
+    let submitted = Object.hasOwn(raw, field.key) ? String(raw[field.key] ?? '') : '';
+    // 云端通道字段自愈：settings.json 里若固化了旧沙箱令牌（JWT），沙箱重建 /
+    // 云端换令牌后它就是过期凭证，继续拿去请求会 401。按「未填」回落到当前
+    // 环境注入的令牌；用户自己填的密钥（sk-... 等）一律不受影响。
+    if (String(field.default || '').includes('${MADE_LLM_TOKEN}')) {
+      const current = cloudDefaultValue(field, env);
+      const saved = submitted.trim();
+      if (current && saved && saved !== current && isSandboxJwt(saved)) submitted = '';
+    }
     const value = resolveCloudPlaceholders(submitted.trim() ? submitted : (field.default ?? ''), env);
     if (field.required && !value.trim()) throw fail('插件配置无效');
     if (field.pattern && !new RegExp(field.pattern).test(value)) throw fail('插件配置无效');
@@ -172,7 +194,16 @@ export function writePackageSettings(dir, values, env = process.env) {
   }
   // 落盘写用户显式提交的值（空串保留空串=未填），不落 default 回落值与
   // 占位符解析值——否则云侧换令牌/模型后旧值固化，读盘回落机制失效。
-  const merged = { ...kept, ...values };
+  // 旧版工作台会把「解析后的云端值」原样回显并提交：这里再兜一道，把等于
+  // 当前云端值、或任何沙箱令牌形状的提交归一为空串，杜绝再次固化。
+  const normalized = { ...values };
+  for (const field of current.fields) {
+    if (!fieldUsesCloudEnv(field)) continue;
+    const submitted = String(normalized[field.key] ?? '').trim();
+    if (!submitted) continue;
+    if (submitted === cloudDefaultValue(field, env) || isSandboxJwt(submitted)) normalized[field.key] = '';
+  }
+  const merged = { ...kept, ...normalized };
   // 校验 + 运行时视图（空串回落 default + 占位符解析 + 格式校验）
   const resolved = resolveSettings(current.fields, merged, env);
   const disk = {};

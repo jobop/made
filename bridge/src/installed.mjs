@@ -5,7 +5,7 @@ import { pathToFileURL } from 'node:url';
 import { BUILTIN_ROOT, packageRoots, packagesHome } from './config.mjs';
 import { validatePlugin } from './plugins/registry.mjs';
 import { reloadConfiguredPlugins } from './plugins/hot-reload.mjs';
-import { isPackageEntry, packageDirectories, readPackageSettings, writePackageSettings, fieldUsesCloudEnv } from './plugin-package.mjs';
+import { isPackageEntry, packageDirectories, readPackageSettings, writePackageSettings, fieldUsesCloudEnv, isSandboxJwt } from './plugin-package.mjs';
 import { h5PackageDir, listH5Apps } from './h5-apps.mjs';
 
 const PLUGIN_ID = /^[a-z0-9][a-z0-9_-]{0,39}$/;
@@ -78,14 +78,23 @@ function packageInfo(filename, pluginId, config) {
   // + ${MADE_LLM_*} 占位符解析」后的配置。settingsSources 标记哪些字段
   // 正由云端资源环境变量提供（开发者声明了占位符且用户没显式填值），
   // 展示层据此预填标注「什么都不填也能用」。
+  // 云端字段绝不把解析后的令牌回显给工作台：旧版 UI 会原样提交回来，
+  // 落盘后就成了固化凭证，云端换令牌即 401（2026-11-04 咪咪实锤）。
+  const settings = { ...pack.values };
   const sources = {};
   for (const field of pack.fields) {
+    if (!fieldUsesCloudEnv(field)) continue;
     const userValue = Object.hasOwn(pack.saved, field.key) ? String(pack.saved[field.key] ?? '').trim() : '';
-    if (!userValue && fieldUsesCloudEnv(field)) sources[field.key] = 'cloud';
+    if (!userValue || userValue === String(pack.values[field.key] ?? '') || isSandboxJwt(userValue)) {
+      settings[field.key] = '';
+      sources[field.key] = 'cloud';
+    } else {
+      settings[field.key] = userValue;
+    }
   }
   return {
     settingsSpec: pack.fields,
-    settings: pack.values,
+    settings,
     settingsSources: sources,
     settingsError: '',
   };
