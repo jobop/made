@@ -195,7 +195,7 @@ public class MainActivity extends Activity {
 
         h5Panel = new LinearLayout(this);
         h5Panel.setOrientation(LinearLayout.VERTICAL);
-        h5Panel.setBackgroundColor(0xF2282C38); // 暗夜蓝（微信小程序面板同款氛围）
+        h5Panel.setBackgroundColor(0xFF282C38); // 全不透明：面板下半部不能透出主界面的聊天内容
         h5Panel.setVisibility(View.GONE);
         root.addView(h5Panel, new FrameLayout.LayoutParams(-1, -1));
 
