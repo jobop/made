@@ -2008,33 +2008,37 @@ public class MainActivity extends Activity {
     }
 
     private void showMenu() {
-        // 云端模式多一项桥接器设置；插件市场/插件设置两种模式都有（API 由桥接器统一提供）。
+        // 云端模式多一项桥接器设置，LAN 模式多一项插件设置（同一页面不同标题）。
+        // 用「项文案 → 动作」表驱动，不做下标平移换算——两种模式列表长度不同，
+        // 之前靠 i-=1 对齐导致云端整个菜单错位一位（点新建会话变成删除会话）。
         java.util.List<String> items = new java.util.ArrayList<>();
-        if (pairingCloud) items.add("云端桥接器设置");
+        java.util.List<Runnable> actions = new java.util.ArrayList<>();
+        if (pairingCloud) {
+            items.add("云端桥接器设置");
+            actions.add(this::openCloudSettings);
+        }
         items.add("插件市场");
-        if (!pairingCloud) items.add("插件设置");
-        items.addAll(java.util.Arrays.asList("切换会话", "删除会话", "新建会话", "断开连接"));
+        actions.add(this::openMarket);
+        if (!pairingCloud) {
+            items.add("插件设置");
+            actions.add(this::openLanSettings);
+        }
+        items.add("切换会话");
+        actions.add(this::pickSession);
+        items.add("删除会话");
+        actions.add(this::deleteCurrentSession);
+        items.add("新建会话");
+        actions.add(this::createSession);
+        items.add("断开连接");
+        actions.add(() -> {
+            pairing.forget();
+            model.sessions.clear();
+            model.jobs.clear();
+            model.selectedSessionId = "";
+            showConnect("已断开。重新扫描或手动添加电脑");
+        });
         new AlertDialog.Builder(this)
-                .setItems(items.toArray(new String[0]), (d, which) -> {
-                    int i = which;
-                    if (pairingCloud && i == 0) {
-                        openCloudSettings();
-                        return;
-                    }
-                    if (pairingCloud) i -= 1; // 去掉云端设置项，后续项回到统一索引
-                    if (i == 0) openMarket();
-                    else if (i == 1) openLanSettings();
-                    else if (i == 2) pickSession();
-                    else if (i == 3) deleteCurrentSession();
-                    else if (i == 4) createSession();
-                    else {
-                        pairing.forget();
-                        model.sessions.clear();
-                        model.jobs.clear();
-                        model.selectedSessionId = "";
-                        showConnect("已断开。重新扫描或手动添加电脑");
-                    }
-                })
+                .setItems(items.toArray(new String[0]), (d, which) -> actions.get(which).run())
                 .show();
     }
 
