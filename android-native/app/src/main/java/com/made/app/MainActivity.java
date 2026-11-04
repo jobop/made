@@ -179,14 +179,14 @@ public class MainActivity extends Activity {
         buildH5Panel();
     }
 
-    // ---- H5 小程序面板（精灵区下拉唤出，微信小程序同款全屏交互） ----
+    // ---- H5 小程序面板（顶栏 ▦ 按钮点击唤出，全屏） ----
 
     private static final int[] H5_TILE_COLORS = {
             0xFF07C160, 0xFF10AEFF, 0xFFFA5151, 0xFFF7B500,
             0xFF6467F0, 0xFFFA9D3B, 0xFF1485EE, 0xFFEE675C,
     };
 
-    /** 全屏暗色面板：标题 + 搜索框 + 「最近使用」/「全部」圆形图标网格 + 底部连接栏。 */
+    /** 全屏暗色面板：标题 + 搜索框 + 「最近使用」/「全部」圆形图标网格。 */
     private void buildH5Panel() {
         h5Scrim = new View(this);
         h5Scrim.setOnClickListener(v -> closeH5Panel(true));
@@ -254,29 +254,6 @@ public class MainActivity extends Activity {
         scroll.addView(h5List, lp(-1, -2));
         h5Panel.addView(scroll, new LinearLayout.LayoutParams(-1, 0, 1f));
 
-        // 底部连接栏：桥接器名 + 应用数 | 市场入口
-        LinearLayout bottom = new LinearLayout(this);
-        bottom.setOrientation(LinearLayout.HORIZONTAL);
-        bottom.setGravity(Gravity.CENTER_VERTICAL);
-        bottom.setBackground(Ui.fill(this, 0x24FFFFFF, 26));
-        bottom.setPadding(dp(18), dp(10), dp(10), dp(10));
-        TextView conn = Ui.text(this, "码得", 14, 0xCCFFFFFF, true);
-        bottom.addView(conn, new LinearLayout.LayoutParams(0, -2, 1f));
-        TextView market = Ui.text(this, "＋", 18, 0xFFFFFFFF, false);
-        market.setGravity(Gravity.CENTER);
-        market.setBackground(Ui.fill(this, 0x33FFFFFF, 999));
-        market.setPadding(dp(10), dp(4), dp(10), dp(4));
-        market.setOnClickListener(v -> {
-            closeH5Panel(true);
-            android.content.Intent it = new android.content.Intent(this, MarketActivity.class);
-            it.putExtra("base", bridge.baseUrl());
-            it.putExtra("token", bridge.token());
-            it.putExtra("cloudToken", bridge.cloudToken());
-            startActivity(it);
-        });
-        Ui.press(market);
-        bottom.addView(market, lp(-2, -2));
-        h5Panel.addView(bottom, lp(-1, -2));
     }
 
     /** 「最近使用」记录：逗号分隔的 id 序列，最新在前，去重，最多 8 个。 */
