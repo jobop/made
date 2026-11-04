@@ -1302,6 +1302,27 @@ export function createApp(config, { run, transcribe, tunnel: providedTunnel, ena
         deviceSend(res, 201, { saved: path.basename(saved) }, false);
         return;
       }
+      // LAN App 桥接桌面 API：/api/* 全在桌面口（仅绑 loopback），已配对设备
+      // （手机）与桌面工作台同信任级——通过设备令牌鉴权后内部反代过去。
+      // 云端模式不走这里：cloud 代理把 /api/* 直送 internalApiUrl（桌面口）。
+      if (url.pathname.startsWith('/api/')) {
+        const proxyReq = http.request({
+          hostname: '127.0.0.1',
+          port: config.port,
+          path: req.url,
+          method: req.method,
+          headers: { ...req.headers, host: `127.0.0.1:${config.port}` },
+        }, (upstream) => {
+          res.writeHead(upstream.statusCode || 502, upstream.headers);
+          upstream.pipe(res);
+        });
+        proxyReq.on('error', (err) => {
+          if (!res.headersSent) res.writeHead(502, { 'content-type': 'application/json; charset=utf-8' });
+          res.end(JSON.stringify({ error: '桌面接口转发失败', detail: err.message }));
+        });
+        req.pipe(proxyReq);
+        return;
+      }
       deviceSend(res, 404, { error: '未找到接口' });
     } catch (error) {
       deviceSend(res, error.message === '电脑配对窗口未开启' ? 403 :

@@ -98,14 +98,14 @@ public class MainActivity extends Activity {
     private boolean suppressNextJobCard = false; // 切助手/会话后不弹旧任务卡
     private boolean emptySheetShown = false;     // 空态「暂无任务」面板已展开过一次
     private volatile boolean voiceUploading = false;
-    private int gestureMode = 0; // 0 未定 1 横滑（助手） 2 下拉（H5 小程序面板）；上下滑不触发切换
+    private int gestureMode = 0; // 0 未定 1 横滑（助手）；H5 面板改顶栏按钮点击唤出，下拉手势已移除
     private long gestureDownMs = 0;
     private FrameLayout spriteAreaHost; // 任务面板的宿主（精灵区）
     private int sheetState = SHEET_PEEK; // 任务面板当前档位
     private int dragStartH = 0; // 把手拖动起点高度
     private boolean sheetAnimating = false;
 
-    // H5 小程序面板（精灵区下拉唤出，微信小程序同款全屏交互）
+    // H5 小程序面板（顶栏按钮点击唤出，微信小程序同款全屏交互）
     private View h5Scrim;
     private LinearLayout h5Panel;
     private LinearLayout h5List;
@@ -299,14 +299,18 @@ public class MainActivity extends Activity {
                 .putString("h5_recents", String.join(",", recents)).apply();
     }
 
-    /** 打开面板（动画收尾），每次都重新拉 /api/installed 里的 h5apps。 */
+    /** 打开面板（从屏顶滑入），每次都重新拉 /api/installed 里的 h5apps。 */
     private void openH5Panel() {
         if (h5PanelOpen) return;
         h5PanelOpen = true;
         h5Panel.setVisibility(View.VISIBLE);
         h5Scrim.setVisibility(View.VISIBLE);
-        h5Panel.setTranslationY(0);
-        h5Scrim.setAlpha(1f);
+        h5Scrim.setAlpha(0f);
+        h5Scrim.animate().alpha(1f).setDuration(200).start();
+        int h = h5Panel.getHeight() > 0 ? h5Panel.getHeight() : dp(800);
+        h5Panel.setTranslationY(-h);
+        h5Panel.animate().translationY(0).setDuration(220)
+                .setInterpolator(new android.view.animation.DecelerateInterpolator()).start();
         h5Query = "";
         h5Search.setText("");
         loadH5Apps();
@@ -327,16 +331,6 @@ public class MainActivity extends Activity {
         } else {
             done.run();
         }
-    }
-
-    /** 手指跟手阶段：progress 0→1，面板从屏顶外滑到位，遮罩同步加深。 */
-    private void dragH5Panel(float progress) {
-        progress = Math.max(0f, Math.min(1f, progress));
-        int h = h5Panel.getHeight() > 0 ? h5Panel.getHeight() : dp(800);
-        h5Panel.setVisibility(View.VISIBLE);
-        h5Scrim.setVisibility(View.VISIBLE);
-        h5Scrim.setAlpha(progress);
-        h5Panel.setTranslationY(-(1f - progress) * h);
     }
 
     private void loadH5Apps() {
@@ -969,6 +963,13 @@ public class MainActivity extends Activity {
         appbar.addView(titleCol, new LinearLayout.LayoutParams(0, -2, 1f));
         // 顶栏不响应点击：左右滑切助手 / 上下滑切会话（与精灵区同一套手势）。
         appbar.setOnTouchListener(this::onSpriteAreaTouch);
+
+        // 小程序按钮：点击唤出 H5 应用面板（替代原精灵区下拉手势）。
+        TextView h5Btn = Ui.text(this, "▦", 18, Ui.SUB, false);
+        h5Btn.setPadding(dp(12), dp(6), dp(12), dp(6));
+        h5Btn.setOnClickListener(v -> openH5Panel());
+        Ui.press(h5Btn);
+        appbar.addView(h5Btn, lp(-2, -2));
 
         menuBtn = Ui.text(this, "⋯", 24, Ui.SUB, false);
         menuBtn.setPadding(dp(14), dp(4), dp(14), dp(4));
@@ -1624,20 +1625,13 @@ public class MainActivity extends Activity {
                     float ddx = e.getRawX() - swipeDownX;
                     float ddy = e.getRawY() - swipeDownY;
                     if (Math.abs(ddx) > dp(12) && Math.abs(ddx) > Math.abs(ddy)) {
-                        gestureMode = 1; // 只认横滑切助手；上滑不做任何事
+                        gestureMode = 1; // 只认横滑切助手；纵滑不做任何事
                         lastSpriteTapMs = 0;
                         pager.ensureNeighbors(); // 邻页未就绪时立刻补齐
-                    } else if (ddy > dp(14) && ddy > Math.abs(ddx) * 1.4f) {
-                        // 下拉 = 唤出 H5 小程序面板（跟手，拖回顶部可取消）
-                        gestureMode = 2;
-                        lastSpriteTapMs = 0;
-                        h5PanelOpen = false; // 跟手阶段由 dragH5Panel 管可见性
                     }
                 }
                 if (gestureMode == 1) {
                     pager.setDrag(e.getRawX() - swipeDownX); // 跟手
-                } else if (gestureMode == 2) {
-                    dragH5Panel((e.getRawY() - swipeDownY) / dp(130)); // 跟手
                 }
                 return true;
             }
@@ -1656,15 +1650,6 @@ public class MainActivity extends Activity {
                         target = (model.selectedProvider + step + n) % n;
                     }
                     applyProviderSwitch(target);
-                } else if (gestureMode == 2) {
-                    float dy = e.getRawY() - swipeDownY;
-                    boolean quickPull = System.currentTimeMillis() - gestureDownMs < 260
-                            && dy > dp(56);
-                    if (dy > dp(80) || quickPull) {
-                        openH5Panel(); // 拉过阈值：滑入就位并加载数据
-                    } else {
-                        closeH5Panel(true); // 拖回顶部：取消
-                    }
                 }
                 gestureMode = 0;
                 return true;
@@ -1673,8 +1658,6 @@ public class MainActivity extends Activity {
                 if (gestureMode == 1) {
                     pager.endDrag();
                     pager.snapTo(model.selectedProvider); // 回弹
-                } else if (gestureMode == 2) {
-                    closeH5Panel(true);
                 }
                 gestureMode = 0;
                 return true;
