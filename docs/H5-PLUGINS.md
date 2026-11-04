@@ -26,6 +26,7 @@ tetris-h5/
 - **裁决点在桥接器**（`bridge/src/h5-apps.mjs` 的 `H5_CAPABILITIES`）；市场（made-market）用同名单做发布预检，两侧名单必须同步改。
 - 页面本身拿不到任何桥接器凭证。打开页面时 App 用**设备令牌**调 `GET /plugins/<dir>/token` 换一张**短期 scoped token**（12 小时、进程内存态、重启失效），拼在 URL 上（`?h5token=…`）交给页面。
 - 页面调数据接口 `Bearer <h5token>`（或照抄 URL 上的 `?h5token=`）。桥接器逐路由校验 token 对应包**声明过**的能力，未声明一律 403；token 失效/包被删一律 401。
+- **页面调 `/h5api/*` 必须用相对路径 `../../h5api/...`，禁止根绝对路径 `/h5api/...`**：局域网页面在 `/plugins/<dir>/` 下，`../../` 正好落回根；云端页面在 `/bridge/<userId>/plugins/<dir>/` 下，`../../` 落到 `/bridge/<userId>/h5api`，由云代理转发到设备口。写死 `/h5api` 在云端会打到域名根上（云服务器无此路由），页面永远显示「未连接桥接器」（2026-11-04 task-card-h5/whack-a-mole-h5 踩坑）。`cloud_token` 查询参数云代理认，页面把 `location.search` 原样带上即可穿透鉴权。
 - 静态资源（`/plugins/<dir>/*`）免鉴权——页面本来就是公开入口，不放任何敏感信息是包作者的责任（发布校验只拦结构，内容自审）。
 
 ### 能力清单（当前全部）
