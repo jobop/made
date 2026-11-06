@@ -59,6 +59,7 @@ tetris-h5/
 
 - **安装**：与其它包同一条路——市场发布（`npx made-market publish`）→ App 市场页/工作台/`npx made-market install` → 桥接器解包校验（manifest 一致性 + 能力白名单 + 入口页存在，见 `plugin-install.mjs` 的 `validateH5Archive`）→ 落 `~/made/plugins/<id>/`。H5 包没有代码，不触发插件 reload。
 - **打开**：App 市场页对已装的 h5 包显示「打开」→ `H5Activity`（WebView）加载 `/plugins/<dir>/`。局域网直连设备口；云端用户走云代理（WebView URL 额外带 `?cloud_token=`，云代理注入网关头）。
+- **本地缓存**（App 端，省云端额度）：`H5Activity` 用 `shouldInterceptRequest` 统一接管 `/plugins/<dir>/*` 静态请求——缓存命中直接回本地（零网络流量），未命中在线拉取并落盘。失效用 `/api/installed` 里 `h5apps[].version`（market.json 版本）：版本一致沿用缓存，不同/为空则清缓存重下；版本号在页面加载完成后才落盘（中途退出只留部分缓存，下次在线会刷新）。沙箱回收/主动离线时纯静态游戏可直接从缓存玩；`/h5api/*` 不缓存，离线时页面自显「未连接」。缓存目录 `files/h5cache/<id>/`，版本标记 `files/h5cache/<id>.ver`，单文件缓存上限 8MB。
 - **板子**：完全不感知 h5 包的存在。
 
 ## 参考实现

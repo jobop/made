@@ -99,3 +99,11 @@ The web page can fill a plain Wi-Fi, receiver hotspot info, or paste the bridge'
 - Provided by Made itself; no prior computer connection, no phone app needed.
 - Entry valid only while config page is open; auto-closes after 10 minutes; returning or long-pressing BOOT exits also closes it.
 - Voice API Key, model, and task management still configured on the computer workbench.
+
+## Manual Cloud Offline/Online (Sandbox Mode)
+
+Cloud-mode App menu has「云端离线（回收沙箱）」/「云端上线」:
+
+- **Offline**: `DELETE /v1/sandboxes/current` (cloud JWT). The sandbox is stopped immediately (state backed up first), and an `offline` gate is set on the user record — **any** client request (board heartbeat, App poller, cloud proxy lazy pull-up) gets 409 and cannot wake the sandbox until explicit online. Without the gate the board's 2.5s polling would instantly re-create the sandbox.
+- **Online**: `POST /v1/sandboxes` clears the gate and cold-starts a fresh sandbox (state backup is re-imported), then the App re-runs the pairing flow automatically.
+- Implementation: `made-cloud/src/sandbox.mjs` (`ensureRunning` gate check, `stop(userId, { markOffline })`), `server.mjs` (POST clears gate / DELETE marks offline / GET current returns `offline`). App side: `MainActivity` (`cloudOfflineGo` / `cloudOnline` / `refreshCloudOfflineState`).

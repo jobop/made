@@ -69,6 +69,8 @@ public class MainActivity extends Activity {
     private TextView pairName, pairCode, pairMsg, pairRetry, pairCancel, pairHint;
     /** 当前配对是否为云端沙箱（bridgeUrl 含 /bridge/），文案与局域网配对不同。 */
     private boolean pairingCloud;
+    /** 云端主动离线闸：true = 沙箱已回收，Poller 停转，菜单项切换为「云端上线」。 */
+    private boolean cloudOffline = false;
     private String lastHost = "", lastName = "", lastBaseUrl = "";
     private int lastPort = 8788;
     private int foundCount = 0;
@@ -145,7 +147,11 @@ public class MainActivity extends Activity {
                         pairing.forget();
                         showConnect("连接已断开，重新连接一下");
                     });
+                    return;
                 }
+                // 云端冷启动：若上次主动离过线（offline 闸还立着），立即停轮询挂横幅，
+                // 别让 2.5s 一拍的轮询白打云端 409。
+                refreshCloudOfflineState();
             }, "made-verify").start();
         } else {
             showConnect("");
@@ -1991,6 +1997,8 @@ public class MainActivity extends Activity {
         java.util.List<String> items = new java.util.ArrayList<>();
         java.util.List<Runnable> actions = new java.util.ArrayList<>();
         if (pairingCloud) {
+            items.add(cloudOffline ? "云端上线" : "云端离线（回收沙箱）");
+            actions.add(cloudOffline ? this::cloudOnline : this::cloudOfflineGo);
             items.add("云端桥接器设置");
             actions.add(this::openCloudSettings);
         }
@@ -2045,6 +2053,64 @@ public class MainActivity extends Activity {
         it.putExtra("token", bridge.token());
         it.putExtra("cloudToken", bridge.cloudToken());
         startActivity(it);
+    }
+
+    // ================= 云端主动离线 / 上线 =================
+
+    /** 查询云端 offline 闸状态（GET /v1/sandboxes/current 的 offline 字段）。后台线程调用。 */
+    private void refreshCloudOfflineState() {
+        if (!pairingCloud || !bridge.isPaired()) return;
+        try {
+            Bridge.Resp r = bridge.exchangeNoAuth(cloudServerOf() + "/v1/sandboxes/current",
+                    "GET", null, null, 15000);
+            if (!r.ok()) return;
+            final boolean offline = new JSONObject(r.body).optBoolean("offline");
+            ui.post(() -> applyCloudOffline(offline));
+        } catch (Exception ignored) { }
+    }
+
+    /** 应用离线/在线状态：离线停轮询挂横幅，上线清横幅。 */
+    private void applyCloudOffline(boolean offline) {
+        if (cloudOffline == offline) {
+            if (offline) renderModel();
+            return;
+        }
+        cloudOffline = offline;
+        if (offline) {
+            poller.stop();
+            model.connectionError = "☁ 已主动离线，沙箱已回收。缓存过的小游戏可离线玩；菜单「云端上线」恢复";
+        } else {
+            model.connectionError = "";
+        }
+        renderModel();
+    }
+
+    /** 菜单「云端离线」：确认后回收沙箱并停轮询（省额度，正在跑的任务会中断）。 */
+    private void cloudOfflineGo() {
+        new AlertDialog.Builder(this)
+                .setTitle("云端离线")
+                .setMessage("下线云端智能体并立即回收沙箱（不再消耗额度）。正在运行的任务会中断；缓存过的小游戏仍可离线玩。")
+                .setPositiveButton("离线", (d, w) -> new Thread(() -> {
+                    Bridge.Resp r = bridge.exchangeNoAuth(cloudServerOf() + "/v1/sandboxes/current",
+                            "DELETE", null, null, 30000);
+                    ui.post(() -> {
+                        if (r.ok()) {
+                            applyCloudOffline(true);
+                            Toast.makeText(this, "已离线，沙箱已回收", Toast.LENGTH_SHORT).show();
+                        } else {
+                            Toast.makeText(this, "离线失败：" + r.errorText(), Toast.LENGTH_SHORT).show();
+                        }
+                    });
+                }, "made-cloud-off").start())
+                .setNegativeButton("取消", null)
+                .show();
+    }
+
+    /** 菜单「云端上线」：清离线闸 + 冷启动沙箱 + 自动重新配对（复用生成流程）。 */
+    private void cloudOnline() {
+        applyCloudOffline(false);
+        showConnect("");
+        agentGo(bridge.baseUrl()); // 云端 POST /v1/sandboxes 会先清 offline 闸再拉起，随后自动配对回到主页
     }
 
     /** 会话 id 前 6 位做标题兜底；id 不足 6 位（空 id / 异常应答）不能直接 substring。 */
