@@ -1,0 +1,38 @@
+# made-bridge npm 发版：手动触发或推 bridge-v* 标签时，把 bridge/ 发布到 npm。
+# 幂等：版本已在 registry 就跳过（重跑/重试不会报「版本已存在」红叉）。
+# 发版前置（本地完成）：改 bridge/package.json version → commit。
+# e2b 模板钉版本在 made-cloud 仓库，提交 Dockerfile 后由该仓库的 e2b-template 流水线自动重建。
+name: publish-bridge
+on:
+  workflow_dispatch:
+  push:
+    tags: ['bridge-v*']
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: bridge
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org/
+
+      - name: 已发布版本则跳过
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          if npm view "made-bridge@$VERSION" version >/dev/null 2>&1; then
+            echo "made-bridge@$VERSION 已在 registry，跳过发布"
+            echo "SKIP_PUBLISH=true" >> "$GITHUB_ENV"
+          else
+            echo "将发布 made-bridge@$VERSION"
+          fi
+
+      - if: env.SKIP_PUBLISH != 'true'
+        run: npm publish --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
