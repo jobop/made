@@ -23,7 +23,8 @@ public final class Model {
     public static final class Job {
         public String id = "", instruction = "", status = "", progress = "",
                 result = "", error = "", sessionId = "";
-        public List<String> attachments = new ArrayList<>();
+        public List<String> attachments = new ArrayList<>();   // 助手回复的附件（输出）
+        public List<String> inputImages = new ArrayList<>();  // 用户本轮发的图片（输入）
     }
 
     public final List<Provider> providers = new ArrayList<>();
@@ -160,6 +161,15 @@ public final class Model {
                     JSONObject a = att.optJSONObject(k);
                     if (a != null && !a.optString("url").isEmpty()) {
                         j.attachments.add(a.optString("url"));
+                    }
+                }
+            }
+            JSONArray input = o.optJSONArray("inputImages");
+            if (input != null) {
+                for (int k = 0; k < input.length(); k++) {
+                    JSONObject a = input.optJSONObject(k);
+                    if (a != null && !a.optString("url").isEmpty()) {
+                        j.inputImages.add(a.optString("url"));
                     }
                 }
             }

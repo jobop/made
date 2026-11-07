@@ -3,7 +3,10 @@ package com.made.app;
 import android.app.Activity;
 import android.animation.Animator;
 import android.app.AlertDialog;
+import android.app.Dialog;
+import android.content.Intent;
 import android.content.pm.PackageManager;
+import android.graphics.Bitmap;
 import android.graphics.Canvas;
 import android.graphics.Color;
 import android.graphics.Paint;
@@ -15,6 +18,7 @@ import android.os.Looper;
 import android.text.InputType;
 import android.text.TextUtils;
 import android.util.Log;
+import android.net.Uri;
 import android.view.Gravity;
 import android.view.MotionEvent;
 import android.view.View;
@@ -22,6 +26,7 @@ import android.view.animation.LinearInterpolator;
 import android.widget.CheckBox;
 import android.widget.EditText;
 import android.widget.FrameLayout;
+import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.TextView;
@@ -41,6 +46,7 @@ import java.util.List;
 public class MainActivity extends Activity {
     private static final String TAG = "made.app";
     private static final int REQ_MIC = 1;
+    private static final int REQ_IMAGE = 2;
 
     private final Bridge bridge = new Bridge();
     private final Model model = new Model();
@@ -69,7 +75,7 @@ public class MainActivity extends Activity {
     private TextView pairName, pairCode, pairMsg, pairRetry, pairCancel, pairHint;
     /** 当前配对是否为云端沙箱（bridgeUrl 含 /bridge/），文案与局域网配对不同。 */
     private boolean pairingCloud;
-    /** 云端主动离线闸：true = 沙箱已回收，Poller 停转，菜单项切换为「云端上线」。 */
+    /** 云端主动离线闸：true = 沙箱已暂停（数据保留），Poller 停转，菜单项切换为「云端上线」。 */
     private boolean cloudOffline = false;
     private String lastHost = "", lastName = "", lastBaseUrl = "";
     private int lastPort = 8788;
@@ -87,9 +93,26 @@ public class MainActivity extends Activity {
     private TextView jobStatusLabel, jobInstruction, jobResult, jobError;
     private TextView confirmBtn, cancelBtn;
     private EditText inputEdit;
-    private TextView micBtn, sendBtn;
-    private LinearLayout normalRow, recordingRow;
-    private TextView recLabel;
+    private TextView micBtn, sendBtn, imageBtn;
+    private LinearLayout normalRow, recordingRow, attachRow;
+    private TextView recLabel, attachLabel, attachRemove;
+    private ImageView attachThumb, jobImage;
+
+    // 传图：待发送的图片（已压缩的 JPEG + 缩略图），发送失败会整体回滚。
+    private byte[] pendingJpeg;
+    private String pendingName = "";
+    private Bitmap pendingPreview;
+    private volatile boolean imageSending = false;
+    // 任务卡里回显「自己发的图」：按 URL 缓存，避免每 2.5s 轮询重复下载。
+    private String jobImageUrl = "", jobImageLoading = "";
+    private Bitmap jobImageBitmap;
+    private final java.util.LinkedHashMap<String, Bitmap> imageCache =
+            new java.util.LinkedHashMap<String, Bitmap>(12, 0.75f, true) {
+                @Override
+                protected boolean removeEldestEntry(java.util.Map.Entry<String, Bitmap> eldest) {
+                    return size() > 12;
+                }
+            };
 
     private boolean suppressProviderPick = false;
     private long lastSpriteTapMs = 0;
@@ -331,18 +354,65 @@ public class MainActivity extends Activity {
                         JSONObject a = arr.optJSONObject(i);
                         if (a != null) apps.add(a);
                     }
+                    // 成功拉到就留档：云端离线（沙箱回收）时 /api/installed 会撞 409，
+                    // 下次直接用这份档渲染面板，缓存过的小游戏照样能点开玩
+                    writeH5InstalledCache(arr);
                 } catch (Exception e) {
                     error = "数据解析失败";
                 }
             }
+            boolean fromCache = false;
+            if (!r.ok()) {
+                // 拉取失败 → 回退本地档（离线/断网/沙箱回收都能进面板）
+                JSONArray arr = readH5InstalledCache();
+                if (arr != null) {
+                    for (int i = 0; i < arr.length(); i++) {
+                        JSONObject a = arr.optJSONObject(i);
+                        if (a != null) apps.add(a);
+                    }
+                    if (!apps.isEmpty()) {
+                        error = "";
+                        fromCache = true;
+                    }
+                }
+            }
             final String err = error;
             final List<JSONObject> result = apps;
+            final boolean cached = fromCache;
             runOnUiThread(() -> {
                 h5Loading = false;
                 h5AppsCache = result;
                 renderH5Apps(err, result);
+                if (cached && !result.isEmpty()) {
+                    h5Status.setText("离线模式：显示上次的应用列表，缓存过的小程序可离线玩");
+                    h5Status.setVisibility(View.VISIBLE);
+                }
             });
         }, "made.h5panel").start();
+    }
+
+    /** /api/installed 的本地留档（h5apps 数组），供离线时渲染面板。 */
+    private java.io.File h5InstalledCacheFile() {
+        return new java.io.File(getFilesDir(), "h5cache/installed.json");
+    }
+
+    private void writeH5InstalledCache(JSONArray arr) {
+        try {
+            java.io.File f = h5InstalledCacheFile();
+            f.getParentFile().mkdirs();
+            try (java.io.FileOutputStream out = new java.io.FileOutputStream(f)) {
+                out.write(arr.toString().getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            }
+        } catch (Exception ignored) { }
+    }
+
+    private JSONArray readH5InstalledCache() {
+        try {
+            String s = Model.readSmallFile(h5InstalledCacheFile());
+            return s == null ? null : new JSONArray(s);
+        } catch (Exception e) {
+            return null;
+        }
     }
 
     private List<JSONObject> h5Filtered(String query) {
@@ -1041,6 +1111,15 @@ public class MainActivity extends Activity {
         jobInstruction = Ui.text(this, "", 15, Ui.INK, true);
         jobInstruction.setPadding(0, dp(6), 0, 0);
         scrollCol.addView(jobInstruction, lp(-1, -2));
+        // 本轮用户发的图片（点击看大图）；没有图片时整块隐藏。
+        jobImage = new ImageView(this);
+        jobImage.setScaleType(ImageView.ScaleType.FIT_CENTER);
+        jobImage.setBackgroundColor(Ui.SOFT);
+        jobImage.setVisibility(View.GONE);
+        jobImage.setOnClickListener(v -> showJobImageFull());
+        LinearLayout.LayoutParams jobImageLp = lp(-1, dp(150));
+        jobImageLp.topMargin = dp(8);
+        scrollCol.addView(jobImage, jobImageLp);
         jobResult = Ui.text(this, "", 14, Ui.INK, false);
         jobResult.setPadding(0, dp(6), 0, 0);
         scrollCol.addView(jobResult, lp(-1, -2));
@@ -1083,6 +1162,29 @@ public class MainActivity extends Activity {
         lineLp.setMargins(-dp(12), 0, -dp(12), dp(8));
         inputBar.addView(topLine, lineLp);
 
+        // 已选图片的预览行（默认隐藏）：缩略图 + 文件名 + 点 ✕ 移除
+        attachRow = new LinearLayout(this);
+        attachRow.setOrientation(LinearLayout.HORIZONTAL);
+        attachRow.setGravity(Gravity.CENTER_VERTICAL);
+        attachRow.setBackground(Ui.fill(this, Ui.SOFT, 14));
+        attachRow.setPadding(dp(8), dp(6), dp(8), dp(6));
+        attachRow.setVisibility(View.GONE);
+        attachThumb = new ImageView(this);
+        attachThumb.setScaleType(ImageView.ScaleType.CENTER_CROP);
+        attachThumb.setBackground(Ui.fill(this, Ui.LINE, 8));
+        attachRow.addView(attachThumb, lp(dp(44), dp(44)));
+        attachLabel = Ui.text(this, "", 12, Ui.SUB, false);
+        attachLabel.setMaxLines(1);
+        attachLabel.setPadding(dp(10), 0, 0, 0);
+        attachRow.addView(attachLabel, new LinearLayout.LayoutParams(0, -2, 1f));
+        attachRemove = Ui.text(this, "✕", 16, Ui.SUB, true);
+        attachRemove.setPadding(dp(10), dp(4), dp(6), dp(4));
+        attachRemove.setOnClickListener(v -> clearAttach());
+        attachRow.addView(attachRemove, lp(-2, -2));
+        LinearLayout.LayoutParams attachLp = lp(-1, -2);
+        attachLp.bottomMargin = dp(8);
+        inputBar.addView(attachRow, attachLp);
+
         normalRow = new LinearLayout(this);
         normalRow.setOrientation(LinearLayout.HORIZONTAL);
         normalRow.setGravity(Gravity.BOTTOM);
@@ -1105,6 +1207,15 @@ public class MainActivity extends Activity {
         inputEdit.setBackground(Ui.fill(this, Ui.SOFT, 20));
         inputEdit.setPadding(dp(16), dp(10), dp(16), dp(10));
         normalRow.addView(inputEdit, new LinearLayout.LayoutParams(0, -2, 1f));
+
+        imageBtn = new TextView(this);
+        imageBtn.setText("🖼");
+        imageBtn.setTextSize(17);
+        imageBtn.setGravity(Gravity.CENTER);
+        imageBtn.setBackground(Ui.circle(Ui.SOFT));
+        normalRow.addView(imageBtn, circleBtnLp());
+        imageBtn.setOnClickListener(v -> pickImage());
+        Ui.press(imageBtn, 0.9f);
 
         micBtn = new TextView(this);
         micBtn.setText("🎙");
@@ -1782,7 +1893,8 @@ public class MainActivity extends Activity {
         // 任务面板：始终露边缘（把手是一致的可供性）；无任务时空态。
         // 切助手/会话后首轮旧任务 → peek；用户新发任务 → 半屏。
         boolean canSend = p != null && p.available && !model.selectedSessionId.isEmpty();
-        sendBtn.setAlpha(canSend ? 1f : 0.4f);
+        sendBtn.setAlpha(canSend && !imageSending ? 1f : 0.4f);
+        imageBtn.setAlpha(canSend && !imageSending ? 1f : 0.4f);
         micBtn.setAlpha(canSend && model.voiceAvailable ? 1f : 0.4f);
         if (job == null) {
             lastJobId = "";
@@ -1796,6 +1908,9 @@ public class MainActivity extends Activity {
                     android.graphics.PorterDuff.Mode.SRC_IN);
             jobActions.setVisibility(View.GONE);
             actingJobId = "";
+            jobImage.setVisibility(View.GONE);
+            jobImageUrl = "";
+            jobImageBitmap = null;
             if (!emptySheetShown) {
                 emptySheetShown = true;
                 snapToSheet(SHEET_PEEK);
@@ -1816,6 +1931,7 @@ public class MainActivity extends Activity {
             snapToSheet(SHEET_HALF);
         }
         jobInstruction.setText(job.instruction);
+        renderJobImage(job);
         int sColor;
         String sText;
         switch (job.status) {
@@ -1997,7 +2113,7 @@ public class MainActivity extends Activity {
         java.util.List<String> items = new java.util.ArrayList<>();
         java.util.List<Runnable> actions = new java.util.ArrayList<>();
         if (pairingCloud) {
-            items.add(cloudOffline ? "云端上线" : "云端离线（回收沙箱）");
+            items.add(cloudOffline ? "云端上线" : "云端离线（暂停计费）");
             actions.add(cloudOffline ? this::cloudOnline : this::cloudOfflineGo);
             items.add("云端桥接器设置");
             actions.add(this::openCloudSettings);
@@ -2078,25 +2194,25 @@ public class MainActivity extends Activity {
         cloudOffline = offline;
         if (offline) {
             poller.stop();
-            model.connectionError = "☁ 已主动离线，沙箱已回收。缓存过的小游戏可离线玩；菜单「云端上线」恢复";
+            model.connectionError = "☁ 已主动离线，沙箱已暂停（数据保留）。缓存过的小游戏可离线玩；菜单「云端上线」恢复";
         } else {
             model.connectionError = "";
         }
         renderModel();
     }
 
-    /** 菜单「云端离线」：确认后回收沙箱并停轮询（省额度，正在跑的任务会中断）。 */
+    /** 菜单「云端离线」：确认后暂停沙箱并停轮询（省额度、数据保留，正在跑的任务会中断）。 */
     private void cloudOfflineGo() {
         new AlertDialog.Builder(this)
                 .setTitle("云端离线")
-                .setMessage("下线云端智能体并立即回收沙箱（不再消耗额度）。正在运行的任务会中断；缓存过的小游戏仍可离线玩。")
+                .setMessage("下线云端智能体并暂停沙箱（不计运行费，会话和数据都保留）。正在运行的任务会中断；缓存过的小游戏仍可离线玩。")
                 .setPositiveButton("离线", (d, w) -> new Thread(() -> {
                     Bridge.Resp r = bridge.exchangeNoAuth(cloudServerOf() + "/v1/sandboxes/current",
                             "DELETE", null, null, 30000);
                     ui.post(() -> {
                         if (r.ok()) {
                             applyCloudOffline(true);
-                            Toast.makeText(this, "已离线，沙箱已回收", Toast.LENGTH_SHORT).show();
+                            Toast.makeText(this, "已离线，沙箱已暂停（数据保留）", Toast.LENGTH_SHORT).show();
                         } else {
                             Toast.makeText(this, "离线失败：" + r.errorText(), Toast.LENGTH_SHORT).show();
                         }
@@ -2196,36 +2312,195 @@ public class MainActivity extends Activity {
     }
 
     private void sendTask() {
-        String text = inputEdit.getText().toString().trim();
-        if (text.isEmpty()) return;
+        if (imageSending) {
+            Toast.makeText(this, "图片还在上传，稍等一下", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        final String text = inputEdit.getText().toString().trim();
+        final byte[] jpeg = pendingJpeg;
+        final String name = pendingName;
+        final Bitmap preview = pendingPreview;
+        if (text.isEmpty() && jpeg == null) return;
         inputEdit.setText("");
+        pendingJpeg = null;
+        pendingName = "";
+        pendingPreview = null;
+        renderAttach();
         suppressNextJobCard = false;
+        imageSending = jpeg != null;
+        // 任何一步失败都把文字和图片整体还回来，不让用户重选一遍。
+        final Runnable restore = () -> {
+            inputEdit.setText(text);
+            pendingJpeg = jpeg;
+            pendingName = name;
+            pendingPreview = preview;
+            renderAttach();
+            imageSending = false;
+        };
         new Thread(() -> {
             // 没有会话就自动新建（弱网下沙箱刚拉起时会话列表为空，不能把用户挡在门外）
             JSONObject sess = ensureSessionBlocking();
             if (sess == null) {
                 ui.post(() -> {
-                    inputEdit.setText(text);
+                    restore.run();
                     Toast.makeText(this, "发送失败：会话未就绪，请检查网络后重试",
                             Toast.LENGTH_LONG).show();
                 });
                 return;
             }
+            final String sessionId = sess.optString("id");
+            JSONArray images = new JSONArray();
+            if (jpeg != null) {
+                String path = "/device/images?sessionId=" + sessionId
+                        + "&name=" + urlEncode(name);
+                Bridge.Resp up = bridge.postBytes(path, jpeg, "image/jpeg", 60000);
+                String imageId = "";
+                if (up.ok()) {
+                    try { imageId = new JSONObject(up.body).optString("id"); }
+                    catch (Exception ignored) { }
+                }
+                if (imageId.isEmpty()) {
+                    ui.post(() -> {
+                        restore.run();
+                        Toast.makeText(this, "图片上传失败："
+                                + (up.ok() ? "返回数据异常" : up.errorText()),
+                                Toast.LENGTH_LONG).show();
+                    });
+                    return;
+                }
+                images.put(imageId);
+            }
             JSONObject body = new JSONObject();
             try {
-                body.put("instruction", text);
-                body.put("sessionId", sess.optString("id"));
+                body.put("instruction", text.isEmpty() ? "请看我发的图片并回答" : text);
+                body.put("sessionId", sessionId);
+                if (images.length() > 0) body.put("images", images);
             } catch (Exception ignored) { }
             Bridge.Resp r = bridge.postJson("/device/tasks", body.toString());
-            if (!r.ok()) {
-                ui.post(() -> {
-                    inputEdit.setText(text); // 发送失败把文字还回去，别让用户重打
+            ui.post(() -> {
+                if (!r.ok()) {
+                    restore.run(); // 发送失败把文字/图片还回去，别让用户重打
                     Toast.makeText(this, "发送失败：" + r.errorText(),
                             Toast.LENGTH_SHORT).show();
-                });
-            }
+                } else {
+                    imageSending = false;
+                }
+            });
             poller.kick();
         }, "made-send").start();
+    }
+
+    // ================= 传图（APP 侧专属，板端不参与） =================
+
+    /** 系统图片选择器自带相册/拍照入口，走 SAF 临时授权，不需要任何存储权限。 */
+    private void pickImage() {
+        if (imageSending) return;
+        Intent intent = new Intent(Intent.ACTION_GET_CONTENT);
+        intent.setType("image/*");
+        intent.addCategory(Intent.CATEGORY_OPENABLE);
+        try {
+            startActivityForResult(Intent.createChooser(intent, "选择图片"), REQ_IMAGE);
+        } catch (Exception e) {
+            Toast.makeText(this, "打不开图片选择器", Toast.LENGTH_SHORT).show();
+        }
+    }
+
+    @Override
+    protected void onActivityResult(int requestCode, int resultCode, Intent data) {
+        super.onActivityResult(requestCode, resultCode, data);
+        if (requestCode != REQ_IMAGE || resultCode != RESULT_OK
+                || data == null || data.getData() == null) return;
+        final Uri uri = data.getData();
+        Toast.makeText(this, "正在处理图片…", Toast.LENGTH_SHORT).show();
+        new Thread(() -> {
+            ImageAttach.Picked picked = null;
+            try { picked = ImageAttach.load(MainActivity.this, uri); }
+            catch (Exception ignored) { }
+            final ImageAttach.Picked result = picked;
+            ui.post(() -> {
+                if (result == null || result.jpeg == null || result.jpeg.length == 0) {
+                    Toast.makeText(this, "这张图片读不出来，换一张试试", Toast.LENGTH_SHORT).show();
+                    return;
+                }
+                pendingJpeg = result.jpeg;
+                pendingName = result.name;
+                pendingPreview = result.preview;
+                renderAttach();
+            });
+        }, "made-pick").start();
+    }
+
+    private void renderAttach() {
+        boolean has = pendingJpeg != null;
+        attachRow.setVisibility(has ? View.VISIBLE : View.GONE);
+        if (!has) {
+            attachThumb.setImageBitmap(null);
+            attachLabel.setText("");
+            return;
+        }
+        attachThumb.setImageBitmap(pendingPreview);
+        attachLabel.setText(pendingName + " · " + Math.max(1, pendingJpeg.length / 1024) + "KB");
+    }
+
+    private void clearAttach() {
+        pendingJpeg = null;
+        pendingName = "";
+        pendingPreview = null;
+        renderAttach();
+    }
+
+    /** 任务卡回显本轮自己发的图；图片只在 APP 侧下载，不下发给板端。 */
+    private void renderJobImage(Model.Job job) {
+        String url = job.inputImages.isEmpty() ? "" : job.inputImages.get(0);
+        jobImageUrl = url;
+        if (url.isEmpty()) {
+            jobImage.setVisibility(View.GONE);
+            jobImage.setImageBitmap(null);
+            jobImageBitmap = null;
+            return;
+        }
+        Bitmap cached = imageCache.get(url);
+        if (cached != null) {
+            jobImageBitmap = cached;
+            jobImage.setImageBitmap(cached);
+            jobImage.setVisibility(View.VISIBLE);
+            return;
+        }
+        jobImageBitmap = null;
+        jobImage.setImageBitmap(null);
+        jobImage.setVisibility(View.VISIBLE); // 加载期间占位底
+        if (url.equals(jobImageLoading)) return;
+        jobImageLoading = url;
+        new Thread(() -> {
+            Bridge.Resp r = bridge.get(url);
+            Bitmap bmp = r.ok() ? ImageAttach.decodePreview(r.bytes, 800) : null;
+            ui.post(() -> {
+                jobImageLoading = "";
+                if (bmp != null) imageCache.put(url, bmp);
+                if (url.equals(jobImageUrl)) { // 异步回来时任务可能已经换了
+                    jobImageBitmap = bmp;
+                    jobImage.setImageBitmap(bmp);
+                }
+            });
+        }, "made-job-image").start();
+    }
+
+    private void showJobImageFull() {
+        Bitmap bmp = jobImageBitmap;
+        if (bmp == null) return;
+        ImageView big = new ImageView(this);
+        big.setImageBitmap(bmp);
+        big.setScaleType(ImageView.ScaleType.FIT_CENTER);
+        big.setBackgroundColor(0xFF111111);
+        Dialog dialog = new Dialog(this, android.R.style.Theme_Black_NoTitleBar_Fullscreen);
+        dialog.setContentView(big);
+        big.setOnClickListener(v -> dialog.dismiss());
+        dialog.show();
+    }
+
+    private static String urlEncode(String value) {
+        try { return java.net.URLEncoder.encode(value, "UTF-8"); }
+        catch (Exception e) { return "photo.jpg"; }
     }
 
     private void act(String verb) {
