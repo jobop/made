@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { SessionStore, validAgentSessionId, VIBE_SESSION_ID } from './sessions.mjs';
+import { absolutizeInputImages, sanitizeInputImages, withImagePrompt } from './device-images.mjs';
 
 const ACTIVE = new Set(['waiting_confirmation', 'queued', 'running']);
 
@@ -265,8 +266,9 @@ export class JobStore {
     return { id, deleted: true };
   }
 
-  submit({ instruction, sessionId, provider, projectId, source = 'voice' }) {
+  submit({ instruction, sessionId, provider, projectId, source = 'voice', inputImages }) {
     const text = String(instruction || '').trim();
+    const images = sanitizeInputImages(inputImages);
     if (!VIBE_SESSION_ID.test(sessionId || '')) throw new Error('请先新建任务');
     const session = this.sessions.get(sessionId);
     if (!session) throw new Error('任务不存在');
@@ -297,6 +299,8 @@ export class JobStore {
       vibeSessionId: session.id,
       sessionId: session.cliSessionId || undefined,
       instruction: text,
+      // 用户本轮附带的图片（APP 侧传图）。输出方向的 job.attachments 仍归助手回复所有。
+      ...(images.length ? { inputImages: images } : {}),
       provider: selectedProvider,
       projectId: selectedProject,
       source,
@@ -419,7 +423,16 @@ export class JobStore {
           const project = this.projectFor(job);
           // 回合输入管道：插件可以改写本轮实际执行的指令；存储里的任务原文保持不变。
           const instruction = this.hooks ? await this.hooks.turnIn(job) : job.instruction;
-          const effectiveJob = instruction === job.instruction ? job : { ...job, instruction };
+          // 图片提示追加在回合输入管道之后：插件仍能改写用户原文，但不会被图片
+          // 提示盖掉；存储里的 job.instruction 始终是用户原文。图片本体以
+          // job.inputImages（file 已解析成绝对路径，附 mime/size）随执行副本
+          // 透传，由助手插件以多模态消息原生带给模型。
+          const inputImages = absolutizeInputImages(
+            this.workspacePath(job.vibeSessionId || job.sessionId), job.inputImages,
+          );
+          const effectiveInstruction = withImagePrompt(instruction, job.inputImages);
+          const effectiveJob = { ...job, inputImages };
+          if (effectiveInstruction !== job.instruction) effectiveJob.instruction = effectiveInstruction;
           const outcome = await this.run(effectiveJob, project, controller.signal, (text) => {
             if (job.status === 'running' && this.agent(job.provider)?.capabilities.progress) {
               const progress = String(text || '').replace(/[\x00-\x1f\x7f]+/g, ' ').trim().slice(0, 80);

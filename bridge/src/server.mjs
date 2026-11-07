@@ -32,6 +32,7 @@ import { createBoardLink } from './board-link.mjs';
 import { spriteChunk, spriteBundle } from './agent-sprites.mjs';
 import { applyCloudLlmDefaults } from './cloud-llm.mjs';
 import { createScreenshotStore, rgb565ToPng, validateScreenshotParams, MAX_UPLOAD } from './board-screenshot.mjs';
+import { MAX_IMAGE_BYTES, readImage, resolveTaskImages, saveImage } from './device-images.mjs';
 import { createFirmwareStore } from './firmware-store.mjs';
 import { initializeSpeechSettings, saveSpeechSettings } from './speech-settings.mjs';
 import { builtinSpeechRecognizers } from './speech/index.mjs';
@@ -214,12 +215,12 @@ async function body(req) {
   return data ? JSON.parse(data) : {};
 }
 
-async function binaryBody(req, maxBytes) {
+async function binaryBody(req, maxBytes, overMessage = '录音超过 30 秒上限') {
   const chunks = [];
   let size = 0;
   for await (const chunk of req) {
     size += chunk.length;
-    if (size > maxBytes) throw new Error('录音超过 30 秒上限');
+    if (size > maxBytes) throw new Error(overMessage);
     chunks.push(chunk);
   }
   return Buffer.concat(chunks, size);
@@ -1085,26 +1086,84 @@ export function createApp(config, { run, transcribe, tunnel: providedTunnel, ena
                 url: String(a.url || '').slice(0, 2048),
                 text: String(a.text || '').slice(0, 120),
               })).filter((a) => a.url),
+              // 用户本轮附的图片（APP 侧传图）：板端忽略该字段，APP 用它回显。
+              inputImages: (Array.isArray(job.inputImages) ? job.inputImages : [])
+                .slice(0, 4).map((a) => ({
+                  id: String(a.id || '').slice(0, 16),
+                  url: String(a.url || '').slice(0, 512),
+                  name: String(a.name || '').slice(0, 80),
+                })).filter((a) => a.url),
             };
           }),
         });
         return;
       }
+      // APP 侧传图：二进制图片落进会话工作目录（助手 CLI 的 cwd），返回可回显的
+      // 相对地址。板端固件没有相册/摄像头，不实现也不消费这套接口。
+      if (req.method === 'POST' && url.pathname === '/device/images') {
+        const sessionId = url.searchParams.get('sessionId');
+        if (!VIBE_SESSION_ID.test(sessionId || '') || !store.sessions.get(sessionId)) {
+          throw new Error('请先新建任务');
+        }
+        const type = String(req.headers['content-type'] || '').split(';')[0].trim().toLowerCase();
+        if (!['image/jpeg', 'image/png', 'image/webp'].includes(type)) {
+          throw new Error('请上传 JPG / PNG / WebP 图片');
+        }
+        const bytes = await binaryBody(req, MAX_IMAGE_BYTES, '图片超过 6MB 上限');
+        const dir = store.ensureWorkspace(sessionId);
+        if (!dir) throw new Error('会话目录不可用');
+        const saved = saveImage(dir, sessionId, bytes, url.searchParams.get('name'));
+        const { file, ...publicImage } = saved;
+        deviceSend(res, 201, publicImage, false);
+        return;
+      }
+      const imageGet = req.method === 'GET' &&
+        url.pathname.match(/^\/device\/images\/([a-f0-9]{12})$/);
+      if (imageGet) {
+        const sessionId = url.searchParams.get('sessionId');
+        if (!VIBE_SESSION_ID.test(sessionId || '') || !store.sessions.get(sessionId)) {
+          throw new Error('任务不存在');
+        }
+        const dir = store.workspacePath(sessionId);
+        const image = dir ? readImage(dir, imageGet[1]) : null;
+        if (!image) {
+          deviceSend(res, 404, { error: '图片不存在' }, false);
+          return;
+        }
+        res.writeHead(200, {
+          'Content-Type': image.mime,
+          'Content-Length': image.bytes.length,
+          'Cache-Control': 'no-store',
+          'X-Content-Type-Options': 'nosniff',
+        });
+        res.end(image.bytes);
+        return;
+      }
       if (req.method === 'POST' && url.pathname === '/device/tasks') {
         // 设备端文字任务入口（安卓原生应用）：与 /device/voice 同级，用设备
         // token 鉴权。指令文本来自手机输入法，长度上限与桌面 UI 对齐。
+        // APP 可选附带 images[]（先 POST /device/images 换到的 id）。
         const payload = await body(req);
-        const instruction = String(payload.instruction || '').trim();
-        if (!instruction) throw new Error('请输入任务内容');
-        if (Buffer.byteLength(instruction) > 4000) throw new Error('任务内容过长');
         const sessionId = payload.sessionId;
         if (!VIBE_SESSION_ID.test(sessionId || '') || !store.sessions.get(sessionId)) {
           throw new Error('请先新建任务');
         }
         const session = store.sessions.get(sessionId);
+        const dir = store.workspacePath(sessionId);
+        if (!dir && Array.isArray(payload.images) && payload.images.length) {
+          throw new Error('会话目录不可用');
+        }
+        const inputImages = dir ? resolveTaskImages(dir, sessionId, payload.images) : [];
+        let instruction = String(payload.instruction || '').trim();
+        // 只发图不打字时给助手一句可执行的指令（submit 要求 3 字以上）。
+        if (!instruction && inputImages.length) instruction = '请查看我发的图片并回答';
+        if (!instruction) throw new Error('请输入任务内容');
+        if (Buffer.byteLength(instruction) > 4000) throw new Error('任务内容过长');
         deviceSend(res, 201, publicJob(store.submit({
           instruction, sessionId, provider: session.provider,
-          projectId: session.projectId, source: 'device_text',
+          projectId: session.projectId,
+          source: inputImages.length ? 'device_image' : 'device_text',
+          inputImages,
         }), deviceLocale));
         return;
       }

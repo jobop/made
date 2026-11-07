@@ -107,3 +107,14 @@ Cloud-mode App menu has「云端离线（回收沙箱）」/「云端上线」:
 - **Offline**: `DELETE /v1/sandboxes/current` (cloud JWT). The sandbox is stopped immediately (state backed up first), and an `offline` gate is set on the user record — **any** client request (board heartbeat, App poller, cloud proxy lazy pull-up) gets 409 and cannot wake the sandbox until explicit online. Without the gate the board's 2.5s polling would instantly re-create the sandbox.
 - **Online**: `POST /v1/sandboxes` clears the gate and cold-starts a fresh sandbox (state backup is re-imported), then the App re-runs the pairing flow automatically.
 - Implementation: `made-cloud/src/sandbox.mjs` (`ensureRunning` gate check, `stop(userId, { markOffline })`), `server.mjs` (POST clears gate / DELETE marks offline / GET current returns `offline`). App side: `MainActivity` (`cloudOfflineGo` / `cloudOnline` / `refreshCloudOfflineState`).
+
+## App Image Upload (APP Only)
+
+The native Android companion app (`android-native/`) can attach a photo to a task. This is an APP-only capability: the ESP32 board UI, the SDL-based `android/` port and H5 plugin pages neither implement nor consume it — no firmware change is needed.
+
+- `POST /device/images?sessionId=<uuid>&name=<file>`: raw `image/jpeg` / `image/png` / `image/webp` body (≤6 MB), device `Authorization: Bearer` token. The bridge validates magic bytes, stores the file in the session workspace at `uploads/<id>.<ext>` (the assistant CLI's cwd) and returns `{id, name, mime, size, url}`.
+- `GET /device/images/<id>?sessionId=<uuid>`: returns the bytes for the App's task-card preview. IDs are 12-char hex and scoped to that session.
+- `POST /device/tasks`: optional `images: [id, ...]` (max 4). The job stores `inputImages`, and `GET /device/tasks` echoes it in the field whitelist. With an empty text field the bridge supplies a default instruction. The App compresses photos to JPEG (≤1600 px, ≤1.4 MB) before uploading.
+- At execution time the bridge appends the relative `uploads/...` paths to the **effective** prompt; the stored `job.instruction` remains the user's original text. `job.attachments` is still reserved for the assistant's **output** attachments.
+
+Connection coverage: LAN Wi-Fi direct and public/cloud endpoints (the same device-port HTTP API, including the `/bridge/` cloud proxy prefix) both work. USB cable and receiver relay are board-side transports that the phone App never uses; the board silently ignores `inputImages`.
