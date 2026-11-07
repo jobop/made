@@ -142,6 +142,11 @@ public final class Pairing {
 
     /** 完整 baseUrl（可含路径，如云端 bridgeUrl）发起配对。 */
     public void startPairingUrl(String baseUrl, Listener listener) {
+        // 旧 bridgeId 只对上一轮配对有意义：云端换账号/沙箱重建（换 e2b 账号、
+        // 沙箱冷启重建）后桥接器 bridgeId 必然变化，拿旧 id 否决新配对会让
+        // 用户永远卡在「配对信息无效」。每轮配对的真门禁是配对码 + HMAC token，
+        // 批准后 persist() 会写入新 id。
+        bridgeId = "";
         String[] code = new String[1];
         byte[] nonceBytes = new byte[16];
         random.nextBytes(nonceBytes);
