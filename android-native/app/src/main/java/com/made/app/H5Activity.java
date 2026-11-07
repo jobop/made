@@ -237,7 +237,10 @@ public final class H5Activity extends Activity {
             int idx = path.indexOf(marker);
             if (idx < 0) return null;
             String rel = path.substring(idx + marker.length());
-            if (rel.isEmpty() || rel.equals("token")) return null; // 主页与 token 走原逻辑
+            if (rel.equals("token")) return null; // token 接口走原逻辑（scoped token JSON，不缓存）
+            // 主页也纳入缓存：单文件 H5 游戏（全部内联在一个 index.html 里）只有这一个
+            // 请求，放过主页 = 什么都不缓存。主页和其他静态资源同策略：命中回本地。
+            if (rel.isEmpty()) rel = "index.html";
             if (rel.endsWith("/")) rel = rel + "index.html";
             if (rel.contains("..")) return notFound(); // 防路径穿越
             File f = new File(cacheDir, rel);
