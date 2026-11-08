@@ -38,7 +38,7 @@ import java.nio.charset.StandardCharsets;
  * 本地缓存（省云端额度）：静态资源统一经 shouldInterceptRequest 接管——
  * 命中本地缓存直接回（零网络流量，沙箱回收了也能玩纯静态游戏）；
  * 未命中在线拉取并落盘，下次打开离线可用。失效策略用 /api/installed
- * 里的 version（market.json 版本）：版本一致沿用缓存，不同/为空则清缓存重下。
+ * 里的 version：在线更新成功才替换文件；查询/下载失败保留原缓存。
  * 数据接口 /h5api/* 不缓存——它需要桥接器在线，离线时页面自己显示未连接。
  */
 public final class H5Activity extends Activity {
@@ -51,6 +51,8 @@ public final class H5Activity extends Activity {
     private TextView status;
     private String base, deviceToken, cloudToken, dir, name;
     private File cacheDir;
+    private boolean offlineRequested;
+    private volatile boolean refreshCache;
     private volatile boolean online = false;   // 打开时桥接器是否可达
     private volatile String pendingVersion;    // 在线拉到的新版本；onPageFinished 落盘
 
@@ -72,7 +74,12 @@ public final class H5Activity extends Activity {
             finish();
             return;
         }
-        cacheDir = new File(getFilesDir(), "h5cache/" + EndpointScope.cacheKey(base, deviceToken) + "/" + dir);
+        offlineRequested = getIntent().getBooleanExtra("offline", false);
+        try { cacheDir = new File(H5Cache.restore(getFilesDir(), base, deviceToken, false), dir); }
+        catch (Exception e) {
+            Log.w(TAG, "restore H5 cache", e);
+            cacheDir = new File(H5Cache.root(getFilesDir(), base), dir);
+        }
 
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
@@ -154,6 +161,11 @@ public final class H5Activity extends Activity {
     private void open() {
         status.setText("正在打开…");
         web.setVisibility(View.GONE);
+        if (offlineRequested) {
+            if (H5Cache.hasPage(cacheDir)) showPage(false, "");
+            else status.setText("这个应用尚未下载到本机。联网打开一次后，暂停云端仍可离线玩。");
+            return;
+        }
         new Thread(() -> {
             String h5Token = "";
             Bridge.Resp r = http("GET", "/plugins/" + dir + "/token", null);
@@ -178,11 +190,11 @@ public final class H5Activity extends Activity {
                     } catch (Exception ignore) { }
                 }
             }
-            final boolean hasCache = new File(cacheDir, "index.html").isFile();
+            final boolean hasCache = H5Cache.hasPage(cacheDir);
             final String cachedVer = readVersionFile();
             if (reachable) {
-                boolean reusable = hasCache && !version.isEmpty() && version.equals(cachedVer);
-                if (!reusable) clearCacheDir(); // 版本变化/无版本号/首次：清掉重下（本次在线边拉边缓存）
+                // Never discard a playable copy before its replacement has been fetched.
+                refreshCache = version.isEmpty() || !version.equals(cachedVer);
                 if (!version.isEmpty()) pendingVersion = version;
             }
             final boolean offlineOk = !reachable && hasCache; // 离线且无缓存：真的打不开
@@ -198,14 +210,19 @@ public final class H5Activity extends Activity {
                 } else {
                     status.setText("正在打开…");
                 }
-                online = reachable;
-                StringBuilder url = new StringBuilder(base)
-                        .append("/plugins/").append(dir).append("/?h5token=").append(tokenFinal);
-                if (!TextUtils.isEmpty(cloudToken)) url.append("&cloud_token=").append(cloudToken);
-                web.loadUrl(url.toString());
-                web.setVisibility(View.VISIBLE);
+                showPage(reachable, tokenFinal);
             });
         }, "made.h5").start();
+    }
+
+    private void showPage(boolean reachable, String h5Token) {
+        online = reachable;
+        if (!reachable) status.setText("离线模式：使用本地游戏");
+        StringBuilder url = new StringBuilder(base)
+                .append("/plugins/").append(dir).append("/?h5token=").append(h5Token);
+        if (reachable && !TextUtils.isEmpty(cloudToken)) url.append("&cloud_token=").append(cloudToken);
+        web.loadUrl(url.toString());
+        web.setVisibility(View.VISIBLE);
     }
 
     private void goBack() {
@@ -232,12 +249,12 @@ public final class H5Activity extends Activity {
         try {
             Uri u = req.getUrl();
             String root = base + "/plugins/" + dir;
-            if (!"GET".equals(req.getMethod()) || !EndpointScope.belongsTo(u.toString(), root)) return null;
+            if (!"GET".equals(req.getMethod()) || !EndpointScope.belongsTo(u.toString(), root)) return online ? null : notFound();
             String prefix = Uri.parse(root).getPath() + "/";
             String path = u.getPath();
             if (path == null || !path.startsWith(prefix)) return null;
             String rel = path.substring(prefix.length());
-            if (rel.equals("token")) return null; // token 接口走原逻辑（scoped token JSON，不缓存）
+            if (rel.equals("token")) return online ? null : notFound(); // token 接口走原逻辑（scoped token JSON，不缓存）
             // 主页也纳入缓存：单文件 H5 游戏（全部内联在一个 index.html 里）只有这一个
             // 请求，放过主页 = 什么都不缓存。主页和其他静态资源同策略：命中回本地。
             if (rel.isEmpty()) rel = "index.html";
@@ -245,21 +262,21 @@ public final class H5Activity extends Activity {
             if (rel.contains("..")) return notFound(); // 防路径穿越
             File f = new File(cacheDir, rel);
             if (!f.getCanonicalPath().startsWith(cacheDir.getCanonicalPath() + File.separator)) return notFound();
-            if (f.isFile() && f.length() > 0) return fileResponse(f);
+            if (f.isFile() && f.length() > 0 && (!online || !refreshCache)) return fileResponse(f);
             if (!online) return notFound();
             byte[] data = fetchStatic(rel);
-            if (data == null) return notFound();
+            if (data == null) return f.isFile() && f.length() > 0 ? fileResponse(f) : notFound();
             if (data.length <= MAX_CACHE_FILE) writeCacheFile(rel, data);
             return bytesResponse(data, mimeOf(rel));
         } catch (Exception e) {
             Log.w(TAG, "intercept", e);
-            return null; // 放行走网络，别把页面弄挂
+            return online ? null : notFound(); // 离线不能绕过拦截回到网络
         }
     }
 
     private WebResourceResponse fileResponse(File f) {
         try {
-            return new WebResourceResponse(mimeOf(f.getName()), charsetOf(f.getName()),
+            return new WebResourceResponse(mimeOf(f.getName()), charsetOf(mimeOf(f.getName())),
                     new FileInputStream(f));
         } catch (Exception e) {
             return null;
@@ -306,33 +323,8 @@ public final class H5Activity extends Activity {
     }
 
     private void writeCacheFile(String rel, byte[] data) {
-        try {
-            File f = new File(cacheDir, rel);
-            File parent = f.getParentFile();
-            if (parent != null && !parent.isDirectory() && !parent.mkdirs()) return;
-            try (java.io.FileOutputStream out = new java.io.FileOutputStream(f)) {
-                out.write(data);
-            }
-        } catch (Exception e) {
-            Log.w(TAG, "cache write " + rel, e);
-        }
-    }
-
-    private void clearCacheDir() {
-        pendingVersion = null;
-        File ver = versionFile();
-        if (ver.isFile()) //noinspection ResultOfMethodCallIgnored
-            ver.delete();
-        File[] files = cacheDir.listFiles();
-        if (files == null) return;
-        for (File f : files) recursiveDelete(f);
-    }
-
-    private static void recursiveDelete(File f) {
-        File[] children = f.listFiles();
-        if (children != null) for (File c : children) recursiveDelete(c);
-        //noinspection ResultOfMethodCallIgnored
-        f.delete();
+        try { H5Cache.write(new File(cacheDir, rel), data); }
+        catch (Exception e) { Log.w(TAG, "cache write " + rel, e); }
     }
 
     private File versionFile() {

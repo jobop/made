@@ -293,7 +293,7 @@ public class MainActivity extends Activity {
     private List<String> h5Recents() {
         List<String> out = new ArrayList<>();
         for (String id : getSharedPreferences("made-ui", MODE_PRIVATE)
-                .getString("h5_recents_" + EndpointScope.cacheKey(bridge.baseUrl(), bridge.token()), "").split(",")) {
+                .getString("h5_recents_" + H5Cache.key(bridge.baseUrl()), "").split(",")) {
             if (!id.isEmpty() && !out.contains(id)) out.add(id);
         }
         return out;
@@ -306,7 +306,7 @@ public class MainActivity extends Activity {
         recents.add(0, id);
         while (recents.size() > 8) recents.remove(recents.size() - 1);
         getSharedPreferences("made-ui", MODE_PRIVATE).edit()
-                .putString("h5_recents_" + EndpointScope.cacheKey(bridge.baseUrl(), bridge.token()), String.join(",", recents)).apply();
+                .putString("h5_recents_" + H5Cache.key(bridge.baseUrl()), String.join(",", recents)).apply();
     }
 
     /** 打开面板（从屏顶滑入），每次都重新拉 /api/installed 里的 h5apps。 */
@@ -351,8 +351,9 @@ public class MainActivity extends Activity {
         final Bridge requestBridge = new Bridge();
         requestBridge.setEndpoint(bridge.baseUrl(), bridge.token());
         requestBridge.setCloudCredentials(pairing.cloudServer(), bridge.cloudToken());
+        final boolean offline = cloudOffline;
         new Thread(() -> {
-            Bridge.Resp r = requestBridge.get("/api/installed");
+            Bridge.Resp r = offline ? new Bridge.Resp() : requestBridge.get("/api/installed");
             List<JSONObject> apps = new ArrayList<>();
             String error = r.ok() ? "" : r.errorText();
             if (r.ok()) {
@@ -403,7 +404,8 @@ public class MainActivity extends Activity {
 
     /** /api/installed 的本地留档（h5apps 数组），供离线时渲染面板。 */
     private java.io.File h5InstalledCacheFile() {
-        return new java.io.File(getFilesDir(), "h5cache/" + EndpointScope.cacheKey(bridge.baseUrl(), bridge.token()) + "/installed.json");
+        try { return new java.io.File(H5Cache.restore(getFilesDir(), bridge.baseUrl(), bridge.token(), false), "installed.json"); }
+        catch (Exception e) { return new java.io.File(H5Cache.root(getFilesDir(), bridge.baseUrl()), "installed.json"); }
     }
 
     private void writeH5InstalledCache(java.io.File f, JSONArray arr) {
@@ -555,6 +557,7 @@ public class MainActivity extends Activity {
             it.putExtra("cloudToken", bridge.cloudTokenFor(bridge.baseUrl()));
             it.putExtra("dir", id);
             it.putExtra("name", name);
+            it.putExtra("offline", cloudOffline);
             startActivity(it);
         });
         Ui.press(tile);

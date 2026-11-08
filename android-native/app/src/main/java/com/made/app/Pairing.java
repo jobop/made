@@ -67,7 +67,11 @@ public final class Pairing {
         String token = p.getString(K_TOKEN, "");
         bridgeId = p.getString(K_BRIDGE, "");
         bridge.setCloudCredentials(p.getString(K_CLOUD_SERVER, ""), p.getString(K_CLOUD_TOKEN, ""));
-        if (!url.isEmpty() && token.length() == 64) bridge.setEndpoint(url, token);
+        if (!url.isEmpty() && token.length() == 64) {
+            bridge.setEndpoint(url, token);
+            try { H5Cache.restore(context.getFilesDir(), url, token, true); }
+            catch (Exception e) { Log.w(TAG, "restore H5 cache", e); }
+        }
     }
 
     /** 云端码得：保存 cloud 凭据（登录后、配对前调用，重启后能恢复）。 */

@@ -37,6 +37,8 @@ with tempfile.TemporaryDirectory(prefix='made-android-tests-') as directory:
     print('PASS: compiled all Android app Java sources against Android 34', flush=True)
     classes = Path(directory) / 'host'
     classes.mkdir()
-    files = list(host.rglob('*.java')) + [production / 'com/made/app' / name for name in ('Bridge.java', 'Pairing.java', 'EndpointScope.java')]
+    files = list(host.rglob('*.java')) + [production / 'com/made/app' / name for name in ('Bridge.java', 'Pairing.java', 'EndpointScope.java', 'H5Cache.java')]
     subprocess.run([str(java_bin / 'javac'), '-encoding', 'UTF-8', '-cp', str(gson), '-d', str(classes), *map(str, files)], check=True)
     subprocess.run([str(java_bin / 'java'), '-cp', str(classes) + os.pathsep + str(gson), 'com.made.app.BoundaryTest'], check=True)
+
+    subprocess.run([str(java_bin / 'java'), '-cp', str(classes) + os.pathsep + str(gson), 'com.made.app.H5CacheTest'], check=True)
