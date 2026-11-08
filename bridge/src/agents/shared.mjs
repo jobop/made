@@ -121,8 +121,12 @@ export function runCli({ job, project, signal, onProgress, onSession, onTool, co
   });
   const message = (value) => translateKnownMessage(value, config.locale);
   // 每轮都拼上权限边界：用户原文一字不改，边界文案按界面语言翻译。
-  const prompt = `${job.instruction}\n\n${message(GUARD_INSTRUCTION)}`;
-  const spec = adapter.command({ cwd: project.path, instruction: prompt, config, model, sessionId: job.sessionId });
+  const inputImages = job.inputImages;
+  // 旧适配器只消费 instruction：保留精确文件路径，让 CLI 的看图工具仍能读到图片。
+  const imageFiles = inputImages?.length
+    ? `\n\n[Attached image files] Use your image viewing tool to inspect these files before answering:\n${inputImages.map(image => JSON.stringify(image.file)).join('\n')}` : '';
+  const prompt = `${job.instruction}${imageFiles}\n\n${message(GUARD_INSTRUCTION)}`;
+  const spec = adapter.command({ cwd: project.path, instruction: prompt, inputImages, config, model, sessionId: job.sessionId });
   return new Promise((resolve, reject) => {
     const events = adapter.createEvents(onProgress, onSession);
     // 命令先解析成绝对路径：Windows 上 codex/cursor 这类 CLI 实际是 .cmd，

@@ -6,7 +6,6 @@ import android.util.Log;
 import org.json.JSONObject;
 
 import java.security.SecureRandom;
-import java.util.Arrays;
 
 import javax.crypto.Mac;
 import javax.crypto.spec.SecretKeySpec;
@@ -67,15 +66,17 @@ public final class Pairing {
         String url = p.getString(K_URL, "");
         String token = p.getString(K_TOKEN, "");
         bridgeId = p.getString(K_BRIDGE, "");
-        bridge.setCloudToken(p.getString(K_CLOUD_TOKEN, ""));
+        bridge.setCloudCredentials(p.getString(K_CLOUD_SERVER, ""), p.getString(K_CLOUD_TOKEN, ""));
         if (!url.isEmpty() && token.length() == 64) bridge.setEndpoint(url, token);
     }
 
     /** 云端码得：保存 cloud 凭据（登录后、配对前调用，重启后能恢复）。 */
     public void saveCloud(String cloudToken, String server) {
-        context.getSharedPreferences(PREFS, 0).edit()
-                .putString(K_CLOUD_TOKEN, cloudToken).putString(K_CLOUD_SERVER, server).apply();
-        bridge.setCloudToken(cloudToken);
+        synchronized (bridge) {
+            context.getSharedPreferences(PREFS, 0).edit()
+                    .putString(K_CLOUD_TOKEN, cloudToken).putString(K_CLOUD_SERVER, server).apply();
+            bridge.setCloudCredentials(server, cloudToken);
+        }
     }
 
     public String cloudServer() {
@@ -109,12 +110,14 @@ public final class Pairing {
     }
 
     public void forget() {
-        context.getSharedPreferences(PREFS, 0).edit()
-                .remove(K_URL).remove(K_TOKEN).remove(K_BRIDGE)
-                .remove(K_CLOUD_TOKEN).remove(K_CLOUD_SERVER).apply();
-        bridge.setEndpoint("", "");
-        bridge.setCloudToken("");
-        bridgeId = "";
+        synchronized (bridge) {
+            context.getSharedPreferences(PREFS, 0).edit()
+                    .remove(K_URL).remove(K_TOKEN).remove(K_BRIDGE)
+                    .remove(K_CLOUD_TOKEN).remove(K_CLOUD_SERVER).apply();
+            bridge.setEndpoint("", "");
+            bridge.setCloudCredentials("", "");
+            bridgeId = "";
+        }
     }
 
     private void persist(String url, String token, String bridgeIdIn) {
@@ -243,14 +246,18 @@ public final class Pairing {
             random.nextBytes(challengeBytes);
             String challenge = hex(challengeBytes);
             Bridge.Resp r = bridge.exchangeNoAuth(
-                    "/pair/verify?deviceId=" + deviceId + "&nonce=" + challenge,
+                    bridge.baseUrl() + "/pair/verify?deviceId=" + deviceId + "&nonce=" + challenge,
                     "GET", null, null);
             if (r.code == 404) return false; // 桥接器已解除配对
             if (r.code != 200) return bridge.isPaired(); // 暂时不可用，保留凭据
             JSONObject o = new JSONObject(r.body);
             String bid = o.optString("bridgeId");
             String mac = o.optString("mac");
-            String authority = authority(bridge.baseUrl());
+            String authority = o.optString("authority");
+            // Cloud's authenticated proxy rewrites Host to the sandbox endpoint.
+            boolean cloudProxy = !bridge.cloudTokenFor(bridge.baseUrl()).isEmpty()
+                    && new java.net.URI(bridge.baseUrl()).getPath().contains("/bridge/");
+            if (authority.isEmpty() || (!cloudProxy && !authority.equals(EndpointScope.authority(bridge.baseUrl())))) return false;
             if (!bid.equals(bridgeId)) return false;
             String signed = MANUAL_SALT + "\n" + deviceId + "\n" + challenge + "\n" + bid + "\n" + authority;
             Mac hmac = Mac.getInstance("HmacSHA256");
@@ -258,21 +265,11 @@ public final class Pairing {
             hmac.init(new SecretKeySpec(key, "HmacSHA256"));
             byte[] expected = hmac.doFinal(signed.getBytes(java.nio.charset.StandardCharsets.UTF_8));
             byte[] received = hexToBytes(mac);
-            return expected.length == received.length && Arrays.equals(expected, received);
+            return expected.length == received.length && java.security.MessageDigest.isEqual(expected, received);
         } catch (Exception e) {
             Log.w(TAG, "verify", e);
-            return true; // 网络异常按乐观处理，由后续请求自然暴露
+            return false; // 传输异常已作为 code 0 在上面保留；损坏的签名/应答不能通过校验
         }
-    }
-
-    /** 与固件 authority_for_url 一致：小写 host:port，缺省端口去除。 */
-    private static String authority(String url) {
-        int s = url.indexOf("://");
-        if (s < 0) return "";
-        String a = url.substring(s + 3).toLowerCase(java.util.Locale.ROOT);
-        if (a.endsWith(":80") && !url.startsWith("https")) a = a.substring(0, a.length() - 3);
-        if (a.endsWith(":443") && url.startsWith("https")) a = a.substring(0, a.length() - 4);
-        return a;
     }
 
     private static byte[] hexToBytes(String hex) {

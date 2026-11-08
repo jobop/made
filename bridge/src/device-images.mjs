@@ -34,8 +34,51 @@ function safeName(value) {
     .replace(/^\.+/, '_').slice(0, 80) || 'image';
 }
 
-function uploadsDir(sessionDir) {
-  return path.join(sessionDir, 'uploads');
+function uploadsDir(sessionDir, create = false) {
+  // 会话根与 uploads 都必须是真目录；助手能在回合间改写它们。
+  if (fs.lstatSync(sessionDir).isSymbolicLink()) throw new Error('图片目录不能是符号链接');
+  const session = fs.realpathSync(sessionDir);
+  const dir = path.join(session, 'uploads');
+  if (create && !fs.existsSync(dir)) fs.mkdirSync(dir, { mode: 0o700 });
+  const stat = fs.lstatSync(dir);
+  if (!stat.isDirectory() || stat.isSymbolicLink() || path.dirname(fs.realpathSync(dir)) !== session) {
+    throw new Error('图片目录不能是符号链接或指向会话外部');
+  }
+  return dir;
+}
+
+function regularFile(file, maxBytes) {
+  const stat = fs.lstatSync(file);
+  if (!stat.isFile() || stat.isSymbolicLink() || stat.size > maxBytes) throw new Error('图片文件无效');
+  return stat;
+}
+
+function readRegular(file, maxBytes) {
+  regularFile(file, maxBytes);
+  const fd = fs.openSync(file, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW || 0));
+  try {
+    const stat = fs.fstatSync(fd);
+    if (!stat.isFile() || stat.size > maxBytes) throw new Error('图片文件无效');
+    // 有界读取，即使文件在检查后增长也不会无限分配内存。
+    const bytes = Buffer.alloc(stat.size);
+    let offset = 0;
+    while (offset < bytes.length) {
+      const n = fs.readSync(fd, bytes, offset, bytes.length - offset, offset);
+      if (!n) break;
+      offset += n;
+    }
+    return bytes.subarray(0, offset);
+  } finally { fs.closeSync(fd); }
+}
+
+function storedImage(sessionDir, id) {
+  const dir = uploadsDir(sessionDir);
+  const meta = JSON.parse(readRegular(path.join(dir, `${id}.json`), 16 * 1024).toString('utf8'));
+  const format = formatFor(meta?.mime);
+  if (!format) throw new Error('图片数据损坏');
+  const file = path.join(dir, `${id}.${format.ext}`);
+  const stat = regularFile(file, MAX_IMAGE_BYTES);
+  return { meta, format, file, stat };
 }
 
 function formatFor(mime) {
@@ -53,8 +96,7 @@ export function saveImage(sessionDir, sessionId, bytes, name) {
   // 只认文件头，不信客户端声明的 Content-Type，避免把脚本当图片落盘。
   const format = FORMATS.find((f) => f.match(bytes));
   if (!format) throw new Error('只支持 JPG / PNG / WebP 图片');
-  const dir = uploadsDir(sessionDir);
-  fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+  const dir = uploadsDir(sessionDir, true);
   const stored = fs.readdirSync(dir).filter((f) => f.endsWith('.json') &&
     IMAGE_ID_RE.test(f.slice(0, -5)));
   if (stored.length >= MAX_FILES_PER_SESSION) throw new Error('本会话图片过多，请新建会话');
@@ -66,24 +108,18 @@ export function saveImage(sessionDir, sessionId, bytes, name) {
     size: bytes.length,
     createdAt: new Date().toISOString(),
   };
-  fs.writeFileSync(path.join(dir, `${id}.${format.ext}`), bytes, { mode: 0o600 });
-  fs.writeFileSync(path.join(dir, `${id}.json`), JSON.stringify(meta), { mode: 0o600 });
+  fs.writeFileSync(path.join(dir, `${id}.${format.ext}`), bytes, { mode: 0o600, flag: 'wx' });
+  fs.writeFileSync(path.join(dir, `${id}.json`), JSON.stringify(meta), { mode: 0o600, flag: 'wx' });
   return { ...meta, url: imageUrl(sessionId, id), file: `uploads/${id}.${format.ext}` };
 }
 
 /** 读回图片供 APP 回显。id 先过白名单正则，杜绝路径穿越。 */
 export function readImage(sessionDir, id) {
   if (!IMAGE_ID_RE.test(String(id || ''))) return null;
-  const dir = uploadsDir(sessionDir);
-  const metaFile = path.join(dir, `${id}.json`);
-  if (!fs.existsSync(metaFile)) return null;
-  let meta;
-  try { meta = JSON.parse(fs.readFileSync(metaFile, 'utf8')); } catch { return null; }
-  const format = formatFor(meta?.mime);
-  if (!format) return null;
-  const file = path.join(dir, `${id}.${format.ext}`);
-  if (!fs.existsSync(file)) return null;
-  return { bytes: fs.readFileSync(file), mime: format.mime, meta };
+  try {
+    const { meta, format, file } = storedImage(sessionDir, id);
+    return { bytes: readRegular(file, MAX_IMAGE_BYTES), mime: format.mime, meta };
+  } catch { return null; }
 }
 
 /** 提交任务时把客户端给的 id 换成已落盘的真实文件信息；跨会话 id 一律不认。 */
@@ -95,15 +131,9 @@ export function resolveTaskImages(sessionDir, sessionId, ids) {
   for (const raw of ids) {
     const id = String(raw || '');
     if (!IMAGE_ID_RE.test(id)) throw new Error('图片编号无效');
-    const dir = uploadsDir(sessionDir);
-    const metaFile = path.join(dir, `${id}.json`);
-    if (!fs.existsSync(metaFile)) throw new Error('图片不存在或已清理');
-    let meta;
-    try { meta = JSON.parse(fs.readFileSync(metaFile, 'utf8')); } catch { throw new Error('图片数据损坏'); }
-    const format = formatFor(meta?.mime);
-    if (!format || !fs.existsSync(path.join(dir, `${id}.${format.ext}`))) {
-      throw new Error('图片不存在或已清理');
-    }
+    let meta, format;
+    try { ({ meta, format } = storedImage(sessionDir, id)); }
+    catch { throw new Error('图片不存在或已清理'); }
     out.push({
       id,
       name: String(meta.name || 'image').slice(0, 80),
@@ -133,17 +163,14 @@ export function sanitizeInputImages(value) {
 export function absolutizeInputImages(sessionDir, images) {
   const list = sanitizeInputImages(images).filter((a) => a.file);
   if (!list.length || !sessionDir) return undefined;
-  const root = uploadsDir(sessionDir);
   const out = [];
   for (const item of list) {
-    const abs = path.resolve(sessionDir, item.file);
-    if (!abs.startsWith(path.resolve(root) + path.sep)) continue;
-    const ext = path.extname(abs).toLowerCase();
-    const mime = ext === '.png' ? 'image/png'
-      : ext === '.webp' ? 'image/webp'
-      : ext === '.jpg' || ext === '.jpeg' ? 'image/jpeg' : '';
-    if (!mime || !fs.existsSync(abs)) continue;
-    out.push({ ...item, file: abs, mime, bytes: fs.statSync(abs).size });
+    try {
+      const { format, stat } = storedImage(sessionDir, item.id);
+      // 只接受该编号的规范路径，不接受嵌套目录、其他编号或替换后的文件。
+      if (item.file !== `uploads/${item.id}.${format.ext}`) continue;
+      out.push({ ...item, file: path.resolve(sessionDir, item.file), mime: format.mime, bytes: stat.size });
+    } catch { /* 已删除、目录/文件被换成链接：不交给助手 */ }
   }
   return out.length ? out : undefined;
 }

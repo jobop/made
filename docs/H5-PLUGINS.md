@@ -72,3 +72,7 @@ tetris-h5/
 1. `made/bridge/src/h5-apps.mjs` 的 `H5_CAPABILITIES` + server.mjs 的 `/h5api/*` 路由实现；
 2. `made-market/made-market/cli/lib/market.mjs` 的 `H5_CAPABILITIES`；
 3. 本文档的能力表。
+
+### Android 缓存隔离
+
+应用列表、静态资源与版本文件共用按桥接器完整 base URL（包括云端 `/bridge/<userId>` 路径）和设备配对凭据计算的 SHA-256 命名空间。不同桥接器、云账号或重新配对后的凭据不共享缓存；旧版未分区的缓存不迁移，首次在线打开后重新建立。资源拦截仅处理当前插件 URL 前缀下的 GET 请求，不能只凭路径中包含插件 ID 命中其他来源。

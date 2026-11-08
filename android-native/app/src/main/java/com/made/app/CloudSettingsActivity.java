@@ -379,6 +379,7 @@ public final class CloudSettingsActivity extends Activity {
         HttpURLConnection conn = null;
         try {
             conn = (HttpURLConnection) new URL(base + path).openConnection();
+            conn.setInstanceFollowRedirects(false);
             conn.setConnectTimeout(10000);
             conn.setReadTimeout(20000);
             conn.setRequestMethod(method);

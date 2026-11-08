@@ -54,19 +54,40 @@ public final class Bridge {
 
     private volatile String baseUrl = "";
     private volatile String token = "";
-    // 云端码得：cloud 颁发的 JWT，所有请求额外携带（与桥接器自身的 Bearer 互不干扰）
-    private volatile String cloudToken = "";
+    // 云端码得：cloud 颁发的 JWT，只向凭据所属云端发送（与桥接器自身的 Bearer 互不干扰）
+    private static final class CloudSession {
+        final String server, token;
+        CloudSession(String server, String token) { this.server = server; this.token = token; }
+    }
+    private volatile CloudSession cloud = new CloudSession("", "");
 
     public String baseUrl() { return baseUrl; }
     public String token() { return token; }
 
-    public void setCloudToken(String t) { cloudToken = t == null ? "" : t; }
-    public String cloudToken() { return cloudToken; }
+    public synchronized void setCloudCredentials(String server, String token) {
+        cloud = new CloudSession(server == null ? "" : server, token == null ? "" : token);
+    }
+    public String cloudToken() { return cloud.token; }
+    public String cloudTokenFor(String url) {
+        CloudSession session = cloud;
+        return EndpointScope.belongsTo(url, session.server) ? session.token : "";
+    }
+
+    public synchronized boolean renewCloudToken(String server, String expectedToken, String renewed) {
+        CloudSession session = cloud;
+        if (!session.server.equals(server) || !session.token.equals(expectedToken)
+                || renewed == null || renewed.isEmpty() || session.token.isEmpty()) return false;
+        if (session.token.equals(renewed)) return true;
+        cloud = new CloudSession(session.server, renewed);
+        CloudTokenListener listener = cloudTokenListener;
+        if (listener != null) listener.onCloudTokenRenewed(renewed);
+        return true;
+    }
 
     /** cloud JWT 的过期时刻（ms）；解析失败返回 0。App 用它判断临期主动刷新。 */
     public long cloudTokenExpiresAtMs() {
         try {
-            String[] parts = cloudToken.split("\\.");
+            String[] parts = cloud.token.split("\\.");
             if (parts.length != 3) return 0;
             byte[] json = android.util.Base64.decode(parts[1],
                     android.util.Base64.URL_SAFE | android.util.Base64.NO_WRAP | android.util.Base64.NO_PADDING);
@@ -127,7 +148,11 @@ public final class Bridge {
                                long timeoutMs, boolean withAuth) {
         HttpURLConnection conn = null;
         try {
+            final CloudSession requestCloud = cloud;
+            final String sentCloudToken = EndpointScope.belongsTo(url, requestCloud.server) ? requestCloud.token : "";
             conn = (HttpURLConnection) new URL(url).openConnection();
+            // Never forward either credential to a redirect target.
+            conn.setInstanceFollowRedirects(false);
             if (url.startsWith("https://")) {
                 // 局域网桥接器可能是「证书有效但主机名对不上」（按 IP 访问）的情况，
                 // 只对私有网段放行主机名校验；公网/云端域名一律走系统校验，防中间人。
@@ -140,7 +165,7 @@ public final class Bridge {
             conn.setReadTimeout((int) timeoutMs);
             conn.setRequestMethod(method);
             conn.setRequestProperty("ngrok-skip-browser-warning", "1");
-            if (!cloudToken.isEmpty()) conn.setRequestProperty("x-made-cloud-token", cloudToken);
+            if (!sentCloudToken.isEmpty()) conn.setRequestProperty("x-made-cloud-token", sentCloudToken);
             if (withAuth) conn.setRequestProperty("Authorization", "Bearer " + token);
             boolean hasBody = body != null && body.length > 0;
             if (hasBody) {
@@ -167,11 +192,11 @@ public final class Bridge {
                     }
                 }
             }
-            if (renewed != null && !renewed.isEmpty() && !renewed.equals(cloudToken)) {
-                cloudToken = renewed;
-                CloudTokenListener l = cloudTokenListener;
-                if (l != null) l.onCloudTokenRenewed(renewed);
-                Log.i(TAG, "cloud token renewed via response header");
+            if (r.ok() && !sentCloudToken.isEmpty()) {
+                synchronized (this) {
+                    // Ignore responses from requests started before logout/account switching.
+                    if (cloud == requestCloud) renewCloudToken(requestCloud.server, sentCloudToken, renewed);
+                }
             }
             InputStream in = r.code >= 400 ? conn.getErrorStream() : conn.getInputStream();
             // 文本接口读 body；二进制接口（素材）从 headers/content 里自己取。

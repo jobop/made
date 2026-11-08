@@ -18,12 +18,18 @@ export interface Capabilities {
   cancel: boolean;
   progress: boolean;
 }
+/** Execution-only images: bridge-validated session files, never client-provided absolute paths. */
+export interface InputImage {
+  id: string; name: string; url: string; file: string;
+  mime: 'image/png' | 'image/jpeg' | 'image/webp'; bytes: number;
+}
 export interface Job {
   id: string;
   provider: string;
   instruction: string;
   vibeSessionId: string;
   sessionId?: string;
+  inputImages?: InputImage[];
   [key: string]: unknown;
 }
 export interface Project { id: string; label: string; path: string }
@@ -36,7 +42,7 @@ export interface CliEventStream {
 export interface CliAdapter {
   label: string;
   createEvents: (onProgress?: (text: string) => void, onSession?: (sessionId: string) => void) => CliEventStream;
-  command: (options: { cwd: string; instruction: string; config: PluginConfig; model?: string; sessionId?: string }) => {
+  command: (options: { cwd: string; instruction: string; inputImages?: InputImage[]; config: PluginConfig; model?: string; sessionId?: string }) => {
     command: string; args: string[]; stdin?: string;
   };
   classifyExit?: (context: {

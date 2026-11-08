@@ -288,6 +288,7 @@ public final class MarketActivity extends Activity {
         HttpURLConnection conn = null;
         try {
             conn = (HttpURLConnection) new URL(base + path).openConnection();
+            conn.setInstanceFollowRedirects(false);
             conn.setConnectTimeout(10000);
             // 安装含下载归档（最大几百 KB），读超时放宽到 60s
             conn.setReadTimeout(60000);

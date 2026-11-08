@@ -293,7 +293,7 @@ public class MainActivity extends Activity {
     private List<String> h5Recents() {
         List<String> out = new ArrayList<>();
         for (String id : getSharedPreferences("made-ui", MODE_PRIVATE)
-                .getString("h5_recents", "").split(",")) {
+                .getString("h5_recents_" + EndpointScope.cacheKey(bridge.baseUrl(), bridge.token()), "").split(",")) {
             if (!id.isEmpty() && !out.contains(id)) out.add(id);
         }
         return out;
@@ -306,7 +306,7 @@ public class MainActivity extends Activity {
         recents.add(0, id);
         while (recents.size() > 8) recents.remove(recents.size() - 1);
         getSharedPreferences("made-ui", MODE_PRIVATE).edit()
-                .putString("h5_recents", String.join(",", recents)).apply();
+                .putString("h5_recents_" + EndpointScope.cacheKey(bridge.baseUrl(), bridge.token()), String.join(",", recents)).apply();
     }
 
     /** 打开面板（从屏顶滑入），每次都重新拉 /api/installed 里的 h5apps。 */
@@ -347,8 +347,12 @@ public class MainActivity extends Activity {
         if (h5Loading) return;
         h5Loading = true;
         h5Status.setText("加载中…");
+        final java.io.File cacheFile = h5InstalledCacheFile();
+        final Bridge requestBridge = new Bridge();
+        requestBridge.setEndpoint(bridge.baseUrl(), bridge.token());
+        requestBridge.setCloudCredentials(pairing.cloudServer(), bridge.cloudToken());
         new Thread(() -> {
-            Bridge.Resp r = bridge.get("/api/installed");
+            Bridge.Resp r = requestBridge.get("/api/installed");
             List<JSONObject> apps = new ArrayList<>();
             String error = r.ok() ? "" : r.errorText();
             if (r.ok()) {
@@ -360,7 +364,7 @@ public class MainActivity extends Activity {
                     }
                     // 成功拉到就留档：云端离线（沙箱回收）时 /api/installed 会撞 409，
                     // 下次直接用这份档渲染面板，缓存过的小游戏照样能点开玩
-                    writeH5InstalledCache(arr);
+                    writeH5InstalledCache(cacheFile, arr);
                 } catch (Exception e) {
                     error = "数据解析失败";
                 }
@@ -368,7 +372,7 @@ public class MainActivity extends Activity {
             boolean fromCache = false;
             if (!r.ok()) {
                 // 拉取失败 → 回退本地档（离线/断网/沙箱回收都能进面板）
-                JSONArray arr = readH5InstalledCache();
+                JSONArray arr = readH5InstalledCache(cacheFile);
                 if (arr != null) {
                     for (int i = 0; i < arr.length(); i++) {
                         JSONObject a = arr.optJSONObject(i);
@@ -385,6 +389,8 @@ public class MainActivity extends Activity {
             final boolean cached = fromCache;
             runOnUiThread(() -> {
                 h5Loading = false;
+                if (!requestBridge.baseUrl().equals(bridge.baseUrl())
+                        || !requestBridge.token().equals(bridge.token())) return;
                 h5AppsCache = result;
                 renderH5Apps(err, result);
                 if (cached && !result.isEmpty()) {
@@ -397,12 +403,11 @@ public class MainActivity extends Activity {
 
     /** /api/installed 的本地留档（h5apps 数组），供离线时渲染面板。 */
     private java.io.File h5InstalledCacheFile() {
-        return new java.io.File(getFilesDir(), "h5cache/installed.json");
+        return new java.io.File(getFilesDir(), "h5cache/" + EndpointScope.cacheKey(bridge.baseUrl(), bridge.token()) + "/installed.json");
     }
 
-    private void writeH5InstalledCache(JSONArray arr) {
+    private void writeH5InstalledCache(java.io.File f, JSONArray arr) {
         try {
-            java.io.File f = h5InstalledCacheFile();
             f.getParentFile().mkdirs();
             try (java.io.FileOutputStream out = new java.io.FileOutputStream(f)) {
                 out.write(arr.toString().getBytes(java.nio.charset.StandardCharsets.UTF_8));
@@ -410,9 +415,9 @@ public class MainActivity extends Activity {
         } catch (Exception ignored) { }
     }
 
-    private JSONArray readH5InstalledCache() {
+    private JSONArray readH5InstalledCache(java.io.File f) {
         try {
-            String s = Model.readSmallFile(h5InstalledCacheFile());
+            String s = Model.readSmallFile(f);
             return s == null ? null : new JSONArray(s);
         } catch (Exception e) {
             return null;
@@ -454,7 +459,7 @@ public class MainActivity extends Activity {
                 android.content.Intent it = new android.content.Intent(this, MarketActivity.class);
                 it.putExtra("base", bridge.baseUrl());
                 it.putExtra("token", bridge.token());
-                it.putExtra("cloudToken", bridge.cloudToken());
+                it.putExtra("cloudToken", bridge.cloudTokenFor(bridge.baseUrl()));
                 startActivity(it);
             });
             LinearLayout.LayoutParams goLp = lp(dp(190), -2);
@@ -547,7 +552,7 @@ public class MainActivity extends Activity {
             android.content.Intent it = new android.content.Intent(this, H5Activity.class);
             it.putExtra("base", bridge.baseUrl());
             it.putExtra("token", bridge.token());
-            it.putExtra("cloudToken", bridge.cloudToken());
+            it.putExtra("cloudToken", bridge.cloudTokenFor(bridge.baseUrl()));
             it.putExtra("dir", id);
             it.putExtra("name", name);
             startActivity(it);
@@ -1263,6 +1268,7 @@ public class MainActivity extends Activity {
     // ================= 页面切换 =================
 
     private void showConnect(String message) {
+        h5AppsCache = new ArrayList<>();
         poller.stop();
         scanner.cancel();
         connectScreen.setVisibility(View.VISIBLE);
@@ -1477,7 +1483,6 @@ public class MainActivity extends Activity {
                 }
                 // 2. 只保存凭据并进入「云端智能体」卡；沙箱不随登录自动拉起，
                 //    由用户在卡片里点「生成云端智能体」才创建（计费闸口在 cloud 侧）
-                bridge.setCloudToken(cloudToken);
                 pairing.saveCloud(cloudToken, serverUrl);
                 ui.post(() -> {
                     cloudMsg.setText("");
@@ -2152,7 +2157,7 @@ public class MainActivity extends Activity {
         android.content.Intent it = new android.content.Intent(this, MarketActivity.class);
         it.putExtra("base", bridge.baseUrl());
         it.putExtra("token", bridge.token());
-        it.putExtra("cloudToken", bridge.cloudToken());
+        it.putExtra("cloudToken", bridge.cloudTokenFor(bridge.baseUrl()));
         startActivity(it);
     }
 
@@ -2161,7 +2166,7 @@ public class MainActivity extends Activity {
         android.content.Intent it = new android.content.Intent(this, CloudSettingsActivity.class);
         it.putExtra("base", bridge.baseUrl());
         it.putExtra("token", bridge.token());
-        it.putExtra("cloudToken", bridge.cloudToken());
+        it.putExtra("cloudToken", bridge.cloudTokenFor(bridge.baseUrl()));
         it.putExtra("title", "插件设置");
         startActivity(it);
     }
@@ -2171,7 +2176,7 @@ public class MainActivity extends Activity {
         android.content.Intent it = new android.content.Intent(this, CloudSettingsActivity.class);
         it.putExtra("base", bridge.baseUrl());
         it.putExtra("token", bridge.token());
-        it.putExtra("cloudToken", bridge.cloudToken());
+        it.putExtra("cloudToken", bridge.cloudTokenFor(bridge.baseUrl()));
         startActivity(it);
     }
 
@@ -2289,6 +2294,7 @@ public class MainActivity extends Activity {
         long expiresAt = bridge.cloudTokenExpiresAtMs();
         if (expiresAt <= 0) return;
         if (expiresAt - System.currentTimeMillis() > 2 * 24 * 3600_000L) return;
+        final String expectedToken = bridge.cloudToken();
         cloudRefreshing = true;
         new Thread(() -> {
             try {
@@ -2298,8 +2304,7 @@ public class MainActivity extends Activity {
                 String fresh = r.ok()
                         ? new org.json.JSONObject(r.body).optString("token") : "";
                 if (!fresh.isEmpty()) {
-                    bridge.setCloudToken(fresh); // listener 未注册时（极端时序）也保证落盘
-                    pairing.saveCloud(fresh, server);
+                    bridge.renewCloudToken(server, expectedToken, fresh);
                     Log.i(TAG, "cloud token renewed proactively");
                 } else {
                     Log.w(TAG, "cloud token refresh failed code=" + r.code);

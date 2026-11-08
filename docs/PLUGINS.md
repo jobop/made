@@ -250,3 +250,9 @@ python3 bridge/tools/convert-agent-icon.py avatar.png my-icon.json
 运行 `npm test`。测试使用临时目录和模拟执行器，不提交真实编程任务、不调用收费语音服务。新增插件至少验证：可用性、同任务恢复上下文、模型选择、进度、真实取消、重启恢复。语音客户端验证三项配置保存、密钥脱敏、取消、错误和 WAV 上传。
 
 开发接口为 v1；不兼容扩展应提升 apiVersion，避免旧固件/桥接器误解能力。当前加载器遇到版本、重复 ID 或接口错误会明确拒绝启动。
+
+### 输入图片与 CLI 适配器
+
+桥接器执行副本的 `job.inputImages` 是已校验的会话图片列表，字段为 `id/name/url/file/mime/bytes`；`file` 为绝对路径。持久化任务仍保存相对路径，插件不要自行猜测目录或复用其他会话的图片。图片目录、元数据和图片文件不能是符号链接。
+
+`config.runtime.runCli(context, adapter)` 将同一列表传给 `adapter.command({ cwd, instruction, inputImages, config, model, sessionId })`。适配器支持原生图片参数时，应将每张图片映射到 CLI 的附件参数；老适配器只消费 `instruction` 时，桥接器也会附上 JSON 引用的绝对文件路径，要求 CLI 通过看图工具读取。仅告诉模型“图片已附上”不足以交付附件。至少用两个不同会话/图片验证首次执行与续聊，并验证纯文本任务不新增图片参数。

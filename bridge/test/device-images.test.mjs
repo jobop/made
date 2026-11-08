@@ -288,3 +288,65 @@ test('上传后被清理的图片不会让执行指令声称已附上图片', as
   assert.equal(received.instruction, '检查图片');
   assert.equal(job.inputImages.length, 1, '原任务记录仍保留附件信息');
 });
+
+test('图片读写和执行拒绝会话根、uploads、元数据及图片的符号链接', (t) => {
+  const root = tmpDir();
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  for (const [index, bytes] of [PNG, JPEG].entries()) {
+    const session = path.join(root, `session-${index}`), other = path.join(root, `other-${index}`);
+    fs.mkdirSync(session); fs.mkdirSync(other);
+    const foreign = saveImage(other, SESSION_ID, bytes, 'foreign');
+    fs.symlinkSync(path.join(other, 'uploads'), path.join(session, 'uploads'), 'dir');
+    assert.throws(() => saveImage(session, SESSION_ID, bytes, 'escape'), /符号链接/);
+    assert.equal(readImage(session, foreign.id), null);
+    assert.throws(() => resolveTaskImages(session, SESSION_ID, [foreign.id]), /不存在/);
+    assert.equal(absolutizeInputImages(session, [foreign]), undefined);
+    fs.unlinkSync(path.join(session, 'uploads'));
+    const saved = saveImage(session, SESSION_ID, bytes, 'own');
+    const file = path.join(session, saved.file);
+    fs.unlinkSync(file);
+    fs.symlinkSync(path.join(other, foreign.file), file);
+    assert.equal(readImage(session, saved.id), null);
+    assert.throws(() => resolveTaskImages(session, SESSION_ID, [saved.id]), /不存在/);
+    assert.equal(absolutizeInputImages(session, [saved]), undefined);
+    fs.unlinkSync(file); fs.writeFileSync(file, bytes);
+    const meta = path.join(session, 'uploads', `${saved.id}.json`);
+    fs.unlinkSync(meta); fs.symlinkSync(path.join(other, 'uploads', `${foreign.id}.json`), meta);
+    assert.equal(readImage(session, saved.id), null);
+    assert.equal(absolutizeInputImages(session, [saved]), undefined);
+    const linkedSession = path.join(root, `linked-${index}`);
+    fs.symlinkSync(other, linkedSession, 'dir');
+    assert.throws(() => saveImage(linkedSession, SESSION_ID, bytes, 'escape'), /符号链接/);
+    assert.equal(readImage(linkedSession, foreign.id), null);
+    assert.equal(absolutizeInputImages(linkedSession, [foreign]), undefined);
+  }
+});
+
+test('CLI 图片同时传到适配器及实际子进程，纯文字不添加附件提示', async (t) => {
+  const { runCli } = await import('../src/agents/shared.mjs');
+  const { spawnSync } = await import('node:child_process');
+  const root = tmpDir();
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  for (const index of [0, 1]) {
+    const dir = path.join(root, `workspace-${index}`);
+    fs.mkdirSync(dir);
+    assert.equal(spawnSync('git', ['init', '-q', dir]).status, 0);
+    const saved = saveImage(dir, SESSION_ID, index ? JPEG : PNG, `photo-${index}`);
+    const images = absolutizeInputImages(dir, [saved]);
+    for (const inputImages of [images, undefined]) {
+      let supplied;
+      const outcome = await runCli({ job: { instruction: 'inspect', inputImages, sessionId: index ? 'thread-two' : undefined },
+        project: { path: dir }, config: {}, signal: new AbortController().signal }, {
+        label: 'fixture',
+        command(options) {
+          supplied = options;
+          return { command: process.execPath, args: ['-e', 'process.stdin.pipe(process.stdout)'], stdin: options.instruction };
+        },
+        createEvents() { let result = ''; return { write: text => { result += text; }, finish: () => ({ result }) }; },
+      });
+      assert.deepEqual(supplied.inputImages, inputImages);
+      assert.equal(outcome.result.includes('[Attached image files]'), Boolean(inputImages));
+      if (inputImages) assert.ok(outcome.result.includes(JSON.stringify(images[0].file)));
+    }
+  }
+});
