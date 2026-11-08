@@ -2267,11 +2267,16 @@ public class MainActivity extends Activity {
                 .show();
     }
 
+    /** ensureSessionBlocking 最近一次失败的真实原因（401 过期/409 下线/402 额度/网络），给 Toast 用。 */
+    private volatile String lastSessionError = "";
+
     /**
      * 阻塞确保当前有会话：有现成的直接返回 {id, projectId}；没有就自动新建。
      * 返回 null = 新建失败（网络/桥接器不可达）。必须在后台线程调用。
+     * 失败原因写 lastSessionError，调用方必须展示它而不是笼统的「网络波动」。
      */
     private JSONObject ensureSessionBlocking() {
+        lastSessionError = "";
         Model.Session cur = model.session();
         if (cur != null) {
             try {
@@ -2282,11 +2287,21 @@ public class MainActivity extends Activity {
             } catch (Exception ignored) { }
         }
         Model.Provider p = model.provider();
-        if (p == null) return null;
+        if (p == null) {
+            lastSessionError = "还没选择助手";
+            return null;
+        }
         String project = model.defaultProject;
         Bridge.Resp r = bridge.postJson("/device/sessions?provider=" + p.id
                 + (project.isEmpty() ? "" : "&projectId=" + project), "{}");
-        if (!r.ok()) return null;
+        if (!r.ok()) {
+            // 云端 JWT 默认 7 天过期（服务端 401 静默、无日志），必须明说，
+            // 否则用户只看到「检查网络」这种错误引导（2026-11-08 实测）。
+            lastSessionError = r.code == 401
+                    ? "云端登录已过期，请退出账号重新登录"
+                    : r.errorText();
+            return null;
+        }
         try {
             JSONObject o = new JSONObject(r.body);
             String id = o.optString("id");
@@ -2306,7 +2321,9 @@ public class MainActivity extends Activity {
         new Thread(() -> {
             JSONObject o = ensureSessionBlocking();
             ui.post(() -> Toast.makeText(this,
-                    o != null ? "已新建会话" : "新建失败：电脑连接失败，请检查网络后重试",
+                    o != null ? "已新建会话"
+                            : "新建失败：" + (lastSessionError.isEmpty()
+                                    ? "电脑连接失败，请检查网络后重试" : lastSessionError),
                     Toast.LENGTH_SHORT).show());
         }, "made-new-session").start();
     }
@@ -2341,9 +2358,10 @@ public class MainActivity extends Activity {
             // 没有会话就自动新建（弱网下沙箱刚拉起时会话列表为空，不能把用户挡在门外）
             JSONObject sess = ensureSessionBlocking();
             if (sess == null) {
+                final String why = lastSessionError.isEmpty() ? "请检查网络后重试" : lastSessionError;
                 ui.post(() -> {
                     restore.run();
-                    Toast.makeText(this, "发送失败：会话未就绪，请检查网络后重试",
+                    Toast.makeText(this, "发送失败：" + why,
                             Toast.LENGTH_LONG).show();
                 });
                 return;
@@ -2596,8 +2614,9 @@ public class MainActivity extends Activity {
             // 自动新建会话再上传；失败明确提示。
             JSONObject sess = ensureSessionBlocking();
             if (sess == null) {
-                ui.post(() -> Toast.makeText(this,
-                        "会话未就绪（网络波动），请再试一次",
+                final String why = lastSessionError.isEmpty()
+                        ? "会话未就绪（网络波动），请再试一次" : lastSessionError;
+                ui.post(() -> Toast.makeText(this, why,
                         Toast.LENGTH_LONG).show());
                 return;
             }
