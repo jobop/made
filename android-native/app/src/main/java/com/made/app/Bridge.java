@@ -23,6 +23,15 @@ import javax.net.ssl.HttpsURLConnection;
 public final class Bridge {
     private static final String TAG = "made.bridge";
 
+    /** 云端滑续：响应头捎带新 cloud JWT 时回调（实现方负责落盘）。任意线程。 */
+    public interface CloudTokenListener {
+        void onCloudTokenRenewed(String token);
+    }
+
+    private volatile CloudTokenListener cloudTokenListener;
+
+    public void setCloudTokenListener(CloudTokenListener l) { cloudTokenListener = l; }
+
     /** 单次 HTTP 交互结果。 */
     public static final class Resp {
         public int code;
@@ -53,6 +62,19 @@ public final class Bridge {
 
     public void setCloudToken(String t) { cloudToken = t == null ? "" : t; }
     public String cloudToken() { return cloudToken; }
+
+    /** cloud JWT 的过期时刻（ms）；解析失败返回 0。App 用它判断临期主动刷新。 */
+    public long cloudTokenExpiresAtMs() {
+        try {
+            String[] parts = cloudToken.split("\\.");
+            if (parts.length != 3) return 0;
+            byte[] json = android.util.Base64.decode(parts[1],
+                    android.util.Base64.URL_SAFE | android.util.Base64.NO_WRAP | android.util.Base64.NO_PADDING);
+            return new org.json.JSONObject(new String(json, StandardCharsets.UTF_8)).optLong("exp", 0) * 1000L;
+        } catch (Exception ignored) {
+            return 0;
+        }
+    }
 
     public void setEndpoint(String url, String token) {
         while (url.endsWith("/")) url = url.substring(0, url.length() - 1);
@@ -132,6 +154,25 @@ public final class Bridge {
             Resp r = new Resp();
             r.code = conn.getResponseCode();
             r.headers = conn.getHeaderFields();
+            // 云端滑续：服务端在令牌过半衰期时随任意响应捎带新 JWT，捕获并通知落盘。
+            // 没有这套机制，7 天 TTL 一到所有用户同时静默 401（2026-11-08 实测）。
+            String renewed = null;
+            if (r.headers != null) {
+                // HttpURLConnection 头字段大小写不敏感，但 Map 键不是：稳妥扫一遍
+                for (String k : r.headers.keySet()) {
+                    if (k != null && k.equalsIgnoreCase("x-made-cloud-token")) {
+                        java.util.List<String> vals = r.headers.get(k);
+                        renewed = vals == null || vals.isEmpty() ? null : vals.get(0);
+                        break;
+                    }
+                }
+            }
+            if (renewed != null && !renewed.isEmpty() && !renewed.equals(cloudToken)) {
+                cloudToken = renewed;
+                CloudTokenListener l = cloudTokenListener;
+                if (l != null) l.onCloudTokenRenewed(renewed);
+                Log.i(TAG, "cloud token renewed via response header");
+            }
             InputStream in = r.code >= 400 ? conn.getErrorStream() : conn.getInputStream();
             // 文本接口读 body；二进制接口（素材）从 headers/content 里自己取。
             r.bytes = readAll(in);

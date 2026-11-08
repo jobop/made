@@ -156,6 +156,10 @@ public class MainActivity extends Activity {
         pairing = new Pairing(bridge, this);
         poller = new Poller(bridge, model);
         poller.setCommandSink(this::handleBoardCommand);
+        // 云端滑续：服务端随任意响应捎带新 cloud JWT，这里接到后立即落盘，
+        // 登录态永不因闲置过期（配合临期主动刷新 maybeRefreshCloudToken）。
+        bridge.setCloudTokenListener(token ->
+                pairing.saveCloud(token, pairing.cloudServer()));
         // 录音到 30s 上限或麦克风读失败时采集线程会自己退出，这里把这次手势正常收尾
         // （发送已采到的音频），否则 UI 会一直停在「录音中」。
         voice.setAutoStopListener(() -> ui.post(this::finishTalk));
@@ -1286,7 +1290,7 @@ public class MainActivity extends Activity {
         poller.loadCatalogSync(); // 先用本地目录渲染，不等第一轮网络（沙箱唤醒要几十秒）
         renderModel();
         poller.start(new Poller.Listener() {
-            @Override public void onModelUpdated() { renderModel(); }
+            @Override public void onModelUpdated() { renderModel(); maybeRefreshCloudToken(); }
             @Override public void onUnpaired() {
                 pairing.forget();
                 showConnect("连接已断开，重新连接一下");
@@ -2269,6 +2273,44 @@ public class MainActivity extends Activity {
 
     /** ensureSessionBlocking 最近一次失败的真实原因（401 过期/409 下线/402 额度/网络），给 Toast 用。 */
     private volatile String lastSessionError = "";
+
+    private volatile boolean cloudRefreshing = false;
+
+    /**
+     * 临期主动刷新：cloud JWT 剩余寿命不足 2 天时调 /v1/auth/refresh 换新。
+     * 兕底滑续（服务端随请求捎带新令牌）：用户连续多天不开 App 时，下一次
+     * 打开只要令牌还有效就能原地续命；已过期则只能重登（安全边界）。
+     * 每轮 poller 都会调，但内部是纯内存检查，不满足条件零开销。
+     */
+    private void maybeRefreshCloudToken() {
+        final String server = pairing.cloudServer();
+        if (server.isEmpty() || cloudRefreshing) return;
+        if (bridge.cloudToken().isEmpty()) return;
+        long expiresAt = bridge.cloudTokenExpiresAtMs();
+        if (expiresAt <= 0) return;
+        if (expiresAt - System.currentTimeMillis() > 2 * 24 * 3600_000L) return;
+        cloudRefreshing = true;
+        new Thread(() -> {
+            try {
+                Bridge.Resp r = bridge.exchangeNoAuth(server + "/v1/auth/refresh", "POST",
+                        "{}".getBytes(java.nio.charset.StandardCharsets.UTF_8),
+                        "application/json", 20000);
+                String fresh = r.ok()
+                        ? new org.json.JSONObject(r.body).optString("token") : "";
+                if (!fresh.isEmpty()) {
+                    bridge.setCloudToken(fresh); // listener 未注册时（极端时序）也保证落盘
+                    pairing.saveCloud(fresh, server);
+                    Log.i(TAG, "cloud token renewed proactively");
+                } else {
+                    Log.w(TAG, "cloud token refresh failed code=" + r.code);
+                }
+            } catch (Exception e) {
+                Log.w(TAG, "cloud token refresh", e);
+            } finally {
+                cloudRefreshing = false;
+            }
+        }, "made-cloud-refresh").start();
+    }
 
     /**
      * 阻塞确保当前有会话：有现成的直接返回 {id, projectId}；没有就自动新建。
