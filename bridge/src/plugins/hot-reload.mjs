@@ -243,7 +243,7 @@ export function watchPlugins(config, { onReload } = {}) {
     if (!changed && current.size !== mtimes.size) changed = true;
     mtimes.clear();
     for (const [file, ms] of current) mtimes.set(file, ms);
-    if (changed && mtimes.size) schedule();
+    if (changed) schedule();
   }
 
   snapshotMtimes();

@@ -90,7 +90,7 @@ test('ScreenshotStore 落盘、按时间取最新并只保留 20 张', () => {
   assert.equal(fs.readdirSync(dir).filter((f) => f.endsWith('.png')).length, 20);
   // 非法 deviceId 字符被清洗。
   const weird = store.save('../../evil', Buffer.from('x'));
-  assert.match(path.basename(weird), /^[0-9]+-[0-9a-f]*\.png$/);
+  assert.match(path.basename(weird), /^[0-9]+-[0-9]{12}-[0-9a-f]*\.png$/);
 });
 
 test('设备端全链路：/device/screenshot 回传 RGB565 转 PNG 落盘，/api/screenshot 触发到拿图', async (t) => {
@@ -189,3 +189,16 @@ async function freeUdpPort() {
   await new Promise((resolve) => socket.close(resolve));
   return port;
 }
+
+
+test('同毫秒跨设备连拍保留最后 20 张，mtime 相同也能取最新', (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shot-burst-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  t.mock.method(Date, 'now', () => 1800000000000);
+  const store = createScreenshotStore(dir);
+  const files = Array.from({ length: 45 }, (_, i) => store.save(i % 2 ? 'aa' : 'bb', Buffer.from(String(i))));
+  assert.deepEqual(fs.readdirSync(dir).sort(), files.slice(-20).map((f) => path.basename(f)).sort());
+  for (const file of files.slice(-20)) fs.utimesSync(file, 1, 1);
+  assert.equal(store.latest(1800000000000), files.at(-1));
+  assert.equal(store.latest(1800000000001), null);
+});

@@ -295,7 +295,8 @@ function spriteStamp(spriteDir) {
   try {
     stamp = `${fs.statSync(spriteDir).mtimeMs}`;
     for (const name of fs.readdirSync(spriteDir).sort()) {
-      stamp += `|${name}:${fs.statSync(path.join(spriteDir, name)).mtimeMs}`;
+      const stat = fs.statSync(path.join(spriteDir, name));
+      stamp += `|${name}:${stat.mtimeMs}:${stat.ctimeMs}:${stat.size}:${stat.ino}`;
     }
   } catch {
     return null;
@@ -311,11 +312,11 @@ function spriteStamp(spriteDir) {
 export function readSprite(packageDir) {
   const spriteDir = path.join(packageDir, 'sprite');
   const stamp = spriteStamp(spriteDir);
-  if (!stamp) return null; // 目录不存在：没有素材，合法。
+  if (!stamp) { cache.delete(spriteDir); return null; } // 目录不存在：没有素材，合法。
   const hit = cache.get(spriteDir);
   if (hit && hit.stamp === stamp) return hit.value;
   const raw = readManifestFile(spriteDir);
-  if (!raw) return null;
+  if (!raw) { cache.delete(spriteDir); return null; }
   const manifest = validateManifest(raw);
   // 引用完整性只做提示不做拒绝（2026-10-20 用户拍板）：目录里未被 manifest
   // 引用的 PNG/GIF 属于换绑/改形象后忘记删的旧素材，拒整包会让助手形象
@@ -389,6 +390,8 @@ export function readSprite(packageDir) {
     actions: manifest.actions, commands: manifest.commands,
     files: Object.freeze(files.map((file) => Object.freeze(file))),
   });
+  // 插件反复安装/删除不会让旧目录的缓存无限增长。
+  if (cache.size >= 128) cache.delete(cache.keys().next().value);
   cache.set(spriteDir, { stamp, value });
   return value;
 }

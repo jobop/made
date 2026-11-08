@@ -74,7 +74,7 @@ test('重复读取命中 mtime 缓存，改文件后失效重算', () => {
   assert.notEqual(second, first);
 });
 
-test('非法 manifest 与缺失素材被拒绝', () => {
+test('非法 manifest 与缺失素材被拒绝，多余 PNG 不下发', () => {
   assert.throws(() => readSprite(makePackage({ manifest: { version: 0, canvas: { w: 360, h: 360 }, layers: [{ id: 'body', file: 'body.png', x: 0, y: 0, z: 0 }] } })), /version/);
   assert.throws(() => readSprite(makePackage({ manifest: { ...validManifest(), layers: [{ id: 'body', file: 'body.png', x: 400, y: 0, z: 0 }] } })), /x\/y\/z/);
   assert.throws(() => readSprite(makePackage({ manifest: validManifest(), files: { 'body.png': PNG_1PX } })), /素材不存在/);
@@ -86,10 +86,11 @@ test('非法 manifest 与缺失素材被拒绝', () => {
       'eyes-closed.png': Buffer.alloc(200 * 1024),
     },
   })), /512 KB/);
-  assert.throws(() => readSprite(makePackage({
+  const extra = readSprite(makePackage({
     manifest: validManifest(),
     files: { 'body.png': PNG_1PX, 'eyes-open.png': PNG_1PX, 'eyes-closed.png': PNG_1PX, 'evil.png': PNG_1PX },
-  })), /未被 manifest 引用/);
+  }));
+  assert.equal(extra.files.some((file) => file.file === 'evil.png'), false);
 });
 
 test('spriteChunk 按偏移切片、收敛越界并拒绝未知文件', () => {
@@ -106,7 +107,7 @@ test('spriteChunk 按偏移切片、收敛越界并拒绝未知文件', () => {
   assert.equal(spriteChunk(null, 'body.png', 0), null);
 });
 
-test('GIF 动作：合法条目随 files 下发，坏条目与孤儿 gif 被拒绝', () => {
+test('GIF 动作：合法条目随 files 下发，坏条目拒绝，孤儿 gif 不下发', () => {
   const GIF_MAGIC = Buffer.from('GIF89a');
   const manifest = {
     ...validManifest(),
@@ -121,7 +122,8 @@ test('GIF 动作：合法条目随 files 下发，坏条目与孤儿 gif 被拒�
   assert.throws(() => readSprite(makePackage({ manifest: { ...manifest, actions: { dance: { gif: 'dance.gif', ms: 50 } } }, ...base })), /ms 范围/);
   assert.throws(() => readSprite(makePackage({ manifest: { ...manifest, actions: { dance: { gif: 'sub/dir.gif' } }, ...{} }, files: { 'body.png': PNG_1PX, 'eyes-open.png': PNG_1PX, 'eyes-closed.png': PNG_1PX } })), /gif 文件名/);
   assert.throws(() => readSprite(makePackage({ manifest: { ...manifest, actions: { dance: { gif: 'missing.gif' } } }, files: { 'body.png': PNG_1PX, 'eyes-open.png': PNG_1PX, 'eyes-closed.png': PNG_1PX } })), /不存在/);
-  assert.throws(() => readSprite(makePackage({ manifest: validManifest(), files: { 'body.png': PNG_1PX, 'eyes-open.png': PNG_1PX, 'eyes-closed.png': PNG_1PX, 'orphan.gif': GIF_MAGIC } })), /未被任何 GIF 动作引用/);
+  const orphan = readSprite(makePackage({ manifest: validManifest(), files: { 'body.png': PNG_1PX, 'eyes-open.png': PNG_1PX, 'eyes-closed.png': PNG_1PX, 'orphan.gif': GIF_MAGIC } }));
+  assert.equal(orphan.files.some((file) => file.file === 'orphan.gif'), false);
   // 帧表动作混入 gif 字段：拒绝
   assert.throws(() => readSprite(makePackage({ manifest: { ...manifest, actions: { wave: { frame_ms: 140, gif: 'dance.gif', tracks: { body: [0] } } }, ...{} }, files: { 'body.png': PNG_1PX, 'eyes-open.png': PNG_1PX, 'eyes-closed.png': PNG_1PX } })), /不支持的字段/);
 });
@@ -265,3 +267,18 @@ async function freeUdpPort() {
   await new Promise((resolve) => socket.close(resolve));
   return port;
 }
+
+test('素材替换即使保留 mtime 也会刷新缓存', (t) => {
+  const dir = makePackage({ manifest: validManifest(), files: {
+    'body.png': PNG_1PX, 'eyes-open.png': PNG_1PX, 'eyes-closed.png': PNG_1PX,
+  } });
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const before = readSprite(dir);
+  const file = path.join(dir, 'sprite', 'body.png');
+  const stat = fs.statSync(file);
+  fs.writeFileSync(file, Buffer.concat([PNG_1PX, Buffer.from([0])]));
+  fs.utimesSync(file, stat.atime, stat.mtime);
+  const after = readSprite(dir);
+  assert.notEqual(after.files.find((f) => f.file === 'body.png').sha256,
+    before.files.find((f) => f.file === 'body.png').sha256);
+});

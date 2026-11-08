@@ -323,3 +323,72 @@ test('桥接器按会话编号建立工作目录，删除任务时删掉该目�
   assert.deepEqual(store.deleteSession(session.id), { id: session.id, deleted: true });
   assert.equal(fs.existsSync(dir), false);
 });
+
+for (const provider of ['codex', 'cursor']) {
+  test(`${provider} 等待输入钩子期间取消，不得继续启动助手或阻塞后续任务`, async (t) => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'made-cancel-hook-'));
+    t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+    let release;
+    let calls = 0;
+    const store = makeStore(dir, async () => {
+      calls++;
+      return { status: 'completed', result: 'ok' };
+    });
+    store.hooks = {
+      notify() {},
+      turnIn: () => new Promise((resolve) => { release = resolve; }),
+      turnOut: async (_job, text) => text,
+    };
+    const session = store.createSession({ provider });
+    const job = store.submit({ instruction: '取消此任务', sessionId: session.id });
+    store.confirm(job.id);
+    await until(() => Boolean(release));
+    store.cancel(job.id);
+    release('仍不应执行');
+    await until(() => store.lanes.size === 0);
+    assert.equal(job.status, 'cancelled');
+    assert.equal(calls, 0);
+    store.hooks = null;
+    const next = store.submit({ instruction: '后续任务', sessionId: session.id });
+    store.confirm(next.id);
+    await until(() => next.status === 'completed');
+    assert.equal(calls, 1);
+  });
+}
+
+test('会话工作目录不能通过符号链接复用另一会话', async (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'made-workspace-link-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  let calls = 0;
+  const store = makeStore(dir, async () => { calls++; return { status: 'completed' }; });
+  store.workspaceRoot = path.join(dir, 'workspaces');
+  const first = store.createSession({ provider: 'codex' });
+  const second = store.createSession({ provider: 'cursor' });
+  fs.rmSync(store.workspacePath(first.id), { recursive: true });
+  fs.symlinkSync(store.workspacePath(second.id), store.workspacePath(first.id), 'dir');
+  const job = store.submit({ instruction: '不能在别的会话执行', sessionId: first.id });
+  store.confirm(job.id);
+  await until(() => job.status === 'failed');
+  assert.equal(calls, 0);
+  assert.match(job.error, /符号链接/);
+  store.deleteSession(first.id);
+  assert.ok(fs.existsSync(store.workspacePath(second.id)), '删除链接不得删除目标会话');
+});
+
+for (const locale of ['zh-CN', 'en']) {
+  test(`${locale} CLI 执行提示允许用户明确授权发布，并保留默认权限边界`, async (t) => {
+    const { runCli } = await import('../src/agents/shared.mjs');
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'made-cli-publish-'));
+    t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+    let prompt;
+    const intercepted = new Error('command captured');
+    assert.throws(() => runCli({
+      job: { instruction: '开发插件并发布到市场' },
+      project: { path: dir, originPath: '' }, config: { locale },
+      signal: new AbortController().signal,
+    }, { command({ instruction }) { prompt = instruction; throw intercepted; } }), (error) => error === intercepted);
+    assert.match(prompt, /^开发插件并发布到市场/);
+    assert.match(prompt, locale === 'en' ? /without explicit user authorization/ : /未经用户明确授权/);
+    assert.match(prompt, locale === 'en' ? /verify the publishing account/ : /确认发布账号/);
+  });
+}

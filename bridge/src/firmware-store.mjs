@@ -102,9 +102,33 @@ export function createFirmwareStore(directory) {
       const target = validateOtaUrl(manifest.otaUrl);
       if (!target) throw new Error('请先填写固件地址');
       if (!target.startsWith('http')) throw new Error('本机地址表示码得来这台桥接器取包，请先上传固件');
-      const response = await fetchImpl(target);
-      if (!response.ok) throw new Error(`拉取固件失败：HTTP ${response.status}`);
-      const bytes = Buffer.from(await response.arrayBuffer());
+      const response = await fetchImpl(target, { signal: AbortSignal.timeout(60_000) });
+      if (!response.ok) {
+        try { await response.body?.cancel(); } catch { /* 保留 HTTP 状态错误 */ }
+        throw new Error(`拉取固件失败：HTTP ${response.status}`);
+      }
+      // 上限必须在读取流时执行，不能等 arrayBuffer 把任意大响应装入内存。
+      const reader = response.body?.getReader();
+      if (!reader) throw new Error('固件响应内容为空');
+      const chunks = [];
+      let total = 0;
+      try {
+        const declaredSize = Number(response.headers.get('content-length'));
+        if (declaredSize > MAX_BYTES) throw new Error('固件文件超过 8MB 上限');
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          total += value.byteLength;
+          if (total > MAX_BYTES) throw new Error('固件文件超过 8MB 上限');
+          chunks.push(Buffer.from(value));
+        }
+      } catch (error) {
+        try { await reader.cancel(); } catch { /* 保留原始下载错误 */ }
+        throw error;
+      } finally {
+        reader.releaseLock();
+      }
+      const bytes = Buffer.concat(chunks, total);
       let version = 'remote';
       try {
         const leaf = decodeURIComponent(new URL(target).pathname.split('/').filter(Boolean).pop() || '');

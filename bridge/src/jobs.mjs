@@ -216,6 +216,11 @@ export class JobStore {
     const dir = this.workspacePath(sessionId);
     if (!dir) return '';
     fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+    // 会话 UUID 只防词法穿越；助手能写文件，目录也可能被换成指向其他会话的链接。
+    const realRoot = fs.realpathSync(this.workspaceRoot);
+    if (fs.lstatSync(dir).isSymbolicLink() || path.dirname(fs.realpathSync(dir)) !== realRoot) {
+      throw new Error('会话工作目录不能是符号链接或指向工作区外部');
+    }
     return dir;
   }
 
@@ -423,6 +428,8 @@ export class JobStore {
           const project = this.projectFor(job);
           // 回合输入管道：插件可以改写本轮实际执行的指令；存储里的任务原文保持不变。
           const instruction = this.hooks ? await this.hooks.turnIn(job) : job.instruction;
+          // 等待输入钩子时也可能收到取消；不可再启动有副作用的助手。
+          if (job.status !== 'running' || controller.signal.aborted) continue;
           // 图片提示追加在回合输入管道之后：插件仍能改写用户原文，但不会被图片
           // 提示盖掉；存储里的 job.instruction 始终是用户原文。图片本体以
           // job.inputImages（file 已解析成绝对路径，附 mime/size）随执行副本
@@ -430,7 +437,7 @@ export class JobStore {
           const inputImages = absolutizeInputImages(
             this.workspacePath(job.vibeSessionId || job.sessionId), job.inputImages,
           );
-          const effectiveInstruction = withImagePrompt(instruction, job.inputImages);
+          const effectiveInstruction = withImagePrompt(instruction, inputImages);
           const effectiveJob = { ...job, inputImages };
           if (effectiveInstruction !== job.instruction) effectiveJob.instruction = effectiveInstruction;
           const outcome = await this.run(effectiveJob, project, controller.signal, (text) => {

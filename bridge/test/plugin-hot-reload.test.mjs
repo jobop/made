@@ -88,3 +88,25 @@ test('保存插件文件会自动重新加载', async (t) => {
   assert.equal(config.pluginsRuntime.agent('hot_agent').label, '第三版');
   assert.equal((await config.pluginsRuntime.agent('hot_agent').run()).result, 'three:three');
 });
+
+test('watch 不可用时，删除最后一个插件仍由轮询触发重载', async (t) => {
+  const directory = temporary(t);
+  const config = configFor(directory);
+  config.plugins = [];
+  config.defaultProvider = '';
+  const plugins = path.join(config.madeHome, 'plugins');
+  fs.mkdirSync(plugins, { recursive: true });
+  fs.writeFileSync(path.join(plugins, 'last.mjs'), `export default {
+    apiVersion: 1, kind: 'board-plugin', id: 'last_plugin', label: 'Last',
+    events: ['boot.double'], commands: ['caption.show'], probe: () => ({ available: true }), onEvent: () => ({})
+  };`);
+  config.pluginsRuntime = await loadConfiguredPlugins(config);
+  t.mock.method(fs, 'watch', () => { throw new Error('watch unavailable'); });
+  let reloaded = false;
+  const watch = watchPlugins(config, { onReload(error) { assert.ifError(error); reloaded = true; } });
+  t.after(() => watch.close());
+  fs.unlinkSync(path.join(plugins, 'last.mjs'));
+  const deadline = Date.now() + 8000;
+  while (!reloaded && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 30));
+  assert.equal(reloaded, true);
+});

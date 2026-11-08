@@ -45,7 +45,7 @@ int main(int argc,char **argv) {
     assert(request_path("/device/config")=="/device/config");
     assert(set_locale("zh-CN"));assert(message("Bridge HTTP 503")=="桥接响应 HTTP 503");
     assert(std::string(tr("settings.connection"))=="连接");
-    assert(std::string(tr("settings.language"))=="语音");
+    assert(std::string(tr("settings.language"))=="语言");
     assert(std::string(tr("settings.volume"))=="音量");
     assert(message("Settings")=="设置");assert(message("unknown plugin output")=="unknown plugin output");
     assert(request_path("/device/config")=="/device/config?uiLocale=zh-CN");

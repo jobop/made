@@ -217,7 +217,7 @@ const messages = new Map([
   ['项目已有未提交改动。请先保存或提交，再确认语音任务', 'The project has uncommitted changes. Save or commit them before confirming the voice task'],
   ['任务运行超过 20 分钟，已停止', 'Task exceeded 20 minutes and was stopped'],
   ['请在电脑端检查 CLI 登录和权限设置', 'Check CLI sign-in and permissions on the computer'],
-  ['请只修改当前仓库中的文件；不要提交、推送、发布或删除仓库。完成后说明改动与已运行的验证。', 'Only modify files in the current repository. Do not commit, push, publish, or delete the repository. When finished, describe the changes and the checks you ran.'],
+  ['请在本轮工作目录中开发；未经用户明确授权，不要提交、推送、发布或删除仓库。用户明确要求发布时，先完成校验并确认发布账号，再按授权执行。完成后说明改动、实际执行结果与已运行的验证。', 'Develop in the current turn workspace. Do not commit, push, publish, or delete the repository without explicit user authorization. When the user explicitly requests publishing, validate the package and verify the publishing account before proceeding as authorized. Report the changes, actual execution results, and checks run.'],
   ['改动文件：', 'Changed files:'],
   ['没有检测到代码改动。', 'No code changes detected.'],
   ['任务已执行，未返回文字摘要。', 'Task executed without a text summary.'],

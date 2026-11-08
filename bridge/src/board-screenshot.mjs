@@ -88,6 +88,7 @@ export function validateScreenshotParams(query) {
 export function createScreenshotStore(dir) {
   fs.mkdirSync(dir, { recursive: true });
   const sanitize = (deviceId) => String(deviceId).replace(/[^0-9a-f-]/gi, '').slice(0, 40) || 'unknown';
+  let sequence = 0;
   const prune = () => {
     const files = fs.readdirSync(dir).filter((f) => f.endsWith('.png')).sort();
     for (const stale of files.slice(0, Math.max(0, files.length - KEEP_FILES))) {
@@ -98,12 +99,11 @@ export function createScreenshotStore(dir) {
     save(deviceId, png) {
       const stamp = Date.now();
       const dev = sanitize(deviceId);
-      // 同毫秒多次保存不得互相覆盖（连拍/快速重试会撞毫秒，曾有测试因
-      // 27 次保存挤在几个毫秒里而假失败，实机连拍也会丢图）。
-      let name = `${stamp}-${dev}.png`;
-      for (let n = 1; fs.existsSync(path.join(dir, name)); n += 1) {
-        name = `${stamp}-${dev}-${n}.png`;
-      }
+      // 序号放在设备 ID 前，固定宽度保证同毫秒跨设备连拍仍按保存顺序排序。
+      let name;
+      do {
+        name = `${stamp}-${String(sequence++).padStart(12, '0')}-${dev}.png`;
+      } while (fs.existsSync(path.join(dir, name)));
       const file = path.join(dir, name);
       fs.writeFileSync(file, png);
       prune();
@@ -111,18 +111,14 @@ export function createScreenshotStore(dir) {
     },
     latest(afterMs) {
       let best = null;
-      let bestTime = 0;
+
       for (const name of fs.readdirSync(dir)) {
         if (!name.endsWith('.png')) continue;
         const stamp = Number(name.split('-')[0]);
         if (!Number.isFinite(stamp) || stamp < afterMs) continue;
         const file = path.join(dir, name);
-        let mtime = 0;
-        try { mtime = fs.statSync(file).mtimeMs; } catch { continue; }
-        if (mtime > bestTime) {
-          best = file;
-          bestTime = mtime;
-        }
+        if (!fs.existsSync(file)) continue;
+        if (!best || name > path.basename(best)) best = file;
       }
       return best;
     },

@@ -252,3 +252,39 @@ test('设备接口：APP 传图 → 回读 → 带图提交任务 → 板端白�
   assert.equal(cross.status, 400);
   assert.match(cross.data.error, /不存在|清理/);
 });
+
+
+test('标准 WebP 文件头可上传，拼错的 FourCC 不接受', (t) => {
+  const dir = tmpDir();
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const bytes = Buffer.concat([Buffer.from('RIFF'), Buffer.from([12, 0, 0, 0]), Buffer.from('WEBPVP8 '), Buffer.alloc(4)]);
+  const saved = saveImage(dir, SESSION_ID, bytes, 'photo.webp');
+  assert.equal(saved.mime, 'image/webp');
+  assert.deepEqual(readImage(dir, saved.id).bytes, bytes);
+  assert.equal(resolveTaskImages(dir, SESSION_ID, [saved.id])[0].file, saved.file);
+  assert.throws(() => saveImage(dir, SESSION_ID, Buffer.from('RIFFxxxxWEBVPxxxx'), 'bad.webp'), /只支持/);
+});
+
+test('上传后被清理的图片不会让执行指令声称已附上图片', async (t) => {
+  const dir = tmpDir();
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  let received;
+  const store = new JobStore({
+    file: path.join(dir, 'jobs.json'),
+    projects: [{ id: 'demo', path: dir }],
+    defaultProject: 'demo', defaultProvider: 'codex',
+    workspaceRoot: path.join(dir, 'ws'),
+    pluginsRuntime: testRegistry(),
+    providerAvailable: () => ({ available: true }),
+    run: async (job) => { received = job; return { status: 'completed', result: 'ok' }; },
+  });
+  const session = store.createSession({ provider: 'codex' });
+  const image = saveImage(store.workspacePath(session.id), session.id, PNG, 'removed.png');
+  const job = store.submit({ instruction: '检查图片', sessionId: session.id, inputImages: [image] });
+  fs.unlinkSync(path.join(store.workspacePath(session.id), image.file));
+  store.confirm(job.id);
+  await until(() => job.status === 'completed');
+  assert.equal(received.inputImages, undefined);
+  assert.equal(received.instruction, '检查图片');
+  assert.equal(job.inputImages.length, 1, '原任务记录仍保留附件信息');
+});

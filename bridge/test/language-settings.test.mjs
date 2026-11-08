@@ -295,7 +295,8 @@ test('English CLI guard and bridge footer retain permission limits without trans
   };
   const result = await runCli({ job: { instruction: '用户原始指令' }, project: { path: directory },
     config: { locale: 'en' }, signal: new AbortController().signal, onProgress() {}, onSession() {} }, adapter);
-  assert.match(supplied, /^用户原始指令\n\nOnly modify files in the current repository\./);
-  assert.match(supplied, /Do not commit, push, publish, or delete the repository/);
+  assert.match(supplied, /^用户原始指令\n\nDevelop in the current turn workspace\./);
+  assert.match(supplied, /Do not commit, push, publish, or delete the repository without explicit user authorization/);
+  assert.match(supplied, /verify the publishing account/);
   assert.equal(result.result, '正在读取文件\n\nNo code changes detected.');
 });

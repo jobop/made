@@ -11,7 +11,7 @@ trap 'rm -rf "$build_dir"' EXIT
 "${CC:-cc}" -std=c11 -c "$cjson_dir/cJSON.c" -o "$build_dir/cJSON.o"
 for test in usb_regression_test chooser_test; do
   compile_command=("${CXX:-c++}" -std=c++17 -Wall -Wextra -Werror -Wno-deprecated-declarations -pthread
-    -I"$test_dir/stubs" -I"$test_dir/../../include" -I"$cjson_dir" -I"$test_dir/../../../vibe_i18n/include"
+    -I"$test_dir/stubs" -I"$test_dir/../../../vibe_usb/include" -I"$test_dir/../../include" -I"$cjson_dir" -I"$test_dir/../../../vibe_i18n/include"
     "$test_dir/$test.cpp" "$test_dir/../../../vibe_i18n/vibe_i18n.cpp" "$build_dir/cJSON.o" -o "$build_dir/$test")
   if [[ "$(uname -s)" != Darwin ]]; then compile_command+=(-lcrypto); fi
   "${compile_command[@]}"

@@ -25,7 +25,7 @@ const FORMATS = [
   {
     ext: 'webp', mime: 'image/webp',
     match: (b) => b.length > 12 && b.toString('ascii', 0, 4) === 'RIFF' &&
-      b.toString('ascii', 8, 12) === 'WEBVP',
+      b.toString('ascii', 8, 12) === 'WEBP',
   },
 ];
 

@@ -11,7 +11,7 @@ const authenticationCache = new Map();
  * 每轮任务都要带上的权限边界。CLI 助手拥有桥接器进程的权限，这条约束是设备侧
  * 唯一的护栏，不能只在某几个适配器里各写一遍，所以统一在 runCli 里拼。
  */
-const GUARD_INSTRUCTION = '请只修改当前仓库中的文件；不要提交、推送、发布或删除仓库。完成后说明改动与已运行的验证。';
+const GUARD_INSTRUCTION = '请在本轮工作目录中开发；未经用户明确授权，不要提交、推送、发布或删除仓库。用户明确要求发布时，先完成校验并确认发布账号，再按授权执行。完成后说明改动、实际执行结果与已运行的验证。';
 
 export function probeCli(command, loginArgs) {
   // 命令查找走共享的跨平台实现：Windows 上要按 PATHEXT 补 .cmd/.exe，
@@ -93,7 +93,7 @@ function repositorySnapshot(cwd, { autoInitNestedRepo = false } = {}) {
   // 这种情况同样走 git init，否则任务永远报「路径不是仓库根」。
   // 用户自己配置的真实项目目录不算沙箱，保持原来的报错提示改用仓库根。
   const insideOtherRepo = autoInitNestedRepo && repo.status === 0 &&
-    path.resolve(repo.stdout.trim()) !== path.resolve(cwd);
+    fs.realpathSync(repo.stdout.trim()) !== fs.realpathSync(cwd);
   if (repo.status !== 0 || insideOtherRepo) {
     spawnSync('git', ['init'], { cwd, encoding: 'utf8', timeout: 15000 });
     repo = spawnSync('git', ['rev-parse', '--show-toplevel'], {
@@ -104,7 +104,7 @@ function repositorySnapshot(cwd, { autoInitNestedRepo = false } = {}) {
     throw new Error('目标项目必须是 Git 仓库，以便查看和恢复改动');
   }
   const root = repo.stdout.trim();
-  if (path.resolve(root) !== path.resolve(cwd)) {
+  if (fs.realpathSync(root) !== fs.realpathSync(cwd)) {
     throw new Error('请把项目路径设为 Git 仓库根目录');
   }
   return gitState(cwd).snapshot;
