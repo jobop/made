@@ -13,6 +13,7 @@ This file is the development-standards index. The standards themselves are split
 | [Case model (3d-model)](docs/standards/05-case-model.md) | The case is generated entirely by the parametric `3d-model/make_case.py`; consult the parts dictionary before any change. Trigger phrase "3d 外壳标注图" = open `3d-model/PARTS-diagram.svg` |
 | [No overfitting to a single sample](docs/standards/06-no-overfitting.md) | Tools, templates and docs must work for arbitrary new instances without code changes: no hardcoded character/asset/path assumptions, per-instance input resolution, two different instances before claiming generality, auto-resolved inputs must print their pick and accept an override |
 | [Full-chain release](docs/standards/07-full-chain-release.md) | The five-step release pipeline triggered by 「全链路发布」: commit & push (both repos, SSH fallback) → merge to main (`--ff-only`) → deploy made-cloud to the server (tar pipe + systemd restart) → publish marketplace packages (`npx made-market`) → flash the board (free the serial port, `--build`, verify bin mtime) |
+| [Fix the generator, not just the instance](docs/standards/08-fix-the-generator.md) | A plugin/bridge bug fixed in a running instance must also be fixed at the sources that reproduce it: the package repo, **made-kit** (guides + static checks — it generates future assistants), **bridge source** (`made/bridge/src/`, never patch only an installed/deployed copy), and the cloud template when it pre-installs the package |
 
 ## Reference docs (docs/)
 
